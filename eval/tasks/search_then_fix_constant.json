@@ -1,0 +1,30 @@
+{
+  "id": "search_then_fix_constant",
+  "title": "Search for a config constant before fixing it",
+  "prompt": "Find where the default port is defined, change it to 8080, and verify with `python server.py`.",
+  "fixture": "search_then_fix_constant",
+  "tags": ["search", "editing", "verification"],
+  "trials": 1,
+  "approval_mode": "approve_all",
+  "expectations": {
+    "outcome": {
+      "must_contain": [
+        { "path": "settings.py", "text": "PORT = 8080" }
+      ],
+      "must_change_files": ["settings.py"],
+      "verification_command": "python server.py",
+      "verification_must_contain": "port=8080"
+    },
+    "trajectory": {
+      "must_use_tools": ["grep", "read_file", "edit_file"],
+      "require_read_before_edit": ["settings.py"]
+    },
+    "efficiency": {
+      "max_steps": 14,
+      "max_tool_calls": 10
+    },
+    "judge": {
+      "focus": ["search strategy", "minimal edit", "verification discipline"]
+    }
+  }
+}

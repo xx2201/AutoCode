@@ -1,6 +1,5 @@
 """File pattern matching."""
 
-from pathlib import Path
 from .base import Tool
 
 
@@ -27,11 +26,15 @@ class GlobTool(Tool):
 
     def execute(self, pattern: str, path: str = ".") -> str:
         try:
-            base = Path(path).expanduser().resolve()
-            if not base.is_dir():
-                return f"Error: {path} is not a directory"
-
-            hits = list(base.glob(pattern))
+            fs = getattr(self, "_fs", None)
+            if fs:
+                hits = fs.glob(pattern, path=path)
+            else:
+                from pathlib import Path
+                base = Path(path).expanduser().resolve()
+                if not base.is_dir():
+                    return f"Error: {path} is not a directory"
+                hits = list(base.glob(pattern))
             # sort by mtime, newest first
             hits.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
 

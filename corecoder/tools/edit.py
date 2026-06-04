@@ -7,7 +7,6 @@ and makes edits safe and reviewable.
 """
 
 import difflib
-from pathlib import Path
 
 from .base import Tool
 
@@ -43,11 +42,18 @@ class EditFileTool(Tool):
 
     def execute(self, file_path: str, old_string: str, new_string: str) -> str:
         try:
-            p = Path(file_path).expanduser().resolve()
-            if not p.exists():
-                return f"Error: {file_path} not found"
-
-            content = p.read_text()
+            fs = getattr(self, "_fs", None)
+            if fs:
+                p = fs.resolve_path(file_path)
+                if not p.exists():
+                    return f"Error: {file_path} not found"
+                content = fs.read_text(file_path)
+            else:
+                from pathlib import Path
+                p = Path(file_path).expanduser().resolve()
+                if not p.exists():
+                    return f"Error: {file_path} not found"
+                content = p.read_text()
             occurrences = content.count(old_string)
 
             if occurrences == 0:
@@ -63,7 +69,10 @@ class EditFileTool(Tool):
                 )
 
             new_content = content.replace(old_string, new_string, 1)
-            p.write_text(new_content)
+            if fs:
+                fs.write_text(file_path, new_content)
+            else:
+                p.write_text(new_content)
             _changed_files.add(str(p))
 
             # generate a unified diff so the user/LLM can see exactly what changed

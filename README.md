@@ -103,6 +103,31 @@ corecoder
 
 LiteLLM routes through to 100+ providers (Bedrock, Vertex AI, Cohere, Groq, Replicate, Anyscale, etc.) using one model-string convention. The default `openai` backend is unchanged.
 
+### Telegram Remote Control (Experimental)
+
+If you want to control CoreCoder from your phone, install the optional Telegram extra:
+
+```bash
+pip install 'corecoder[telegram]'
+
+export CORECODER_MODEL=gpt-5
+export CORECODER_API_KEY=sk-...
+export CORECODER_TELEGRAM_BOT_TOKEN=123456:telegram-token
+export CORECODER_TELEGRAM_ALLOWED_CHATS=123456789
+corecoder-telegram
+```
+
+The Telegram adapter is intentionally minimal and reuses the existing task runtime:
+
+- send any text to start or continue a coding task
+- `/task` shows the current task state
+- `/trace` shows the latest trace summary
+- `/approve` / `/reject` resolve pending approvals
+- `/approve-all` resolves the current approval and auto-approves later normal confirms for the same task
+- `/resume <task_id>` restores a saved checkpoint into the chat
+
+This follows the same channel-adapter idea used by projects like `claw0`, but keeps CoreCoder single-channel and lightweight instead of growing into a full gateway.
+
 ## Architecture
 
 The whole thing fits in your head:
@@ -166,6 +191,20 @@ quit             Exit
 ```
 
 Saved session IDs are sanitized before they become filenames, so resume data stays inside `~/.corecoder/sessions`.
+
+Telegram commands:
+
+```
+/start           Show Telegram help
+/task            Show current task state
+/tasks           List recent checkpoints
+/trace           Show trace for the current task
+/approve         Approve the pending tool call
+/approve-all     Approve this tool call and auto-approve later normal confirms
+/reject          Reject the pending tool call
+/resume <id>     Resume a saved task checkpoint into this chat
+/reset           Clear the in-memory chat session
+```
 
 ## How It Compares
 

@@ -1,0 +1,125 @@
+from corecoder import checkpoint as checkpoint_module
+from corecoder.config import Config
+from corecoder.llm import LLMResponse, ToolCall
+from corecoder.remote.formatting import render_turn_result, split_message
+from corecoder.remote.manager import RemoteManager
+from corecoder.tools.base import Tool
+
+
+class _DelegationTool(Tool):
+    name = "agent"
+    description = "Delegation"
+    parameters = {
+        "type": "object",
+        "properties": {"task": {"type": "string"}},
+        "required": ["task"],
+    }
+
+    def execute(self, task: str) -> str:
+        return f"delegated:{task}"
+
+
+class _FakeLLM:
+    def __init__(self, responses):
+        self._responses = list(responses)
+        self.model = "fake-model"
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+
+    def chat(self, messages, tools=None, on_token=None):
+        response = self._responses.pop(0)
+        if on_token and response.content:
+            on_token(response.content)
+        return response
+
+
+def _config(tmp_path):
+    return Config(
+        model="fake-model",
+        api_key="secret",
+        workspace_root=str(tmp_path),
+    )
+
+
+def test_remote_manager_handles_approval_flow(tmp_path):
+    llm = _FakeLLM([
+        LLMResponse(content="", tool_calls=[ToolCall(id="1", name="agent", arguments={"task": "inspect"})]),
+        LLMResponse(content="done"),
+    ])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[_DelegationTool()])
+
+    pending = manager.submit(101, "run delegated task")
+    assert pending.status == "waiting_approval"
+    assert pending.pending_tool == "agent"
+
+    resolved = manager.resolve_approval(101, approved=True)
+    assert resolved.text == "done"
+    assert resolved.status == "completed"
+
+
+def test_remote_manager_can_resume_checkpoint(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "TASKS_DIR", tmp_path)
+    llm = _FakeLLM([LLMResponse(content="finished")])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
+
+    result = manager.submit(202, "finish task")
+    assert result.status == "completed"
+    task_id = result.task_id
+
+    resumed = manager.resume_task(202, task_id)
+    assert resumed.task_id == task_id
+    assert resumed.status == "completed"
+
+
+def test_remote_manager_reset_drops_chat_runtime(tmp_path):
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: _FakeLLM([LLMResponse(content="ok")]), tools=[])
+
+    first = manager.submit(303, "hello")
+    assert first.text == "ok"
+
+    manager.reset_chat(303)
+    try:
+        manager.current_task_summary(303)
+    except ValueError as exc:
+        assert "No chat session yet" in str(exc)
+    else:
+        raise AssertionError("expected ValueError after reset")
+
+
+def test_render_turn_result_includes_approval_hint():
+    text = render_turn_result(
+        type("Result", (), {
+            "text": "waiting",
+            "task_id": "task_123",
+            "status": "waiting_approval",
+            "pending_tool": "bash",
+            "pending_reason": "confirmation required",
+            "pending_arguments": {"command": "python app.py"},
+            "pending_requires_manual": False,
+            "auto_approve_for_task": False,
+        })()
+    )
+    assert "/approve" in text
+    assert "/approve-all" in text
+    assert "task_123" in text
+    assert "python app.py" in text
+
+
+def test_split_message_respects_limit():
+    chunks = split_message("a" * 5000, limit=1000)
+    assert len(chunks) > 1
+    assert all(len(chunk) <= 1000 for chunk in chunks)
+
+
+def test_remote_manager_approve_all_marks_task_state(tmp_path):
+    llm = _FakeLLM([
+        LLMResponse(content="", tool_calls=[ToolCall(id="1", name="agent", arguments={"task": "inspect"})]),
+        LLMResponse(content="done"),
+    ])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[_DelegationTool()])
+    manager.submit(404, "run delegated task")
+
+    result = manager.resolve_approval(404, approved=True, enable_auto_approve=True)
+    assert result.auto_approve_for_task is False
+    summary = manager.current_task_summary(404)
+    assert "Approve-all: off" in summary

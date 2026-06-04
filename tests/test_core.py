@@ -18,29 +18,91 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    assert len(ALL_TOOLS) == 7
+    assert len(ALL_TOOLS) == 8
 
 
-def test_config_from_env():
+def test_config_from_env(monkeypatch):
+    monkeypatch.setattr("corecoder.config._load_dotenv", lambda: None)
     os.environ["CORECODER_MODEL"] = "test-model"
+    os.environ["CORECODER_TELEGRAM_ALLOWED_CHATS"] = "123,456"
     c = Config.from_env()
     assert c.model == "test-model"
+    assert c.telegram_allowed_chat_ids == (123, 456)
     del os.environ["CORECODER_MODEL"]
+    del os.environ["CORECODER_TELEGRAM_ALLOWED_CHATS"]
 
 
-def test_config_defaults():
+def test_config_defaults(monkeypatch):
+    monkeypatch.setattr("corecoder.config._load_dotenv", lambda: None)
     # temporarily clear relevant env vars
     saved = {}
-    for k in ["CORECODER_MODEL", "CORECODER_MAX_TOKENS"]:
+    for k in ["CORECODER_MODEL", "CORECODER_API_KEY", "CORECODER_BASE_URL", "CORECODER_MAX_TOKENS", "CORECODER_AUTO_APPROVE", "OPENAI_API_KEY", "OPENAI_BASE_URL"]:
         if k in os.environ:
             saved[k] = os.environ.pop(k)
 
     c = Config.from_env()
-    assert c.model == "gpt-4o"
+    assert c.model == ""
+    assert c.api_key == ""
+    assert c.base_url is None
     assert c.max_tokens == 4096
     assert c.temperature == 0.0
+    assert c.auto_approve is False
 
     os.environ.update(saved)
+
+
+def test_config_ignores_openai_fallback(monkeypatch):
+    monkeypatch.setattr("corecoder.config._load_dotenv", lambda: None)
+    saved = {}
+    for k in ["CORECODER_API_KEY", "CORECODER_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL"]:
+        if k in os.environ:
+            saved[k] = os.environ.pop(k)
+
+    os.environ["OPENAI_API_KEY"] = "should-not-be-used"
+    os.environ["OPENAI_BASE_URL"] = "https://example.com/v1"
+    c = Config.from_env()
+    assert c.api_key == ""
+    assert c.base_url is None
+
+    for k in ["OPENAI_API_KEY", "OPENAI_BASE_URL"]:
+        os.environ.pop(k, None)
+    os.environ.update(saved)
+
+
+def test_load_dotenv_falls_back_to_repo_env(monkeypatch, tmp_path):
+    import corecoder.config as config_mod
+
+    repo_root = tmp_path / "repo"
+    pkg_dir = repo_root / "corecoder"
+    pkg_dir.mkdir(parents=True)
+    (pkg_dir / "config.py").write_text("# stub\n", encoding="utf-8")
+    repo_env = repo_root / ".env"
+    repo_env.write_text("CORECODER_MODEL=repo-model\n", encoding="utf-8")
+
+    loaded = []
+
+    def fake_load_dotenv(path, override=False):
+        loaded.append((pathlib.Path(path), override))
+        for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
+            if "=" in line:
+                key, value = line.split("=", 1)
+                os.environ.setdefault(key, value)
+
+    class FakeDotenvModule:
+        @staticmethod
+        def load_dotenv(path, override=False):
+            fake_load_dotenv(path, override=override)
+
+    monkeypatch.setitem(__import__("sys").modules, "dotenv", FakeDotenvModule())
+    monkeypatch.setattr(config_mod, "__file__", str(pkg_dir / "config.py"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir(exist_ok=True)
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("CORECODER_MODEL", raising=False)
+    config_mod._load_dotenv()
+
+    assert os.environ["CORECODER_MODEL"] == "repo-model"
+    assert loaded[-1][0] == repo_env
 
 
 # --- Context ---
@@ -97,6 +159,15 @@ def test_session_name_is_sanitized():
     path = pathlib.Path.home().joinpath(".corecoder/sessions/Research-Notes.json")
     assert path.exists()
     assert load_session("../Research Notes!") is not None
+    path.unlink()
+
+
+def test_session_is_written_as_utf8():
+    msgs = [{"role": "user", "content": "你好，世界"}]
+    save_session(msgs, "test-model", "utf8_session")
+    path = pathlib.Path.home().joinpath(".corecoder/sessions/utf8_session.json")
+    raw = path.read_bytes()
+    assert b"\xe4\xbd\xa0\xe5\xa5\xbd" in raw
     path.unlink()
 
 

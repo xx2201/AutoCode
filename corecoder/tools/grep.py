@@ -39,14 +39,21 @@ class GrepTool(Tool):
         except re.error as e:
             return f"Invalid regex: {e}"
 
-        base = Path(path).expanduser().resolve()
-        if not base.exists():
-            return f"Error: {path} not found"
-
-        if base.is_file():
-            files = [base]
+        fs = getattr(self, "_fs", None)
+        if fs:
+            try:
+                files = fs.walk_files(path=path, include=include)
+            except ValueError as e:
+                return f"Error: {e}"
         else:
-            files = self._walk(base, include)
+            from pathlib import Path
+            base = Path(path).expanduser().resolve()
+            if not base.exists():
+                return f"Error: {path} not found"
+            if base.is_file():
+                files = [base]
+            else:
+                files = self._walk(base, include)
 
         matches = []
         for fp in files:

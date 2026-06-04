@@ -88,6 +88,31 @@ corecoder -m qwen3:32b
 corecoder -p "给 parse_config() 加上错误处理"
 ```
 
+### Telegram 手机控制（实验性）
+
+如果你想在手机上控制 CoreCoder，可以安装可选的 Telegram 适配层：
+
+```bash
+pip install 'corecoder[telegram]'
+
+export CORECODER_MODEL=gpt-5
+export CORECODER_API_KEY=sk-...
+export CORECODER_TELEGRAM_BOT_TOKEN=123456:telegram-token
+export CORECODER_TELEGRAM_ALLOWED_CHATS=123456789
+corecoder-telegram
+```
+
+这个 Telegram 控制层刻意保持极简，直接复用现有任务运行时：
+
+- 发送任意文本即可启动或继续代码任务
+- `/task` 查看当前任务状态
+- `/trace` 查看最近一次 trace 摘要
+- `/approve` / `/reject` 处理待审批操作
+- `/approve-all` 批准当前操作，并对同一任务后续的普通确认自动放行
+- `/resume <task_id>` 把保存的 checkpoint 恢复到当前聊天
+
+实现思路参考了 `claw0` 的 channel adapter 模式，但仍保持 CoreCoder 单通道、轻量级，不把项目扩成完整 agent gateway。
+
 ## 架构
 
 整个项目一目了然：
@@ -151,6 +176,20 @@ quit             退出
 ```
 
 保存的会话 ID 会先安全化再作为文件名，恢复数据始终留在 `~/.corecoder/sessions` 目录内。
+
+Telegram 命令：
+
+```
+/start           显示 Telegram 帮助
+/task            查看当前任务状态
+/tasks           列出最近的 checkpoint
+/trace           查看当前任务的 trace
+/approve         批准待执行的工具调用
+/approve-all     批准当前操作，并自动放行后续普通确认
+/reject          拒绝待执行的工具调用
+/resume <id>     把保存的任务 checkpoint 恢复到当前聊天
+/reset           清空当前聊天对应的内存会话
+```
 
 ## 对比
 

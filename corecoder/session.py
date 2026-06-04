@@ -49,7 +49,7 @@ def save_session(messages: list[dict], model: str, session_id: str | None = None
     }
 
     path = _session_path(session_id)
-    path.write_text(json.dumps(data, ensure_ascii=False, indent=2))
+    path.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
     return session_id
 
 
@@ -59,7 +59,10 @@ def load_session(session_id: str) -> tuple[list[dict], str] | None:
     if not path.exists():
         return None
 
-    data = json.loads(path.read_text())
+    try:
+        data = _read_json(path)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
     return data["messages"], data["model"]
 
 
@@ -71,7 +74,7 @@ def list_sessions() -> list[dict]:
     sessions = []
     for f in sorted(SESSIONS_DIR.glob("*.json"), reverse=True):
         try:
-            data = json.loads(f.read_text())
+            data = _read_json(f)
             # grab first user message as preview
             preview = ""
             for m in data.get("messages", []):
@@ -84,7 +87,11 @@ def list_sessions() -> list[dict]:
                 "saved_at": data.get("saved_at", "?"),
                 "preview": preview,
             })
-        except (json.JSONDecodeError, KeyError):
+        except (UnicodeDecodeError, json.JSONDecodeError, KeyError):
             continue
 
     return sessions[:20]  # cap at 20
+
+
+def _read_json(path: Path) -> dict:
+    return json.loads(path.read_text(encoding="utf-8"))

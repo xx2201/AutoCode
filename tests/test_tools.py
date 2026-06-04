@@ -9,7 +9,7 @@ from corecoder.tools import ALL_TOOLS, get_tool
 
 
 def test_tool_count():
-    assert len(ALL_TOOLS) == 7
+    assert len(ALL_TOOLS) == 8
 
 
 def test_all_tools_have_valid_schema():
@@ -43,10 +43,10 @@ def test_bash_timeout():
     assert "timed out" in r
 
 
-def test_bash_blocks_rm_rf():
+def test_bash_leaves_rm_rf_to_policy_layer():
     bash = get_tool("bash")
     r = bash.execute(command="rm -rf /")
-    assert "Blocked" in r
+    assert "Blocked" not in r
 
 
 def test_bash_blocks_fork_bomb():
@@ -185,3 +185,10 @@ def test_agent_tool_schema():
     s = agent_t.schema()
     assert s["function"]["name"] == "agent"
     assert "task" in s["function"]["parameters"]["properties"]
+
+
+def test_todo_tool_schema():
+    todo_t = get_tool("todo_write")
+    s = todo_t.schema()
+    assert s["function"]["name"] == "todo_write"
+    assert "todos" in s["function"]["parameters"]["properties"]

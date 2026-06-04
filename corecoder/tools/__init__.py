@@ -7,6 +7,7 @@ from .edit import EditFileTool
 from .glob_tool import GlobTool
 from .grep import GrepTool
 from .agent import AgentTool
+from .todo_write import TodoWriteTool
 
 ALL_TOOLS = [
     BashTool(),
@@ -15,13 +16,18 @@ ALL_TOOLS = [
     EditFileTool(),
     GlobTool(),
     GrepTool(),
+    TodoWriteTool(),
     AgentTool(),
 ]
 
 
-def get_tool(name: str):
+def build_tool_registry(tools) -> dict[str, object]:
+    """Build a name -> tool registry from a tool list."""
+    return {t.name: t for t in tools}
+
+
+def get_tool(name: str, registry: dict[str, object] | None = None):
     """Look up a tool by name."""
-    for t in ALL_TOOLS:
-        if t.name == name:
-            return t
-    return None
+    if registry is not None:
+        return registry.get(name)
+    return build_tool_registry(ALL_TOOLS).get(name)

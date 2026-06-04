@@ -39,10 +39,12 @@ packages = ["corecoder"]
 
 [project.optional-dependencies]
 litellm = ["litellm>=1.60.0,<2.0.0"]
+telegram = ["python-telegram-bot>=22,<23"]
 dev = ["pytest>=7.0"]
 
 [project.scripts]
 corecoder = "corecoder.cli:main"
+corecoder-telegram = "corecoder.remote.telegram_bot:main"
 
 [project.urls]
 Homepage = "https://github.com/he-yufeng/CoreCoder"

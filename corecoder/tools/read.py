@@ -1,6 +1,5 @@
 """File reading with line numbers."""
 
-from pathlib import Path
 from .base import Tool
 
 
@@ -31,13 +30,25 @@ class ReadFileTool(Tool):
 
     def execute(self, file_path: str, offset: int = 1, limit: int = 2000) -> str:
         try:
-            p = Path(file_path).expanduser().resolve()
+            fs = getattr(self, "_fs", None)
+            p = fs.resolve_path(file_path) if fs else None
+            if fs:
+                if not p.exists():
+                    return f"Error: {file_path} not found"
+                if not p.is_file():
+                    return f"Error: {file_path} is a directory, not a file"
+                text = fs.read_text(file_path, errors="replace")
+            else:
+                from pathlib import Path
+                p = Path(file_path).expanduser().resolve()
+                if not p.exists():
+                    return f"Error: {file_path} not found"
+                if not p.is_file():
+                    return f"Error: {file_path} is a directory, not a file"
+                text = p.read_text(errors="replace")
+
             if not p.exists():
                 return f"Error: {file_path} not found"
-            if not p.is_file():
-                return f"Error: {file_path} is a directory, not a file"
-
-            text = p.read_text(errors="replace")
             lines = text.splitlines()
             total = len(lines)
 
