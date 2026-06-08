@@ -1,5 +1,5 @@
-from corecoder.cli import _autosave_session, _prompt_approval
-from corecoder import session as session_module
+from autocode.cli import _autosave_session, _prompt_approval
+from autocode.state import session as session_module
 
 
 class _Pending:
@@ -13,7 +13,7 @@ def test_prompt_approval_accepts_slash_approve(monkeypatch):
 
 
 def test_prompt_approval_accepts_slash_approve_all(monkeypatch):
-    monkeypatch.setattr("builtins.input", lambda: "/approve-all")
+    monkeypatch.setattr("builtins.input", lambda: "/approve_all")
     assert _prompt_approval(_Pending()) == "approve_all"
 
 
@@ -30,3 +30,4 @@ def test_autosave_session_creates_and_updates_same_file(tmp_path, monkeypatch):
     assert same == sid
     loaded = session_module.load_session(sid)
     assert loaded == ([{"role": "user", "content": "second"}], "model-b")
+

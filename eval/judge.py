@@ -7,8 +7,8 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from corecoder.config import _load_dotenv
-from corecoder.llm import LLM
+from autocode.config import _load_dotenv
+from autocode.llm import LLM
 
 from .graders import GradeResult, TrialArtifacts
 from .schema import EvalTaskSpec
@@ -26,21 +26,21 @@ class JudgeConfig:
     @classmethod
     def from_env(cls, model_override: str | None = None) -> "JudgeConfig | None":
         _load_dotenv()
-        api_key = os.getenv("CORECODER_EVAL_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or ""
-        model = model_override or os.getenv("CORECODER_EVAL_MODEL", "")
+        api_key = os.getenv("AUTOCODE_EVAL_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or ""
+        model = model_override or os.getenv("AUTOCODE_EVAL_MODEL", "")
         if not api_key or not model:
             return None
         return cls(
             model=model,
             api_key=api_key,
             base_url=(
-                os.getenv("CORECODER_EVAL_BASE_URL")
+                os.getenv("AUTOCODE_EVAL_BASE_URL")
                 or os.getenv("DASHSCOPE_BASE_URL")
                 or "https://dashscope.aliyuncs.com/compatible-mode/v1"
             ),
-            provider=os.getenv("CORECODER_EVAL_PROVIDER", "openai"),
-            temperature=float(os.getenv("CORECODER_EVAL_TEMPERATURE", "0")),
-            max_tokens=int(os.getenv("CORECODER_EVAL_MAX_TOKENS", "800")),
+            provider=os.getenv("AUTOCODE_EVAL_PROVIDER", "openai"),
+            temperature=float(os.getenv("AUTOCODE_EVAL_TEMPERATURE", "0")),
+            max_tokens=int(os.getenv("AUTOCODE_EVAL_MAX_TOKENS", "800")),
         )
 
 
@@ -166,3 +166,4 @@ def _changed_files(artifacts: TrialArtifacts) -> set[str]:
                 value = candidate.as_posix()
         normalized.add(value)
     return normalized
+

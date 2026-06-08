@@ -1,7 +1,7 @@
-from corecoder.agent import Agent
-from corecoder.llm import LLMResponse
-from corecoder.llm import ToolCall
-from corecoder.tools.base import Tool
+from autocode.agent import Agent
+from autocode.llm import LLMResponse
+from autocode.llm import ToolCall
+from autocode.tools.base import Tool
 
 
 class _CustomTool(Tool):
@@ -23,7 +23,7 @@ class _ToolLLM:
     def chat(self, messages, tools=None, on_token=None):
         self._calls += 1
         if self._calls == 1:
-            from corecoder.llm import ToolCall
+            from autocode.llm import ToolCall
             return LLMResponse(content="", tool_calls=[ToolCall(id="1", name="custom", arguments={})])
         return LLMResponse(content="done")
 
@@ -85,3 +85,4 @@ def test_agent_approve_all_skips_normal_confirms_but_stops_for_manual_risk(tmp_p
     assert "python app.py|confirmed=False" in tool_outputs
     assert "echo ok|confirmed=False" in tool_outputs
     assert any("approval denied by user" in item.lower() for item in tool_outputs)
+

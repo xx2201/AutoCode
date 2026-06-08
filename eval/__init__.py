@@ -1,2 +1,3 @@
-"""Independent agent evaluation harness for CoreCoder."""
+"""Independent agent evaluation harness for AutoCode."""
+
 

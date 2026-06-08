@@ -1,12 +1,11 @@
-# CoreCoder
+# AutoCode
 
-> Formerly **NanoCoder** — renamed to avoid confusion with [Nano-Collective/nanocoder](https://github.com/Nano-Collective/nanocoder). All links from the old repo redirect here automatically.
+> Formerly **AutoCode** (and earlier **NanoCoder**) — renamed to avoid confusion and align the CLI with the product name.
 
 
-[![PyPI](https://img.shields.io/pypi/v/corecoder)](https://pypi.org/project/corecoder/)
 [![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://github.com/he-yufeng/CoreCoder/actions/workflows/ci.yml/badge.svg)](https://github.com/he-yufeng/CoreCoder/actions)
+[![Tests](https://github.com/he-yufeng/AutoCode/actions/workflows/ci.yml/badge.svg)](https://github.com/he-yufeng/AutoCode/actions)
 
 [中文](README_CN.md) | [English](README.md) | [Claude Code Architecture Deep Dive (7 articles)](article/)
 
@@ -14,12 +13,12 @@
 
 I spent two days reverse-engineering the leaked Claude Code source — all half a million lines. Then I stripped it down to the load-bearing walls and rebuilt them in Python. The result: **every key architectural pattern from Claude Code, in a codebase you can read in one sitting.**
 
-CoreCoder is not another AI coding tool. It's a **blueprint** — the [nanoGPT](https://github.com/karpathy/nanoGPT) of coding agents. Read it, fork it, build your own.
+AutoCode is not another AI coding tool. It's a **blueprint** — the [nanoGPT](https://github.com/karpathy/nanoGPT) of coding agents. Read it, fork it, build your own.
 
 ---
 
 ```
-$ corecoder -m kimi-k2.5
+$ autocode -m kimi-k2.5
 
 You > read main.py and fix the broken import
 
@@ -39,7 +38,7 @@ Fixed: halper → helper.
 
 Claude Code's 512K lines distilled into ~1,400 lines across 7 patterns that actually matter:
 
-| Pattern | Claude Code | CoreCoder |
+| Pattern | Claude Code | AutoCode |
 |---|---|---|
 | Search-and-replace editing (unique match + diff) | FileEditTool | `tools/edit.py` — 70 lines |
 | Parallel tool execution | StreamingToolExecutor (530 lines) | `agent.py` — ThreadPool |
@@ -54,7 +53,7 @@ Every pattern is a real, runnable implementation — not a diagram or a blog pos
 ## Install
 
 ```bash
-pip install corecoder
+pip install -e .
 ```
 
 Pick your model — any OpenAI-compatible API works. You can `export` env vars or drop a `.env` file in your project root:
@@ -62,30 +61,30 @@ Pick your model — any OpenAI-compatible API works. You can `export` env vars o
 ```bash
 # Kimi K2.5
 export OPENAI_API_KEY=your-key OPENAI_BASE_URL=https://api.moonshot.ai/v1
-corecoder -m kimi-k2.5
+autocode -m kimi-k2.5
 
 # Claude Opus 4.6 (via OpenRouter)
 export OPENAI_API_KEY=your-key OPENAI_BASE_URL=https://openrouter.ai/api/v1
-corecoder -m anthropic/claude-opus-4-6
+autocode -m anthropic/claude-opus-4-6
 
 # OpenAI GPT-5
 export OPENAI_API_KEY=sk-...
-corecoder -m gpt-5
+autocode -m gpt-5
 
 # DeepSeek V3
 export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://api.deepseek.com
-corecoder -m deepseek-chat
+autocode -m deepseek-chat
 
 # Qwen 3.5
 export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-corecoder -m qwen-max
+autocode -m qwen-max
 
 # Ollama (local)
 export OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1
-corecoder -m qwen3:32b
+autocode -m qwen3:32b
 
 # One-shot mode
-corecoder -p "add error handling to parse_config()"
+autocode -p "add error handling to parse_config()"
 ```
 
 ### Non-OpenAI providers (Bedrock, Vertex, Cohere, …)
@@ -93,28 +92,28 @@ corecoder -p "add error handling to parse_config()"
 For providers without an OpenAI-compatible endpoint, install the optional LiteLLM extra:
 
 ```bash
-pip install 'corecoder[litellm]'
+pip install -e '.[litellm]'
 
-export CORECODER_PROVIDER=litellm
-export CORECODER_MODEL=anthropic/claude-3-haiku   # any LiteLLM model string
+export AUTOCODE_PROVIDER=litellm
+export AUTOCODE_MODEL=anthropic/claude-3-haiku   # any LiteLLM model string
 export ANTHROPIC_API_KEY=sk-ant-...
-corecoder
+autocode
 ```
 
 LiteLLM routes through to 100+ providers (Bedrock, Vertex AI, Cohere, Groq, Replicate, Anyscale, etc.) using one model-string convention. The default `openai` backend is unchanged.
 
 ### Telegram Remote Control (Experimental)
 
-If you want to control CoreCoder from your phone, install the optional Telegram extra:
+If you want to control AutoCode from your phone, install the optional Telegram extra:
 
 ```bash
-pip install 'corecoder[telegram]'
+pip install -e '.[telegram]'
 
-export CORECODER_MODEL=gpt-5
-export CORECODER_API_KEY=sk-...
-export CORECODER_TELEGRAM_BOT_TOKEN=123456:telegram-token
-export CORECODER_TELEGRAM_ALLOWED_CHATS=123456789
-corecoder-telegram
+export AUTOCODE_MODEL=gpt-5
+export AUTOCODE_API_KEY=sk-...
+export AUTOCODE_TELEGRAM_BOT_TOKEN=123456:telegram-token
+export AUTOCODE_TELEGRAM_ALLOWED_CHATS=123456789
+autocode-telegram
 ```
 
 The Telegram adapter is intentionally minimal and reuses the existing task runtime:
@@ -123,17 +122,44 @@ The Telegram adapter is intentionally minimal and reuses the existing task runti
 - `/task` shows the current task state
 - `/trace` shows the latest trace summary
 - `/approve` / `/reject` resolve pending approvals
-- `/approve-all` resolves the current approval and auto-approves later normal confirms for the same task
+- `/approve_all` resolves the current approval and auto-approves later normal confirms for the same task
 - `/resume <task_id>` restores a saved checkpoint into the chat
 
-This follows the same channel-adapter idea used by projects like `claw0`, but keeps CoreCoder single-channel and lightweight instead of growing into a full gateway.
+This follows the same channel-adapter idea used by projects like `claw0`, but keeps AutoCode single-channel and lightweight instead of growing into a full gateway.
+
+### Feishu Remote Control (Experimental)
+
+If you want the same remote control workflow inside Feishu, install the optional Feishu extra:
+
+```bash
+pip install -e '.[feishu]'
+
+export AUTOCODE_MODEL=gpt-5
+export AUTOCODE_API_KEY=sk-...
+export AUTOCODE_FEISHU_APP_ID=cli_xxx
+export AUTOCODE_FEISHU_APP_SECRET=xxx
+# optional allowlists
+export AUTOCODE_FEISHU_ALLOWED_OPEN_IDS=ou_xxx
+export AUTOCODE_FEISHU_ALLOWED_CHAT_IDS=oc_xxx
+autocode-feishu
+```
+
+The Feishu adapter uses the official app-bot + long-connection event model:
+
+- send any text to start or continue a coding task
+- `/task`, `/tasks`, `/trace`, `/resume`, `/reset` work like Telegram
+- `/approve`, `/approve_all`, `/reject` also work as text commands
+- pending approvals are sent as interactive cards with **Approve / Approve All / Reject** buttons
+- the bot reuses the existing task runtime and approval state instead of adding a second workflow engine
+
+This keeps the implementation compact while still supporting full two-way control from Feishu without exposing a public webhook endpoint.
 
 ## Architecture
 
 The whole thing fits in your head:
 
 ```
-corecoder/
+autocode/
 ├── cli.py            REPL + commands               218 lines
 ├── agent.py          Agent loop + parallel tools    122 lines
 ├── llm.py            Streaming client + retry       156 lines
@@ -154,7 +180,7 @@ corecoder/
 ## Use as a Library
 
 ```python
-from corecoder import Agent, LLM
+from autocode import Agent, LLM
 
 llm = LLM(model="kimi-k2.5", api_key="your-key", base_url="https://api.moonshot.ai/v1")
 agent = Agent(llm=llm)
@@ -164,7 +190,7 @@ response = agent.chat("find all TODO comments in this project and list them")
 ## Add Your Own Tools (~20 lines)
 
 ```python
-from corecoder.tools.base import Tool
+from autocode.tools.base import Tool
 
 class HttpTool(Tool):
     name = "http"
@@ -190,7 +216,7 @@ class HttpTool(Tool):
 quit             Exit
 ```
 
-Saved session IDs are sanitized before they become filenames, so resume data stays inside `~/.corecoder/sessions`.
+Saved session IDs are sanitized before they become filenames, so resume data stays inside `~/.autocode/sessions`.
 
 Telegram commands:
 
@@ -200,7 +226,21 @@ Telegram commands:
 /tasks           List recent checkpoints
 /trace           Show trace for the current task
 /approve         Approve the pending tool call
-/approve-all     Approve this tool call and auto-approve later normal confirms
+/approve_all     Approve this tool call and auto-approve later normal confirms
+/reject          Reject the pending tool call
+/resume <id>     Resume a saved task checkpoint into this chat
+/reset           Clear the in-memory chat session
+```
+
+Feishu commands:
+
+```
+/start           Show Feishu help
+/task            Show current task state
+/tasks           List recent checkpoints
+/trace           Show the current task trace
+/approve         Approve the pending tool call
+/approve_all     Approve this tool call and auto-approve later normal confirms
 /reject          Reject the pending tool call
 /resume <id>     Resume a saved task checkpoint into this chat
 /reset           Clear the in-memory chat session
@@ -208,7 +248,7 @@ Telegram commands:
 
 ## How It Compares
 
-|  | Claude Code | Claw-Code | Aider | CoreCoder |
+|  | Claude Code | Claw-Code | Aider | AutoCode |
 |---|---|---|---|---|
 | Code | 512K lines (closed) | 100K+ lines | 50K+ lines | **~1,400 lines** |
 | Models | Anthropic only | Multi | Multi | **Any OpenAI-compatible** |
@@ -217,20 +257,20 @@ Telegram commands:
 
 ## The Deep Dive
 
-I wrote [7 articles](article/) breaking down Claude Code's architecture — the agent loop, tool system, context compression, streaming executor, multi-agent, and 44 hidden feature flags. If you want to understand *why* CoreCoder is designed this way, start there.
+I wrote [7 articles](article/) breaking down Claude Code's architecture — the agent loop, tool system, context compression, streaming executor, multi-agent, and 44 hidden feature flags. If you want to understand *why* AutoCode is designed this way, start there.
 
 ## FAQ
 
-**Does CoreCoder support Skills / Subagents / MCP?**
+**Does AutoCode support Skills / Subagents / MCP?**
 
-No, and that's intentional. CoreCoder is the minimal runnable core — agent loop, tools, streaming, compaction. Skills, Subagents, MCP, hooks, and plugins are upper-layer features that Claude Code layers on top; if CoreCoder had them too it would stop being a teaching artifact. The architecture articles above cover how those systems work in Claude Code, so you can add them yourself if you need to.
+No, and that's intentional. AutoCode is the minimal runnable core — agent loop, tools, streaming, compaction. Skills, Subagents, MCP, hooks, and plugins are upper-layer features that Claude Code layers on top; if AutoCode had them too it would stop being a teaching artifact. The architecture articles above cover how those systems work in Claude Code, so you can add them yourself if you need to.
 
 If you want Skills specifically, the recipe is small: scan `~/.claude/skills/*.md` at startup, list their titles in the system prompt, and let the agent ask for a skill by name before you inline that file's body into the conversation.
 
 ## Related Projects
 
 - **[CodeJoust](https://github.com/he-yufeng/CodeJoust)** — a CLI arena that races Claude Code, aider, Codex, and Gemini (Cursor + OpenHands next) on the same bug in isolated git worktrees, scores by tests+cost+diff+time, hands you the winning patch. If you ever wondered *which* AI coding CLI is actually better for your task, CodeJoust answers it empirically.
-- **[AnyCoder](https://github.com/he-yufeng/AnyCoder)** — a practical terminal AI coding agent built on the same architecture as CoreCoder but with litellm, session persistence, and 100+ model support. Use this one if you want a tool; use CoreCoder if you want to read source.
+- **[AnyCoder](https://github.com/he-yufeng/AnyCoder)** — a practical terminal AI coding agent built on the same architecture as AutoCode but with litellm, session persistence, and 100+ model support. Use this one if you want a tool; use AutoCode if you want to read source.
 - **[LiteBench](https://github.com/he-yufeng/LiteBench)** — one-command LLM / agent benchmark. Ships 7 built-in tasks (HumanEval/GSM8K/MMLU/...) and YAML-defined custom tasks, with a single-file HTML dashboard.
 - **[RepoWiki](https://github.com/he-yufeng/RepoWiki)** — open-source DeepWiki alternative. `pip install repowiki`, one command to turn any local or GitHub repo into a wiki with dependency graph, architecture diagram, and LLM-generated module pages.
 
@@ -243,3 +283,4 @@ MIT. Fork it, learn from it, ship something better. A mention of this project is
 Built by **[Yufeng He](https://github.com/he-yufeng)** · Agentic AI Researcher @ Moonshot AI (Kimi)
 
 [Claude Code Source Analysis — 170K+ reads, 6000 bookmarks on Zhihu](https://zhuanlan.zhihu.com/p/1898797658343862272)
+

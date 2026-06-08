@@ -1,5 +1,5 @@
-from corecoder import checkpoint as checkpoint_module
-from corecoder.trace import TraceRecorder, format_trace, load_trace
+from autocode.state import checkpoint as checkpoint_module
+from autocode.state import TraceRecorder, format_trace, load_trace
 
 
 def test_trace_recorder_aggregates_events(tmp_path, monkeypatch):
@@ -22,12 +22,12 @@ def test_trace_recorder_aggregates_events(tmp_path, monkeypatch):
     recorder.handle("before_tool", {
         "task_id": "task_trace",
         "tool_name": "edit_file",
-        "arguments": {"file_path": "corecoder/session.py"},
+        "arguments": {"file_path": "autocode/session.py"},
     })
     recorder.handle("after_tool", {
         "task_id": "task_trace",
         "tool_name": "edit_file",
-        "result": "Edited corecoder/session.py",
+        "result": "Edited autocode/session.py",
     })
     recorder.handle("task_status", {"task_id": "task_trace", "status": "completed"})
 
@@ -39,7 +39,7 @@ def test_trace_recorder_aggregates_events(tmp_path, monkeypatch):
     assert trace["approval_requests"] == 1
     assert trace["prompt_tokens"] == 10
     assert trace["completion_tokens"] == 5
-    assert "corecoder/session.py" in trace["modified_files"]
+    assert "autocode/session.py" in trace["modified_files"]
 
 
 def test_format_trace_contains_key_fields():
@@ -61,3 +61,4 @@ def test_format_trace_contains_key_fields():
     assert "Task: task_1" in text
     assert "Tool calls: 1" in text
     assert "Modified files: a.py" in text
+

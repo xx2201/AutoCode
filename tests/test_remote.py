@@ -1,9 +1,9 @@
-from corecoder import checkpoint as checkpoint_module
-from corecoder.config import Config
-from corecoder.llm import LLMResponse, ToolCall
-from corecoder.remote.formatting import render_turn_result, split_message
-from corecoder.remote.manager import RemoteManager
-from corecoder.tools.base import Tool
+from autocode.state import checkpoint as checkpoint_module
+from autocode.config import Config
+from autocode.llm import LLMResponse, ToolCall
+from autocode.remote.formatting import render_turn_result, split_message
+from autocode.remote.manager import RemoteManager
+from autocode.tools.base import Tool
 
 
 class _DelegationTool(Tool):
@@ -100,7 +100,7 @@ def test_render_turn_result_includes_approval_hint():
         })()
     )
     assert "/approve" in text
-    assert "/approve-all" in text
+    assert "/approve_all" in text
     assert "task_123" in text
     assert "python app.py" in text
 
@@ -122,4 +122,23 @@ def test_remote_manager_approve_all_marks_task_state(tmp_path):
     result = manager.resolve_approval(404, approved=True, enable_auto_approve=True)
     assert result.auto_approve_for_task is False
     summary = manager.current_task_summary(404)
-    assert "Approve-all: off" in summary
+    assert "Approve_all: off" in summary
+
+
+def test_remote_manager_temporary_hook_receives_events_and_unsubscribes(tmp_path):
+    llm = _FakeLLM([LLMResponse(content="done")])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
+    events = []
+
+    def _hook(event, payload):
+        events.append(event)
+
+    result = manager.submit(505, "hello", hook_handler=_hook)
+    assert result.text == "done"
+    assert "before_llm" in events
+    assert "after_llm" in events
+
+    runtime = manager._require_runtime(505)
+    for event in manager._HOOK_EVENTS:
+        assert _hook not in runtime.agent.hooks._handlers.get(event, [])
+

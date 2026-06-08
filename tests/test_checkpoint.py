@@ -1,6 +1,6 @@
-from corecoder.checkpoint import list_checkpoints, load_checkpoint, save_checkpoint
-from corecoder import checkpoint as checkpoint_module
-from corecoder.state import TaskState
+from autocode.state import checkpoint as checkpoint_module
+from autocode.state import list_checkpoints, load_checkpoint, save_checkpoint
+from autocode.state import TaskState
 
 
 def test_checkpoint_round_trip(tmp_path, monkeypatch):
@@ -33,3 +33,4 @@ def test_checkpoint_is_written_as_utf8(tmp_path, monkeypatch):
     save_checkpoint(TaskState(task_id="utf8_task", title="帮我执行代码"), [], "m1")
     raw = tmp_path.joinpath("utf8_task/checkpoint.json").read_bytes()
     assert b"\xe5\xb8\xae\xe6\x88\x91" in raw
+

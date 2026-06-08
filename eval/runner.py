@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 
-from corecoder.config import Config
+from autocode.config import Config
 
 from .graders import evaluate_trial
 from .harness import default_output_dir, run_trial
@@ -17,7 +17,7 @@ from .report import aggregate_reports, build_trial_report, write_report
 def _parse_args():
     p = argparse.ArgumentParser(
         prog="python -m eval.runner",
-        description="Independent evaluation harness for CoreCoder agents.",
+        description="Independent evaluation harness for AutoCode agents.",
     )
     p.add_argument("--task", action="append", help="Run a specific task id (repeatable)")
     p.add_argument("--tag", action="append", help="Run tasks that match a tag (repeatable)")
@@ -46,9 +46,9 @@ def main():
 
     config = Config.from_env()
     if not (args.model or config.model):
-        raise SystemExit("No agent model configured. Set CORECODER_MODEL or pass --model.")
+        raise SystemExit("No agent model configured. Set AUTOCODE_MODEL or pass --model.")
     if not config.api_key:
-        raise SystemExit("No agent API key configured. Set CORECODER_API_KEY before running evals.")
+        raise SystemExit("No agent API key configured. Set AUTOCODE_API_KEY before running evals.")
     judge_config = None if args.disable_llm_judge else JudgeConfig.from_env(model_override=args.judge_model)
     judge = None if judge_config is None else LLMJudge(judge_config)
 
@@ -90,3 +90,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

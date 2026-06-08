@@ -1,6 +1,6 @@
 # Agent Eval System
 
-This directory contains an independent evaluation harness for `CoreCoder`.
+This directory contains an independent evaluation harness for `AutoCode`.
 
 It is designed around the evaluation ideas emphasized by major agent stacks:
 
@@ -109,8 +109,8 @@ Expectation groups:
 
 ## Notes
 
-- The harness uses the same model configuration as `CoreCoder`, loaded from environment variables.
-- The optional LLM judge reads `CORECODER_EVAL_*` or `DASHSCOPE_*` environment variables.
+- The harness uses the same model configuration as `AutoCode`, loaded from environment variables.
+- The optional LLM judge reads `AUTOCODE_EVAL_*` or `DASHSCOPE_*` environment variables.
 - It is independent from the main app runtime, but reuses the `Agent` implementation and task artifacts (`trace.json`, `audit.jsonl`, `task.json`).
 - The sample tasks are intentionally small. They are meant to exercise the evaluation system and provide a baseline task suite you can expand.
 
@@ -127,3 +127,4 @@ The bundled task suite covers several benchmark families that appear in mainstre
 - recovery after tool failure
 - project-rule adherence
 - read-only code analysis
+

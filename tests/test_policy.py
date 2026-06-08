@@ -1,4 +1,4 @@
-from corecoder.policy import Policy
+from autocode.runtime import Policy
 
 
 def test_policy_allows_workspace_edit(tmp_path):
@@ -40,3 +40,4 @@ def test_policy_allows_read_only_bash(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
     decision = policy.evaluate_tool_call("bash", {"command": "git status"})
     assert decision.action == "allow"
+

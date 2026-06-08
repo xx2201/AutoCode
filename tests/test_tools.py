@@ -5,7 +5,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from corecoder.tools import ALL_TOOLS, get_tool
+from autocode.tools import ALL_TOOLS, get_tool
 
 
 def test_tool_count():
@@ -80,7 +80,7 @@ def test_read_file(tmp_path):
 
 def test_read_file_not_found():
     read = get_tool("read_file")
-    r = read.execute(file_path="/tmp/corecoder_nonexistent_file.txt")
+    r = read.execute(file_path="/tmp/autocode_nonexistent_file.txt")
     assert "not found" in r.lower() or "Error" in r
 
 
@@ -192,3 +192,4 @@ def test_todo_tool_schema():
     s = todo_t.schema()
     assert s["function"]["name"] == "todo_write"
     assert "todos" in s["function"]["parameters"]["properties"]
+

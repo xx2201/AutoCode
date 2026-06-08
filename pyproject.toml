@@ -3,9 +3,9 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "corecoder"
+name = "autocode"
 version = "0.3.0"
-description = "Minimal AI coding agent (~1400 LoC) inspired by Claude Code. Works with any LLM. (formerly NanoCoder)"
+description = "AutoCode - Minimal AI coding agent (~1400 LoC) inspired by Claude Code. Works with any LLM."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -35,18 +35,21 @@ dependencies = [
 ]
 
 [tool.hatch.build.targets.wheel]
-packages = ["corecoder"]
+packages = ["autocode"]
 
 [project.optional-dependencies]
 litellm = ["litellm>=1.60.0,<2.0.0"]
 telegram = ["python-telegram-bot>=22,<23"]
-dev = ["pytest>=7.0"]
+feishu = ["lark-oapi>=1.4,<2"]
+dev = ["pytest>=7.0", "lark-oapi>=1.4,<2"]
 
 [project.scripts]
-corecoder = "corecoder.cli:main"
-corecoder-telegram = "corecoder.remote.telegram_bot:main"
+autocode = "autocode.cli:main"
+autocode-telegram = "autocode.remote.telegram_bot:main"
+autocode-feishu = "autocode.remote.feishu_bot:main"
 
 [project.urls]
-Homepage = "https://github.com/he-yufeng/CoreCoder"
-Repository = "https://github.com/he-yufeng/CoreCoder"
-Issues = "https://github.com/he-yufeng/CoreCoder/issues"
+Homepage = "https://github.com/he-yufeng/AutoCode"
+Repository = "https://github.com/he-yufeng/AutoCode"
+Issues = "https://github.com/he-yufeng/AutoCode/issues"
+

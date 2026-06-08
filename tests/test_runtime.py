@@ -1,13 +1,11 @@
-from corecoder.agent import Agent
-from corecoder import checkpoint as checkpoint_module
-from corecoder.journal import load_events
-from corecoder.hooks import HookBus
-from corecoder.llm import LLMResponse, ToolCall
-from corecoder.policy import Policy
-from corecoder.runtime import Runtime
-from corecoder.state import TaskState
-from corecoder.trace import load_trace
-from corecoder.tools.base import Tool
+from autocode.agent import Agent
+from autocode.runtime import HookBus, Policy, Runtime
+from autocode.state import checkpoint as checkpoint_module
+from autocode.state import load_events
+from autocode.llm import LLMResponse, ToolCall
+from autocode.state import TaskState
+from autocode.state import load_trace
+from autocode.tools.base import Tool
 
 
 class _EchoTool(Tool):
@@ -121,3 +119,4 @@ def test_agent_writes_trace_and_audit(tmp_path, monkeypatch):
     assert trace["tool_calls"] == 1
     assert any(e["event"] == "user_message" for e in events)
     assert any(e["event"] == "after_tool" for e in events)
+

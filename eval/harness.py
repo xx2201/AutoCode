@@ -1,4 +1,4 @@
-"""Execution harness for running evaluation tasks against CoreCoder."""
+"""Execution harness for running evaluation tasks against AutoCode."""
 
 from __future__ import annotations
 
@@ -10,13 +10,11 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 
-from corecoder.agent import Agent
-from corecoder.config import Config
-from corecoder.journal import load_events
-from corecoder.llm import LLM, LiteLLM
-from corecoder.tasks import TaskStore
-from corecoder.trace import load_trace
-from corecoder import checkpoint as checkpoint_module
+from autocode.agent import Agent
+from autocode.config import Config
+from autocode.llm import LLM, LiteLLM
+from autocode.state import TaskStore, load_events, load_trace
+from autocode.state import checkpoint as checkpoint_module
 
 from .graders import TrialArtifacts, VerificationResult
 from .schema import EvalTaskSpec
@@ -131,3 +129,4 @@ def _approval_handler(spec: EvalTaskSpec):
     if spec.approval_mode == "reject_all":
         return lambda pending: False
     return lambda pending: True
+
