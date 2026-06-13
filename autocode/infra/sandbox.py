@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import locale
 import os
 import subprocess
 from dataclasses import dataclass
@@ -13,6 +14,24 @@ class SandboxResult:
     output: str
     exit_code: int
     cwd: str
+
+
+def decode_output(data: bytes | None) -> str:
+    if not data:
+        return ""
+
+    encodings = ["utf-8", locale.getpreferredencoding(False), "gb18030"]
+    tried = set()
+    for encoding in encodings:
+        normalized = (encoding or "").strip()
+        if not normalized or normalized.lower() in tried:
+            continue
+        tried.add(normalized.lower())
+        try:
+            return data.decode(normalized)
+        except UnicodeDecodeError:
+            continue
+    return data.decode("utf-8", errors="replace")
 
 
 class Sandbox:
@@ -27,9 +46,6 @@ class Sandbox:
                 command,
                 shell=True,
                 capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
                 timeout=timeout,
                 cwd=cwd,
                 env=self._build_env(),
@@ -39,9 +55,9 @@ class Sandbox:
         if proc.returncode == 0:
             self._update_cwd(command, cwd)
 
-        out = proc.stdout
+        out = decode_output(proc.stdout)
         if proc.stderr:
-            out += f"\n[stderr]\n{proc.stderr}"
+            out += f"\n[stderr]\n{decode_output(proc.stderr)}"
         if proc.returncode != 0:
             out += f"\n[exit code: {proc.returncode}]"
         if len(out) > 15_000:
@@ -79,7 +95,10 @@ class Sandbox:
             "PYTHONPATH",
             "VIRTUAL_ENV",
         }
-        return {k: v for k, v in os.environ.items() if k.upper() in allowed}
+        env = {k: v for k, v in os.environ.items() if k.upper() in allowed}
+        env["PYTHONIOENCODING"] = "utf-8"
+        env["PYTHONUTF8"] = "1"
+        return env
 
     def _update_cwd(self, command: str, current_cwd: str):
         parts = command.split("&&")

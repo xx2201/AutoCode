@@ -1,4 +1,4 @@
-"""Task-level trace summary derived from runtime events."""
+"""Session-level trace summary derived from runtime events."""
 
 from __future__ import annotations
 
@@ -6,31 +6,31 @@ import json
 import threading
 import time
 
-from .checkpoint import task_dir
+from .checkpoint import session_dir
 
 
 class TraceRecorder:
-    """Aggregate runtime events into a compact per-task trace."""
+    """Aggregate runtime events into a compact per-session trace."""
 
     def __init__(self):
         self._lock = threading.Lock()
         self._stats: dict[str, dict] = {}
 
     def handle(self, event: str, payload: dict):
-        task_id = payload.get("task_id")
-        if not task_id:
+        session_id = payload.get("session_id")
+        if not session_id:
             return
 
         with self._lock:
-            stats = self._stats.get(task_id) or self._load_or_init(task_id)
+            stats = self._stats.get(session_id) or self._load_or_init(session_id)
             self._apply_event(stats, event, payload)
             stats["updated_at"] = time.strftime("%Y-%m-%d %H:%M:%S")
             stats["duration_seconds"] = max(0.0, time.time() - stats["started_at_ts"])
-            self._stats[task_id] = stats
-            self._save(task_id, stats)
+            self._stats[session_id] = stats
+            self._save(session_id, stats)
 
-    def _load_or_init(self, task_id: str) -> dict:
-        existing = load_trace(task_id)
+    def _load_or_init(self, session_id: str) -> dict:
+        existing = load_trace(session_id)
         if existing:
             existing.setdefault("started_at_ts", time.time())
             existing.setdefault("modified_files", [])
@@ -38,7 +38,8 @@ class TraceRecorder:
             return existing
         now = time.time()
         return {
-            "task_id": task_id,
+            "session_id": session_id,
+            "current_task_id": "",
             "status": "running",
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "started_at_ts": now,
@@ -58,6 +59,8 @@ class TraceRecorder:
 
     @staticmethod
     def _apply_event(stats: dict, event: str, payload: dict):
+        if payload.get("task_id"):
+            stats["current_task_id"] = payload["task_id"]
         if event == "task_status":
             stats["status"] = payload.get("status", stats["status"])
         elif event == "user_message":
@@ -91,16 +94,16 @@ class TraceRecorder:
             stats["status"] = "failed"
             stats["errors"] += 1
 
-    def _save(self, task_id: str, stats: dict):
-        directory = task_dir(task_id)
+    def _save(self, session_id: str, stats: dict):
+        directory = session_dir(session_id)
         directory.mkdir(parents=True, exist_ok=True)
         data = dict(stats)
         data.pop("started_at_ts", None)
         (directory / "trace.json").write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
-def load_trace(task_id: str) -> dict | None:
-    path = task_dir(task_id) / "trace.json"
+def load_trace(session_id: str) -> dict | None:
+    path = session_dir(session_id) / "trace.json"
     if not path.exists():
         return None
     data = json.loads(path.read_text(encoding="utf-8"))
@@ -114,7 +117,8 @@ def format_trace(trace: dict) -> str:
     tools = trace.get("tools", {})
     tool_line = ", ".join(f"{name}={count}" for name, count in sorted(tools.items())) or "-"
     return (
-        f"Task: {trace.get('task_id', '?')}\n"
+        f"Session: {trace.get('session_id', '?')}\n"
+        f"Current Task: {trace.get('current_task_id', '?')}\n"
         f"Status: {trace.get('status', '?')}\n"
         f"Steps: {trace.get('steps', 0)}\n"
         f"LLM calls: {trace.get('llm_calls', 0)}\n"

@@ -16,7 +16,8 @@ class BashTool(Tool):
     name = "bash"
     description = (
         "Execute a shell command. Returns stdout, stderr, and exit code. "
-        "Use this for running tests, installing packages, git operations, etc."
+        "Use this for short-lived commands like tests, git operations, and quick checks. "
+        "Use start_process for servers, consumers, workers, or other long-running commands."
     )
     parameters = {
         "type": "object",

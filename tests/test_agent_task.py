@@ -63,15 +63,17 @@ class _BashLLM:
             return LLMResponse(content="", tool_calls=[ToolCall(id="2", name="bash", arguments={"command": "echo ok"})])
         if self._calls == 3:
             return LLMResponse(content="", tool_calls=[ToolCall(id="3", name="bash", arguments={"command": "rm -rf build"})])
+        if self._calls == 4:
+            return LLMResponse(content="", tool_calls=[ToolCall(id="4", name="bash", arguments={"command": "rm -rf ../outside"})])
         return LLMResponse(content="done")
 
 
-def test_agent_approve_all_skips_normal_confirms_but_stops_for_manual_risk(tmp_path):
+def test_agent_approve_all_allows_workspace_local_risk_but_denies_outside_workspace(tmp_path):
     calls = []
 
     def approval_handler(pending):
-        calls.append((pending.tool_name, pending.requires_manual))
-        return "approve_all" if len(calls) == 1 else False
+        calls.append((pending.tool_name, pending.requires_manual, pending.arguments.get("command")))
+        return "approve_all"
 
     agent = Agent(
         llm=_BashLLM(),
@@ -80,9 +82,10 @@ def test_agent_approve_all_skips_normal_confirms_but_stops_for_manual_risk(tmp_p
     )
     reply = agent.chat("run commands", approval_handler=approval_handler)
     assert reply == "done"
-    assert calls == [("bash", False), ("bash", True)]
+    assert calls == [("bash", False, "python app.py")]
     tool_outputs = [m.get("content") for m in agent.messages if m.get("role") == "tool"]
     assert "python app.py|confirmed=False" in tool_outputs
     assert "echo ok|confirmed=False" in tool_outputs
-    assert any("approval denied by user" in item.lower() for item in tool_outputs)
+    assert "rm -rf build|confirmed=False" in tool_outputs
+    assert any("dangerous command target must stay inside workspace" in item for item in tool_outputs)
 

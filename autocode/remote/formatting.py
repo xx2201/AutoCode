@@ -9,9 +9,10 @@ _TELEGRAM_MAX_LENGTH = 4096
 
 def render_turn_result(result: RemoteTurnResult) -> str:
     parts = [result.text.strip() or "(no response)"]
-    if result.task_id:
+    if result.session_id or result.task_id:
         parts.append(
-            f"\nTask: {result.task_id}\n"
+            f"\nSession: {result.session_id or 'unknown'}\n"
+            f"Task: {result.task_id or '(none)'}\n"
             f"Status: {result.status or 'unknown'}\n"
             f"Approve_all: {'on' if result.auto_approve_for_task else 'off'}"
         )
@@ -33,11 +34,11 @@ def render_turn_result(result: RemoteTurnResult) -> str:
 
 def render_task_list(tasks: list[dict]) -> str:
     if not tasks:
-        return "No saved task checkpoints."
+        return "No saved sessions."
     lines = []
     for item in tasks:
         lines.append(
-            f"- {item['task_id']} | {item['status']} | step {item['step_index']} | "
+            f"- {item['session_id']} | {item['status']} | step {item['step_index']} | "
             f"{item['model']} | {item['saved_at']}"
         )
     return "\n".join(lines)

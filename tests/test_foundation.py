@@ -1,10 +1,12 @@
+import sys
 from pathlib import Path
 
 from autocode.context import MemoryManager, normalize_todos, render_todos
 from autocode.infra import WorkspaceFS, Sandbox
 from autocode.infra import sandbox as sandbox_module
+from autocode.state import SessionState
 from autocode.state import TaskState
-from autocode.state import TaskStore
+from autocode.state import SessionStore
 from autocode.state import checkpoint as checkpoint_module
 
 
@@ -38,8 +40,8 @@ def test_sandbox_decodes_utf8_subprocess_output(tmp_path, monkeypatch):
 
     class _Proc:
         returncode = 0
-        stdout = "hello 世界"
-        stderr = ""
+        stdout = "hello 世界".encode("utf-8")
+        stderr = b""
 
     def _fake_run(*args, **kwargs):
         captured.update(kwargs)
@@ -49,16 +51,37 @@ def test_sandbox_decodes_utf8_subprocess_output(tmp_path, monkeypatch):
 
     result = Sandbox(str(tmp_path)).run("python -c \"print('hello')\"")
     assert result.output == "hello 世界"
-    assert captured["text"] is True
-    assert captured["encoding"] == "utf-8"
-    assert captured["errors"] == "replace"
+    assert "text" not in captured
+    assert "encoding" not in captured
+    assert "errors" not in captured
+
+
+def test_decode_output_falls_back_to_gb18030():
+    text = "中文输出"
+    assert sandbox_module.decode_output(text.encode("gb18030")) == text
+
+
+def test_sandbox_build_env_forces_python_utf8(monkeypatch):
+    monkeypatch.setenv("PATH", "demo-path")
+    env = Sandbox._build_env()
+    assert env["PATH"] == "demo-path"
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert env["PYTHONUTF8"] == "1"
+
+
+def test_sandbox_preserves_utf8_from_child_python(tmp_path):
+    sandbox = Sandbox(str(tmp_path))
+    command = f'"{sys.executable}" -c "print(\'预计耗时 3 秒\')"'
+    result = sandbox.run(command)
+    assert "预计耗时 3 秒" in result.output
 
 
 def test_memory_manager_reads_project_files(tmp_path, monkeypatch):
     (tmp_path / "AGENTS.md").write_text("rule-one")
-    (tmp_path / ".autocode").mkdir()
-    (tmp_path / ".autocode" / "PROJECT_MEMORY.md").write_text("project-one", encoding="utf-8")
     manager = MemoryManager(str(tmp_path))
+    memory_path = manager.memory_file_path()
+    memory_path.parent.mkdir(parents=True, exist_ok=True)
+    memory_path.write_text("# Project Memory\n\nproject-one", encoding="utf-8")
     block = manager.build_memory_block()
     assert "rule-one" in block
     assert "project-one" in block
@@ -74,13 +97,17 @@ def test_todo_helpers_render():
     assert "[x] Edit file" in text
 
 
-def test_task_store_sync(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint_module, "TASKS_DIR", tmp_path)
-    state = TaskState(task_id="task_foundation", title="demo", todos=[{"content": "x", "status": "pending"}])
-    store = TaskStore()
+def test_session_store_sync(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
+    state = SessionState(
+        session_id="session_foundation",
+        current_task=TaskState(task_id="task_foundation", title="demo", todos=[{"content": "x", "status": "pending"}]),
+    )
+    store = SessionStore()
     store.sync(state, "demo-model")
-    data = store.load("task_foundation")
+    data = store.load("session_foundation")
     assert data is not None
+    assert data["session_id"] == "session_foundation"
+    assert data["task_id"] == "task_foundation"
     assert data["title"] == "demo"
-    assert len(data["todos"]) == 1
 

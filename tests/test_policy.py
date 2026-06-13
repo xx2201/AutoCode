@@ -22,22 +22,38 @@ def test_policy_protects_env_file(tmp_path):
     assert decision.action == "deny"
 
 
-def test_policy_confirms_unknown_bash(tmp_path):
+def test_policy_allows_unknown_bash(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
     decision = policy.evaluate_tool_call("bash", {"command": "python manage.py migrate"})
-    assert decision.action == "confirm"
-    assert decision.requires_manual is False
+    assert decision.action == "allow"
 
 
-def test_policy_requires_manual_confirmation_for_destructive_delete(tmp_path):
+def test_policy_denies_destructive_delete_in_workspace(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
     decision = policy.evaluate_tool_call("bash", {"command": "rm -rf build"})
-    assert decision.action == "confirm"
-    assert decision.requires_manual is True
+    assert decision.action == "deny"
+
+
+def test_policy_denies_destructive_delete_outside_workspace(tmp_path):
+    policy = Policy(workspace_root=str(tmp_path))
+    decision = policy.evaluate_tool_call("bash", {"command": "rm -rf ../outside"})
+    assert decision.action == "deny"
+
+
+def test_policy_denies_workspace_local_del(tmp_path):
+    policy = Policy(workspace_root=str(tmp_path))
+    decision = policy.evaluate_tool_call("bash", {"command": "del receive.log 2>nul"})
+    assert decision.action == "deny"
 
 
 def test_policy_allows_read_only_bash(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
     decision = policy.evaluate_tool_call("bash", {"command": "git status"})
     assert decision.action == "allow"
+
+
+def test_policy_denies_bash_redirect_to_protected_env(tmp_path):
+    policy = Policy(workspace_root=str(tmp_path))
+    decision = policy.evaluate_tool_call("bash", {"command": "echo hi > .env"})
+    assert decision.action == "deny"
 

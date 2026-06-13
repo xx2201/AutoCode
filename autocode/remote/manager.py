@@ -10,12 +10,13 @@ from typing import Hashable
 from ..agent import Agent
 from ..config import Config
 from ..llm import LLM, LiteLLM
-from ..state import format_trace, list_checkpoints, load_checkpoint, load_trace
+from ..state import format_trace, list_sessions, load_checkpoint, load_trace
 
 
 @dataclass
 class RemoteTurnResult:
     text: str
+    session_id: str = ""
     task_id: str = ""
     status: str = ""
     pending_tool: str = ""
@@ -84,14 +85,18 @@ class RemoteManager:
     def current_task_summary(self, chat_id: Hashable) -> str:
         runtime = self._require_runtime(chat_id)
         with runtime.lock:
-            task = runtime.agent.task_state
+            agent = runtime.agent
+            if agent.session_state is None:
+                return "No active session."
+            task = agent.task_state
             if task is None:
-                return "No active task."
+                return f"Session: {agent.session_state.session_id}\nCurrent Task: (none)"
 
             suffix = ""
             if task.pending_approval:
                 suffix = f"\nPending approval: {task.pending_approval.tool_name} - {task.pending_approval.reason}"
             return (
+                f"Session: {agent.session_state.session_id}\n"
                 f"Task: {task.task_id}\n"
                 f"Title: {task.title or '(untitled)'}\n"
                 f"Status: {task.status}\n"
@@ -102,31 +107,36 @@ class RemoteManager:
     def current_trace(self, chat_id: Hashable) -> str:
         runtime = self._require_runtime(chat_id)
         with runtime.lock:
-            task = runtime.agent.task_state
-            if task is None:
-                return "No active task."
+            agent = runtime.agent
+            if agent.session_state is None:
+                return "No active session."
 
-            trace = load_trace(task.task_id)
+            trace = load_trace(agent.session_state.session_id)
             if trace is None:
                 return "No trace recorded yet."
             return format_trace(trace)
 
     def list_recent_tasks(self) -> list[dict]:
-        return list_checkpoints()
+        return list_sessions()
 
-    def resume_task(self, chat_id: Hashable, task_id: str) -> RemoteTurnResult:
-        loaded = load_checkpoint(task_id)
+    def list_resume_candidates(self, limit: int = 10) -> list[dict]:
+        return list_sessions(workspace_root=self.config.workspace_root, limit=limit)
+
+    def resume_session(self, chat_id: Hashable, session_id: str) -> RemoteTurnResult:
+        loaded = load_checkpoint(session_id)
         if loaded is None:
-            raise ValueError(f"Task '{task_id}' not found.")
+            raise ValueError(f"Session '{session_id}' not found.")
 
-        task_state, messages, model = loaded
+        session_state, messages, model = loaded
         runtime = self._get_or_create_runtime(chat_id, replace=True)
         with runtime.lock:
-            runtime.agent.restore_task(task_state, messages, model)
+            runtime.agent.restore_session(session_state, messages, model)
             runtime.agent.llm.model = model
+            current_task = session_state.current_task
+            status = current_task.status if current_task else "idle"
             return self._result_from_agent(
                 runtime.agent,
-                f"Resumed task {task_state.task_id} ({task_state.status}).",
+                f"Resumed session {session_state.session_id} ({status}).",
             )
 
     def _get_or_create_runtime(self, chat_id: Hashable, replace: bool = False) -> _ChatRuntime:
@@ -141,18 +151,29 @@ class RemoteManager:
         with self._state_lock:
             runtime = self._chats.get(chat_id)
         if runtime is None:
-            raise ValueError("No chat session yet. Send a task first or resume a checkpoint.")
+            raise ValueError("No chat session yet. Send a task first or resume a session.")
         return runtime
 
     def _build_agent(self) -> Agent:
         llm = self._llm_factory() if self._llm_factory is not None else self._build_llm()
         return Agent(
             llm=llm,
-            tools=self._tools,
+            tools=self._build_tools(),
             max_context_tokens=self.config.max_context_tokens,
             workspace_root=self.config.workspace_root,
             auto_approve=self.config.auto_approve,
         )
+
+    def _build_tools(self):
+        if self._tools is None:
+            return None
+        built = []
+        for tool in self._tools:
+            if hasattr(tool, "clone"):
+                built.append(tool.clone())
+            else:
+                built.append(type(tool)())
+        return built
 
     def _build_llm(self):
         llm_cls = LiteLLM if self.config.provider == "litellm" else LLM
@@ -179,9 +200,11 @@ class RemoteManager:
 
     @staticmethod
     def _result_from_agent(agent: Agent, text: str) -> RemoteTurnResult:
+        if agent.session_state is None:
+            return RemoteTurnResult(text=text)
         task = agent.task_state
         if task is None:
-            return RemoteTurnResult(text=text)
+            return RemoteTurnResult(text=text, session_id=agent.session_state.session_id)
         pending_tool = ""
         pending_reason = ""
         pending_arguments = None
@@ -193,6 +216,7 @@ class RemoteManager:
             pending_requires_manual = task.pending_approval.requires_manual
         return RemoteTurnResult(
             text=text,
+            session_id=agent.session_state.session_id,
             task_id=task.task_id,
             status=task.status,
             pending_tool=pending_tool,

@@ -1,0 +1,26 @@
+{% extends "base.html" %}
+{% block title %}登录 - Redis Session 演示{% endblock %}
+{% block content %}
+<div class="card narrow">
+  <h1>登录</h1>
+  <p class="muted">登录后会在 Redis 中创建一个 <code>session:&lt;id&gt;</code> 的 Hash key。</p>
+
+  {% if error %}
+  <div class="alert">{{ error }}</div>
+  {% endif %}
+
+  <form method="post">
+    <label>用户名
+      <input name="username" autofocus required>
+    </label>
+    <label>密码
+      <input name="password" type="password" required>
+    </label>
+    <button type="submit">登录</button>
+  </form>
+
+  <div class="hint">
+    <strong>测试账号:</strong> alice / 123，bob / 123，tom / 123
+  </div>
+</div>
+{% endblock %}

@@ -94,12 +94,12 @@ async def _start(update, context):
         "AutoCode Telegram control is ready.\n\n"
         "Commands:\n"
         "/task - show current task\n"
-        "/tasks - list recent checkpoints\n"
-        "/trace - show trace for the current task\n"
+        "/tasks - list recent sessions\n"
+        "/trace - show trace for the current session\n"
         "/approve - approve the pending tool call\n"
         "/approve_all - approve this tool call and auto-approve later normal confirms\n"
         "/reject - reject the pending tool call\n"
-        "/resume <task_id> - restore a checkpoint into this chat\n"
+        "/resume <session_id> - restore a session into this chat\n"
         "/reset - clear the in-memory chat session\n\n"
         "Any non-command text is sent to the coding agent."
     )
@@ -177,13 +177,13 @@ async def _resume(update, context):
     if not _is_allowed_chat(update, context):
         return
     if not context.args:
-        await _reply_text(update.message, "Usage: /resume <task_id>")
+        await _reply_text(update.message, "Usage: /resume <session_id>")
         return
 
     manager: RemoteManager = context.application.bot_data["manager"]
-    task_id = context.args[0].strip()
+    session_id = context.args[0].strip()
     try:
-        result = await asyncio.to_thread(manager.resume_task, update.effective_chat.id, task_id)
+        result = await asyncio.to_thread(manager.resume_session, update.effective_chat.id, session_id)
         text = render_turn_result(result)
     except ValueError as exc:
         text = str(exc)

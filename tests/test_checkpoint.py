@@ -1,36 +1,80 @@
+from autocode.state import SessionState, TaskState, list_sessions, load_checkpoint, save_checkpoint
 from autocode.state import checkpoint as checkpoint_module
-from autocode.state import list_checkpoints, load_checkpoint, save_checkpoint
-from autocode.state import TaskState
+from autocode.state import PendingApproval
 
 
 def test_checkpoint_round_trip(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint_module, "TASKS_DIR", tmp_path)
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
 
-    state = TaskState(task_id="task_demo", status="running", step_index=3)
+    state = SessionState(
+        session_id="session_demo",
+        current_task=TaskState(
+            task_id="task_demo",
+            status="running",
+            step_index=3,
+            pending_approval=PendingApproval(
+                tool_call_id="call_1",
+                tool_name="bash",
+                arguments={"command": "python --version"},
+                reason="confirmation required",
+                remaining_tool_calls=[{"id": "call_2", "name": "bash", "arguments": {"command": "python -c \"import pika\""}}],
+            ),
+        ),
+    )
     messages = [{"role": "user", "content": "hello"}]
-    save_checkpoint(state, messages, "demo-model")
+    save_checkpoint(state, messages, "demo-model", workspace_root=str(tmp_path))
 
-    loaded = load_checkpoint("task_demo")
+    loaded = load_checkpoint("session_demo")
     assert loaded is not None
     loaded_state, loaded_messages, loaded_model = loaded
-    assert loaded_state.task_id == "task_demo"
-    assert loaded_state.step_index == 3
+    assert loaded_state.session_id == "session_demo"
+    assert loaded_state.current_task is not None
+    assert loaded_state.current_task.task_id == "task_demo"
+    assert loaded_state.current_task.step_index == 3
+    assert loaded_state.current_task.pending_approval is not None
+    assert loaded_state.current_task.pending_approval.remaining_tool_calls[0]["id"] == "call_2"
     assert loaded_messages == messages
     assert loaded_model == "demo-model"
 
 
-def test_list_checkpoints(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint_module, "TASKS_DIR", tmp_path)
-    save_checkpoint(TaskState(task_id="task_one", status="waiting_approval", step_index=1), [], "m1")
-    entries = list_checkpoints()
+def test_list_sessions(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
+    save_checkpoint(
+        SessionState(
+            session_id="session_one",
+            current_task=TaskState(task_id="task_one", title="fix import", status="waiting_approval", step_index=1),
+        ),
+        [],
+        "m1",
+        workspace_root="G:/repo/a",
+    )
+    save_checkpoint(
+        SessionState(
+            session_id="session_two",
+            current_task=TaskState(task_id="task_two", title="other project", status="completed", step_index=2),
+        ),
+        [],
+        "m2",
+        workspace_root="G:/repo/b",
+    )
+    entries = list_sessions(workspace_root="G:/repo/a")
     assert len(entries) == 1
+    assert entries[0]["session_id"] == "session_one"
     assert entries[0]["task_id"] == "task_one"
+    assert entries[0]["title"] == "fix import"
     assert entries[0]["status"] == "waiting_approval"
 
 
 def test_checkpoint_is_written_as_utf8(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint_module, "TASKS_DIR", tmp_path)
-    save_checkpoint(TaskState(task_id="utf8_task", title="帮我执行代码"), [], "m1")
-    raw = tmp_path.joinpath("utf8_task/checkpoint.json").read_bytes()
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
+    save_checkpoint(
+        SessionState(
+            session_id="session_utf8",
+            current_task=TaskState(task_id="task_utf8", title="帮我执行代码"),
+        ),
+        [],
+        "m1",
+        workspace_root=str(tmp_path),
+    )
+    raw = tmp_path.joinpath("session_utf8/checkpoint.json").read_bytes()
     assert b"\xe5\xb8\xae\xe6\x88\x91" in raw
-

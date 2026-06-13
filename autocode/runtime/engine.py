@@ -16,45 +16,64 @@ class Runtime:
         self.hooks = hooks or HookBus()
         self.recovery = recovery
 
-    def call_llm(self, llm, messages: list[dict], tools: list[dict], task_state: TaskState, on_token=None):
+    @staticmethod
+    def _payload(session_id: str, task_state: TaskState, **extra) -> dict:
+        payload = {
+            "session_id": session_id,
+            "task_id": task_state.task_id,
+            "task_title": task_state.title,
+        }
+        payload.update(extra)
+        return payload
+
+    def call_llm(self, llm, messages: list[dict], tools: list[dict], task_state: TaskState, session_id: str, on_token=None):
         self.hooks.emit(
             "before_llm",
-            {"task_id": task_state.task_id, "step_index": task_state.step_index + 1},
+            self._payload(session_id, task_state, step_index=task_state.step_index + 1),
         )
         resp = llm.chat(messages=messages, tools=tools, on_token=on_token)
         task_state.next_step()
         self.hooks.emit(
             "after_llm",
-            {
-                "task_id": task_state.task_id,
-                "step_index": task_state.step_index,
-                "prompt_tokens": resp.prompt_tokens,
-                "completion_tokens": resp.completion_tokens,
-                "tool_calls": len(resp.tool_calls),
-            },
+            self._payload(
+                session_id,
+                task_state,
+                step_index=task_state.step_index,
+                prompt_tokens=resp.prompt_tokens,
+                completion_tokens=resp.completion_tokens,
+                tool_calls=len(resp.tool_calls),
+            ),
         )
         return resp
 
-    def evaluate_tool_call(self, task_state: TaskState, tool_call) -> PolicyDecision:
+    def evaluate_tool_call(self, task_state: TaskState, tool_call, session_id: str) -> PolicyDecision:
         decision = self.policy.evaluate_tool_call(tool_call.name, tool_call.arguments)
         self.hooks.emit(
             "policy_decision",
-            {
-                "task_id": task_state.task_id,
-                "tool_name": tool_call.name,
-                "arguments": tool_call.arguments,
-                "decision": decision.to_dict(),
-            },
+            self._payload(
+                session_id,
+                task_state,
+                tool_name=tool_call.name,
+                arguments=tool_call.arguments,
+                decision=decision.to_dict(),
+            ),
         )
         return decision
 
-    def execute_tool_call(self, task_state: TaskState, tool_call, on_tool=None, decision: PolicyDecision | None = None) -> str:
+    def execute_tool_call(
+        self,
+        task_state: TaskState,
+        tool_call,
+        session_id: str,
+        on_tool=None,
+        decision: PolicyDecision | None = None,
+    ) -> str:
         tool = self.tool_registry.get(tool_call.name)
         if tool is None:
             result = f"Error: unknown tool '{tool_call.name}'"
             self.hooks.emit(
                 "after_tool",
-                {"task_id": task_state.task_id, "tool_name": tool_call.name, "result": result},
+                self._payload(session_id, task_state, tool_name=tool_call.name, result=result),
             )
             return result
 
@@ -63,7 +82,7 @@ class Runtime:
 
         self.hooks.emit(
             "before_tool",
-            {"task_id": task_state.task_id, "tool_name": tool_call.name, "arguments": tool_call.arguments},
+            self._payload(session_id, task_state, tool_name=tool_call.name, arguments=tool_call.arguments),
         )
         execute_kwargs = dict(tool_call.arguments)
         if tool_call.name == "bash" and decision is not None and decision.requires_manual:
@@ -78,13 +97,13 @@ class Runtime:
             result = self.recovery.note_tool_result(task_state, tool_call.name, result)
         self.hooks.emit(
             "after_tool",
-            {"task_id": task_state.task_id, "tool_name": tool_call.name, "result": result[:500]},
+            self._payload(session_id, task_state, tool_name=tool_call.name, result=result[:500]),
         )
         return result
 
-    def execute_tool_calls_parallel(self, task_state: TaskState, tool_calls, on_tool=None) -> list[str]:
+    def execute_tool_calls_parallel(self, task_state: TaskState, tool_calls, session_id: str, on_tool=None) -> list[str]:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(tool_calls))) as pool:
-            futures = [pool.submit(self.execute_tool_call, task_state, tc, on_tool) for tc in tool_calls]
+            futures = [pool.submit(self.execute_tool_call, task_state, tc, session_id, on_tool) for tc in tool_calls]
             return [f.result() for f in futures]
 
     @staticmethod

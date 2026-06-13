@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 from .formatting import render_turn_result, split_message
 from .manager import RemoteTurnResult
@@ -25,6 +26,14 @@ def build_text_content(text: str) -> str:
     return json.dumps({"text": text}, ensure_ascii=False)
 
 
+def build_image_content(image_key: str) -> str:
+    return json.dumps({"image_key": image_key}, ensure_ascii=False)
+
+
+def build_file_content(file_key: str, file_name: str) -> str:
+    return json.dumps({"file_key": file_key, "file_name": file_name}, ensure_ascii=False)
+
+
 def split_text_chunks(text: str) -> list[str]:
     return split_message(text, limit=_FEISHU_TEXT_LIMIT)
 
@@ -38,6 +47,7 @@ def build_live_status_card(
     title: str,
     phase: str,
     status: str,
+    session_id: str,
     task_id: str,
     step_index: int,
     llm_calls: int,
@@ -54,6 +64,7 @@ def build_live_status_card(
         "",
         f"Phase: `{phase}`",
         f"Status: `{status or 'running'}`",
+        f"Session: `{session_id or 'starting...'}`",
         f"Task: `{task_id or 'starting...'}`",
         f"Step: `{step_index}`",
         f"LLM Calls: `{llm_calls}`",
@@ -81,6 +92,7 @@ def build_approval_card(
     lines = [
         _clip_markdown(result.text.strip() or "(no response)"),
         "",
+        f"Session: `{result.session_id}`",
         f"Task: `{result.task_id}`",
         f"Status: `{result.status or 'unknown'}`",
         f"Approve_all: `{'on' if result.auto_approve_for_task else 'off'}`",
@@ -97,19 +109,10 @@ def build_approval_card(
         template="orange" if not result.pending_requires_manual else "red",
         markdown="\n".join(lines),
         buttons=[
-            _button("Approve", "approve", session_key, owner_open_id, result.task_id, "primary"),
-            _button("Approve All", "approve_all", session_key, owner_open_id, result.task_id, "default"),
-            _button("Reject", "reject", session_key, owner_open_id, result.task_id, "danger"),
+            _button("Approve", "approve", session_key, owner_open_id, result.session_id, "primary"),
+            _button("Approve All", "approve_all", session_key, owner_open_id, result.session_id, "default"),
+            _button("Reject", "reject", session_key, owner_open_id, result.session_id, "danger"),
         ],
-    )
-
-
-def build_action_status_card(task_id: str, action: str) -> dict:
-    return _card(
-        title="Approval Submitted",
-        template="blue",
-        markdown=f"Task: `{task_id or 'unknown'}`\nAction: `{action}`\nAutoCode is continuing this task.",
-        buttons=[],
     )
 
 
@@ -122,12 +125,58 @@ def build_error_card(title: str, text: str) -> dict:
     )
 
 
+def build_resume_card(
+    tasks: list[dict],
+    session_key: str,
+    owner_open_id: str,
+    workspace_root: str,
+) -> dict:
+    workspace_name = Path(workspace_root).name or workspace_root
+    elements: list[dict] = [{
+        "tag": "markdown",
+        "content": (
+            f"Project: `{_clip_markdown(workspace_name, limit=80)}`\n"
+            f"Showing the latest `{len(tasks)}` resumable sessions. Selecting one replaces the current chat context."
+        ),
+    }]
+    for item in tasks:
+        title = _clip_markdown(item.get("title") or item["session_id"], limit=100)
+        elements.append({
+            "tag": "markdown",
+            "content": (
+                f"**{title}**\n"
+                f"Session: `{item['session_id']}`\n"
+                f"Task: `{item.get('task_id') or '(none)'}`\n"
+                f"Status: `{item['status']}`\n"
+                f"Updated: `{item['saved_at']}`"
+            ),
+        })
+        elements.append(
+            {
+                "tag": "column_set",
+                "columns": [{
+                    "tag": "column",
+                    "elements": [_button("Resume", "resume", session_key, owner_open_id, item["session_id"], "primary")],
+                }],
+            }
+        )
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": "Resume Session"},
+            "template": "blue",
+        },
+        "body": {"elements": elements},
+    }
+
+
 def _button(
     label: str,
     action: str,
     session_key: str,
     owner_open_id: str,
-    task_id: str,
+    session_id: str,
     style: str,
 ) -> dict:
     return {
@@ -138,7 +187,7 @@ def _button(
             "command": action,
             "session_key": session_key,
             "owner_open_id": owner_open_id,
-            "task_id": task_id,
+            "session_id": session_id,
         },
     }
 

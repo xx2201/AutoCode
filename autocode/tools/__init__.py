@@ -8,6 +8,7 @@ from .glob_tool import GlobTool
 from .grep import GrepTool
 from .agent import AgentTool
 from .todo_write import TodoWriteTool
+from .process import StartProcessTool, ReadProcessOutputTool, WaitForProcessOutputTool, StopProcessTool
 
 ALL_TOOLS = [
     BashTool(),
@@ -16,6 +17,10 @@ ALL_TOOLS = [
     EditFileTool(),
     GlobTool(),
     GrepTool(),
+    StartProcessTool(),
+    ReadProcessOutputTool(),
+    WaitForProcessOutputTool(),
+    StopProcessTool(),
     TodoWriteTool(),
     AgentTool(),
 ]

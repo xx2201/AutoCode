@@ -47,7 +47,7 @@ class _LongTaskLLM:
 
 
 def test_agent_writes_raw_transcript_messages(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint_module, "TASKS_DIR", tmp_path)
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
 
     agent = Agent(
         llm=_LongTaskLLM(),
@@ -61,8 +61,8 @@ def test_agent_writes_raw_transcript_messages(tmp_path, monkeypatch):
     assert reply == "done"
 
     assert agent.task_state is not None
-    entries = load_transcript_entries(agent.task_state.task_id)
-    messages = load_transcript_messages(agent.task_state.task_id)
+    entries = load_transcript_entries(agent.session_state.session_id)
+    messages = load_transcript_messages(agent.session_state.session_id)
 
     assert len(messages) > len(agent.messages)
     assert messages[0]["role"] == "user"
@@ -72,7 +72,7 @@ def test_agent_writes_raw_transcript_messages(tmp_path, monkeypatch):
 
 
 def test_checkpoint_and_task_record_publish_transcript_file(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint_module, "TASKS_DIR", tmp_path)
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
 
     agent = Agent(
         llm=_DoneLLM(),
@@ -83,9 +83,11 @@ def test_checkpoint_and_task_record_publish_transcript_file(tmp_path, monkeypatc
     assert reply == "done"
     assert agent.task_state is not None
 
-    checkpoint = tmp_path.joinpath(f"{agent.task_state.task_id}/checkpoint.json").read_text(encoding="utf-8")
-    task_record = tmp_path.joinpath(f"{agent.task_state.task_id}/task.json").read_text(encoding="utf-8")
+    checkpoint = tmp_path.joinpath(f"{agent.session_state.session_id}/checkpoint.json").read_text(encoding="utf-8")
+    session_record = tmp_path.joinpath(f"{agent.session_state.session_id}/session.json").read_text(encoding="utf-8")
 
     assert '"transcript_file": "transcript.jsonl"' in checkpoint
-    assert '"transcript_file": "transcript.jsonl"' in task_record
+    assert '"transcript_file": "transcript.jsonl"' in session_record
+    assert '"llm_rounds_file": "llm_rounds.md"' in checkpoint
+    assert '"llm_rounds_file": "llm_rounds.md"' in session_record
 

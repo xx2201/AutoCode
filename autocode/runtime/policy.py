@@ -10,36 +10,11 @@ from ..state import PolicyDecision
 
 _PROTECTED_NAMES = {".env"}
 _PROTECTED_PARTS = {".git"}
-_READ_ONLY_COMMANDS = (
-    "pwd",
-    "ls",
-    "dir",
-    "rg ",
-    "git status",
-    "git diff",
-    "pytest",
-    "python -m pytest",
-    "Get-ChildItem",
-    "Get-Content",
-    "type ",
-    "cat ",
-)
 _DENY_COMMAND_PATTERNS = [
     (r":\(\)\s*\{.*:\|:.*\}", "fork bomb"),
     (r"\bcurl\b.*\|\s*(sudo\s+)?bash", "pipe curl to bash"),
-]
-_MANUAL_CONFIRM_COMMAND_PATTERNS = [
-    (r"\brm\s+(-\w*)?-rf\s", "force recursive delete requires explicit confirmation"),
-    (r"\bdel\s+/[qsf]", "destructive delete requires explicit confirmation"),
-    (r"\bRemove-Item\b.*-Recurse", "recursive remove requires explicit confirmation"),
-    (r"\bgit\s+reset\s+--hard\b", "destructive git reset requires explicit confirmation"),
-]
-_CONFIRM_COMMAND_PATTERNS = [
+    (r"\bgit\s+reset\s+--hard\b", "destructive git reset modifies the workspace"),
     (r"\bgit\s+clean\b", "git clean modifies the workspace"),
-    (r"\bpip\s+install\b", "package installation changes the environment"),
-    (r">\s*[^|]+", "shell redirection writes files"),
-    (r"\bMove-Item\b", "move changes files"),
-    (r"\bCopy-Item\b", "copy changes files"),
 ]
 
 
@@ -58,10 +33,6 @@ class Policy:
             if path is None:
                 return PolicyDecision("allow")
             return self._evaluate_path(path, allow_protected=False)
-        if tool_name == "todo_write":
-            return PolicyDecision("allow")
-        if tool_name == "agent":
-            return PolicyDecision("confirm", "sub-agent execution should be explicitly approved")
         return PolicyDecision("allow")
 
     def _evaluate_path(self, raw_path: str | None, allow_protected: bool = False) -> PolicyDecision:
@@ -96,19 +67,55 @@ class Policy:
             if re.search(pattern, command, re.IGNORECASE):
                 return PolicyDecision("deny", reason)
 
-        for pattern, reason in _MANUAL_CONFIRM_COMMAND_PATTERNS:
-            if re.search(pattern, command, re.IGNORECASE):
-                return PolicyDecision("confirm", reason, requires_manual=True)
+        dangerous = self._evaluate_workspace_scoped_dangerous_command(command)
+        if dangerous is not None:
+            return dangerous
 
-        for prefix in _READ_ONLY_COMMANDS:
-            if command.startswith(prefix):
-                return PolicyDecision("allow")
+        redirect_decision = self._evaluate_redirect_targets(command)
+        if redirect_decision is not None:
+            return redirect_decision
 
-        for pattern, reason in _CONFIRM_COMMAND_PATTERNS:
-            if re.search(pattern, command, re.IGNORECASE):
-                return PolicyDecision("allow" if self.auto_approve else "confirm", reason)
+        return PolicyDecision("allow")
 
-        return PolicyDecision(
-            "allow" if self.auto_approve else "confirm",
-            "command is not in the default read-only allowlist",
-        )
+    def _evaluate_redirect_targets(self, command: str) -> PolicyDecision | None:
+        for match in re.finditer(r"(?:^|\s)(?:\d?>>?|>>?)\s*(?P<path>[^\s&|;]+)", command):
+            target = match.group("path").strip().strip("'\"")
+            if not target or target.startswith("&"):
+                continue
+            decision = self._evaluate_path(target)
+            if decision.action == "deny":
+                return decision
+        return None
+
+    def _evaluate_workspace_scoped_dangerous_command(self, command: str) -> PolicyDecision | None:
+        target = None
+        reason = ""
+
+        rm_match = re.search(r"\brm\s+(-\w+\s+)*(-rf|-fr)\s+(?P<path>[^\s&|;]+)", command, re.IGNORECASE)
+        if rm_match:
+            target = rm_match.group("path")
+            reason = "force recursive delete modifies the workspace"
+        else:
+            del_match = re.search(r"\bdel\b(?:\s+/[^\s]+)*\s+(?P<path>[^\s&|;]+)", command, re.IGNORECASE)
+            if del_match:
+                target = del_match.group("path")
+                reason = "delete modifies the workspace"
+            else:
+                remove_match = re.search(
+                    r"\bRemove-Item\b(?:\s+-[^\s]+\s+[^\s]+\s+)*\s+(?P<path>[^\s&|;]+)",
+                    command,
+                    re.IGNORECASE,
+                )
+                if remove_match and re.search(r"\b-Recurse\b", command, re.IGNORECASE):
+                    target = remove_match.group("path")
+                    reason = "recursive remove modifies the workspace"
+
+        if not reason:
+            return None
+        if not target:
+            return PolicyDecision("deny", reason)
+
+        path_decision = self._evaluate_path(target, allow_protected=True)
+        if path_decision.action == "deny":
+            return PolicyDecision("deny", f"dangerous command target must stay inside workspace: {target}")
+        return PolicyDecision("deny", reason)

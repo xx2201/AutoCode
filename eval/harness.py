@@ -13,7 +13,7 @@ from pathlib import Path
 from autocode.agent import Agent
 from autocode.config import Config
 from autocode.llm import LLM, LiteLLM
-from autocode.state import TaskStore, load_events, load_trace
+from autocode.state import SessionStore, load_events, load_trace
 from autocode.state import checkpoint as checkpoint_module
 
 from .graders import TrialArtifacts, VerificationResult
@@ -32,13 +32,13 @@ def create_llm(config: Config, model_override: str | None = None):
 
 
 @contextmanager
-def patched_tasks_dir(path: Path):
-    original = checkpoint_module.TASKS_DIR
-    checkpoint_module.TASKS_DIR = path
+def patched_sessions_dir(path: Path):
+    original = checkpoint_module.SESSIONS_DIR
+    checkpoint_module.SESSIONS_DIR = path
     try:
         yield
     finally:
-        checkpoint_module.TASKS_DIR = original
+        checkpoint_module.SESSIONS_DIR = original
 
 
 def prepare_workspace(fixture_dir: Path, destination: Path):
@@ -57,12 +57,12 @@ def run_trial(
 ) -> TrialArtifacts:
     run_dir = output_root / spec.id / f"trial_{trial_index}"
     workspace = run_dir / "workspace"
-    task_artifacts_root = run_dir / "task_artifacts"
+    task_artifacts_root = run_dir / "session_artifacts"
     prepare_workspace(fixtures_dir / spec.fixture, workspace)
     task_artifacts_root.mkdir(parents=True, exist_ok=True)
 
     llm = create_llm(config, model_override=model_override)
-    with patched_tasks_dir(task_artifacts_root):
+    with patched_sessions_dir(task_artifacts_root):
         agent = Agent(
             llm=llm,
             workspace_root=str(workspace),
@@ -74,15 +74,16 @@ def run_trial(
         duration = time.time() - started
 
         if agent.task_state is None:
-            raise RuntimeError("agent did not create a task state")
+            raise RuntimeError("agent did not create a current task")
 
-        trace = load_trace(agent.task_state.task_id) or {}
+        trace = load_trace(agent.session_state.session_id) or {}
         trace.setdefault("duration_seconds", duration)
-        audit = load_events(agent.task_state.task_id)
-        task_record = TaskStore.load(agent.task_state.task_id)
+        audit = load_events(agent.session_state.session_id)
+        task_record = SessionStore.load(agent.session_state.session_id)
         verification = run_verification(spec, workspace)
 
         payload = {
+            "session_id": agent.session_state.session_id,
             "task_id": agent.task_state.task_id,
             "response": response,
             "trace": trace,

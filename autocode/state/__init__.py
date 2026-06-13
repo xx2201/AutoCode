@@ -1,32 +1,34 @@
-"""Task state and persistence package."""
+"""Session and current-task persistence package."""
 
-from .checkpoint import list_checkpoints, load_checkpoint, new_task_id, save_checkpoint, task_dir
+from .checkpoint import list_sessions, load_checkpoint, new_session_id, new_task_id, save_checkpoint, session_dir
 from .journal import AuditLogger, load_events
-from .model import PendingApproval, PolicyDecision, TaskState
-from .session import list_sessions, load_session, save_session
-from .store import TaskStore
+from .llm_rounds import LLMRoundRecorder, load_llm_round_entries, render_llm_rounds_markdown
+from .model import PendingApproval, PolicyDecision, SessionState, TaskState
+from .store import SessionStore
 from .trace import TraceRecorder, format_trace, load_trace
 from .transcript import TranscriptLogger, load_transcript_entries, load_transcript_messages
 
 __all__ = [
     "AuditLogger",
+    "LLMRoundRecorder",
     "PendingApproval",
     "PolicyDecision",
+    "SessionState",
     "TaskState",
-    "TaskStore",
+    "SessionStore",
     "TranscriptLogger",
     "TraceRecorder",
     "format_trace",
-    "list_checkpoints",
     "list_sessions",
+    "load_llm_round_entries",
     "load_checkpoint",
     "load_events",
-    "load_session",
     "load_transcript_entries",
     "load_transcript_messages",
     "load_trace",
+    "new_session_id",
     "new_task_id",
+    "render_llm_rounds_markdown",
     "save_checkpoint",
-    "save_session",
-    "task_dir",
+    "session_dir",
 ]

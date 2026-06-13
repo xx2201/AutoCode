@@ -36,13 +36,35 @@ class TodoWriteTool(Tool):
             return "Error: todo tool not initialized (no active task)"
 
         normalized = normalize_todos(todos)
+        blocked = self._reject_invalid_completion(normalized)
+        if blocked:
+            return blocked
         self._parent_agent.task_state.set_todos(normalized)
-        self._parent_agent.persist_task()
+        self._parent_agent.persist_session()
         self._parent_agent.hooks.emit(
             "todo_updated",
             {
+                "session_id": self._parent_agent.session_state.session_id,
                 "task_id": self._parent_agent.task_state.task_id,
                 "todos": normalized,
             },
         )
         return "Updated todo list:\n" + render_todos(normalized)
+
+    def _reject_invalid_completion(self, todos: list[dict]) -> str:
+        task_state = self._parent_agent.task_state
+        last_result = task_state.last_tool_result or ""
+        if not (last_result.startswith("Blocked by policy") or last_result.startswith("Error:")):
+            return ""
+
+        previous_status = {item.get("content", ""): item.get("status", "pending") for item in task_state.todos}
+        for item in todos:
+            content = item.get("content", "")
+            if previous_status.get(content) == "completed":
+                continue
+            if content in previous_status and item.get("status", "pending") == "completed":
+                return (
+                    f"Error: cannot mark todo '{content}' completed because the latest tool result "
+                    f"from {task_state.last_tool_name or 'tool'} was blocked or failed"
+                )
+        return ""

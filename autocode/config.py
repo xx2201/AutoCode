@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def _load_dotenv():
-    """Load .env from cwd first, then fall back to the agent repo root."""
+    """Load the nearest .env from the current workspace tree."""
     try:
         from dotenv import load_dotenv
 
@@ -20,12 +20,6 @@ def _load_dotenv():
             if cur == home or cur == cur.parent:
                 break
             cur = cur.parent
-
-        # When AutoCode is launched from another project, still allow the
-        # agent's own repo-level .env to provide defaults.
-        repo_env = Path(__file__).resolve().parent.parent / ".env"
-        if repo_env.exists():
-            load_dotenv(repo_env, override=False)
     except ImportError:
         pass  # python-dotenv not installed, silently skip
 

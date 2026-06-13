@@ -1,4 +1,4 @@
-"""Minimal audit log for task execution."""
+"""Minimal audit log for session execution."""
 
 from __future__ import annotations
 
@@ -6,7 +6,7 @@ import json
 import threading
 import time
 
-from .checkpoint import task_dir
+from .checkpoint import session_dir
 
 
 def _now() -> str:
@@ -14,13 +14,13 @@ def _now() -> str:
 
 
 class AuditLogger:
-    """Append structured task events to a JSONL journal."""
+    """Append structured session events to a JSONL journal."""
 
     def __init__(self):
         self._lock = threading.Lock()
 
-    def append_event(self, task_id: str, event_type: str, payload: dict):
-        directory = task_dir(task_id)
+    def append_event(self, session_id: str, event_type: str, payload: dict):
+        directory = session_dir(session_id)
         directory.mkdir(parents=True, exist_ok=True)
         entry = {
             "timestamp": _now(),
@@ -33,14 +33,14 @@ class AuditLogger:
                 f.write(line + "\n")
 
     def handle(self, event: str, payload: dict):
-        task_id = payload.get("task_id")
-        if not task_id:
+        session_id = payload.get("session_id")
+        if not session_id:
             return
-        self.append_event(task_id, event, payload)
+        self.append_event(session_id, event, payload)
 
 
-def load_events(task_id: str) -> list[dict]:
-    path = task_dir(task_id) / "audit.jsonl"
+def load_events(session_id: str) -> list[dict]:
+    path = session_dir(session_id) / "audit.jsonl"
     if not path.exists():
         return []
 

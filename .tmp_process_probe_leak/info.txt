@@ -1,0 +1,4 @@
+Started background process proc_20260613_172351_33c7a549
+PID: 28252
+CWD: G:\mycode\CoreCoder\.tmp_process_probe_leak
+Log: G:\mycode\CoreCoder\.tmp_process_probe_leak\.autocode\processes\proc_20260613_172351_33c7a549.log

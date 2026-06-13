@@ -1,4 +1,4 @@
-"""Runtime state for task execution."""
+"""Runtime state models for sessions and current tasks."""
 
 from __future__ import annotations
 
@@ -39,6 +39,7 @@ class PendingApproval:
     arguments: dict
     reason: str
     requires_manual: bool = False
+    remaining_tool_calls: list[dict] = field(default_factory=list)
     requested_at: str = field(default_factory=_now)
 
     def to_dict(self) -> dict:
@@ -48,6 +49,7 @@ class PendingApproval:
             "arguments": self.arguments,
             "reason": self.reason,
             "requires_manual": self.requires_manual,
+            "remaining_tool_calls": self.remaining_tool_calls,
             "requested_at": self.requested_at,
         }
 
@@ -59,6 +61,7 @@ class PendingApproval:
             arguments=data.get("arguments", {}),
             reason=data.get("reason", ""),
             requires_manual=bool(data.get("requires_manual", False)),
+            remaining_tool_calls=list(data.get("remaining_tool_calls", [])),
             requested_at=data.get("requested_at", _now()),
         )
 
@@ -76,6 +79,8 @@ class TaskState:
     recent_failures: list[str] = field(default_factory=list)
     pending_approval: PendingApproval | None = None
     auto_approve_for_task: bool = False
+    last_tool_name: str = ""
+    last_tool_result: str = ""
 
     def touch(self, status: str | None = None):
         if status:
@@ -126,6 +131,11 @@ class TaskState:
         self.auto_approve_for_task = bool(enabled)
         self.touch()
 
+    def note_tool_result(self, tool_name: str, result: str):
+        self.last_tool_name = tool_name
+        self.last_tool_result = result
+        self.touch()
+
     def to_dict(self) -> dict:
         return {
             "task_id": self.task_id,
@@ -139,6 +149,8 @@ class TaskState:
             "recent_failures": self.recent_failures,
             "pending_approval": self.pending_approval.to_dict() if self.pending_approval else None,
             "auto_approve_for_task": self.auto_approve_for_task,
+            "last_tool_name": self.last_tool_name,
+            "last_tool_result": self.last_tool_result,
         }
 
     @classmethod
@@ -156,4 +168,43 @@ class TaskState:
             recent_failures=list(data.get("recent_failures", [])),
             pending_approval=PendingApproval.from_dict(pending) if pending else None,
             auto_approve_for_task=bool(data.get("auto_approve_for_task", False)),
+            last_tool_name=data.get("last_tool_name", ""),
+            last_tool_result=data.get("last_tool_result", ""),
+        )
+
+
+@dataclass
+class SessionState:
+    session_id: str
+    started_at: str = field(default_factory=_now)
+    updated_at: str = field(default_factory=_now)
+    current_task: TaskState | None = None
+
+    def touch(self):
+        self.updated_at = _now()
+
+    def set_current_task(self, task: TaskState):
+        self.current_task = task
+        self.touch()
+
+    def clear_current_task(self):
+        self.current_task = None
+        self.touch()
+
+    def to_dict(self) -> dict:
+        return {
+            "session_id": self.session_id,
+            "started_at": self.started_at,
+            "updated_at": self.updated_at,
+            "current_task": self.current_task.to_dict() if self.current_task else None,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "SessionState":
+        task = data.get("current_task")
+        return cls(
+            session_id=data.get("session_id", ""),
+            started_at=data.get("started_at", _now()),
+            updated_at=data.get("updated_at", _now()),
+            current_task=TaskState.from_dict(task) if task else None,
         )

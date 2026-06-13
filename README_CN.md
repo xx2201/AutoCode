@@ -9,9 +9,9 @@
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 [![Tests](https://github.com/he-yufeng/AutoCode/actions/workflows/ci.yml/badge.svg)](https://github.com/he-yufeng/AutoCode/actions)
 
-**51万行 TypeScript → ~1,400 行 Python。**
+**把 Claude Code 的关键模式，重建成一个轻量级本地 coding agent runtime。**
 
-我逆向了 Claude Code 泄露的全部源码，然后把不承重的部分全扔掉，用 Python 重建了核心。成果：**Claude Code 的每一个关键架构模式，浓缩在一个下午能读完的代码库里。**
+我逆向了 Claude Code 泄露的全部源码，然后把不承重的部分全扔掉，用 Python 重建核心思想。现在它依然足够紧凑、可以直接通读，但已经不再只是一个玩具级 loop，而是演化成了一个**可本地使用的运行时**：带审批、checkpoint、trace、远程适配层，以及本地评测系统。
 
 AutoCode 不仅是一个 AI 编程工具。它是一份**蓝图**，编程 Agent 领域的 [nanoGPT](https://github.com/karpathy/nanoGPT)。读懂它，fork 它，然后造你自己的。
 
@@ -36,19 +36,30 @@ You > 读一下 main.py，修掉拼错的 import
 
 ## 你能得到什么
 
-Claude Code 51 万行源码提炼出来的 7 个核心模式：
+AutoCode 现在同时提供两层价值：
+
+- 一个可读、可 fork、可二次开发的 coding-agent 核心
+- 一个带安全、恢复、可观测、远程控制、评测能力的本地 runtime
+
+它保留的 Claude Code 核心模式仍然是这些：
 
 | 设计模式 | Claude Code | AutoCode |
 |---|---|---|
-| 搜索替换编辑（唯一匹配 + diff） | FileEditTool | `tools/edit.py` — 70 行 |
-| 并行工具执行 | StreamingToolExecutor（530行） | `agent.py` — ThreadPool |
-| 三层上下文压缩 | HISTORY_SNIP → Microcompact → CONTEXT_COLLAPSE | `context.py` — 145 行 |
-| 子代理隔离上下文 | AgentTool（1,397行） | `tools/agent.py` — 50 行 |
-| 危险命令拦截 | BashTool（1,143行） | `tools/bash.py` — 95 行 |
-| 会话持久化 | QueryEngine（1,295行） | `session.py` — 65 行 |
-| 动态系统提示词 | prompts.ts（914行） | `prompt.py` — 35 行 |
+| 搜索替换编辑（唯一匹配 + diff） | FileEditTool | `autocode/tools/edit.py` |
+| 并行工具执行 | StreamingToolExecutor | `autocode/runtime/engine.py` |
+| 三层上下文压缩 | HISTORY_SNIP → Microcompact → CONTEXT_COLLAPSE | `autocode/context/manager.py` |
+| 子代理隔离上下文 | AgentTool | `autocode/tools/agent.py` |
+| 危险命令拦截 | BashTool | `autocode/runtime/policy.py` + `autocode/tools/bash.py` |
+| 会话恢复 + 任务状态 | QueryEngine 风格运行态 | `autocode/state/` |
+| 动态系统提示词 | prompts.ts | `autocode/context/prompt.py` |
 
 每个模式都是可运行的实现，不是流程图，不是博客文章。
+
+和最初“极简内核”相比，现在真实情况是：
+
+- 仓库已经不只是一个很小的单包 demo
+- `autocode/` 已经按 `agent / context / infra / runtime / state / tools / remote` 分层
+- 除了核心 agent loop，仓库还包含 Telegram / 飞书远程控制，以及独立的本地评测系统 `eval/`
 
 ## 安装
 
@@ -56,32 +67,38 @@ Claude Code 51 万行源码提炼出来的 7 个核心模式：
 pip install -e .
 ```
 
-选你的模型，任何 OpenAI 兼容 API 都行。可以 `export` 环境变量，也可以在项目根目录放一个 `.env` 文件：
+选你的模型。默认读取的是 `AUTOCODE_*` 环境变量，并连接任意 OpenAI-compatible 接口。可以 `export` 环境变量，也可以在项目根目录放一个 `.env` 文件：
 
 ```bash
 # Kimi K2.5
-export OPENAI_API_KEY=你的key OPENAI_BASE_URL=https://api.moonshot.ai/v1
-autocode -m kimi-k2.5
+export AUTOCODE_API_KEY=你的key AUTOCODE_BASE_URL=https://api.moonshot.ai/v1
+export AUTOCODE_MODEL=kimi-k2.5
+autocode
 
 # Claude Opus 4.6（通过 OpenRouter）
-export OPENAI_API_KEY=你的key OPENAI_BASE_URL=https://openrouter.ai/api/v1
-autocode -m anthropic/claude-opus-4-6
+export AUTOCODE_API_KEY=你的key AUTOCODE_BASE_URL=https://openrouter.ai/api/v1
+export AUTOCODE_MODEL=anthropic/claude-opus-4-6
+autocode
 
 # OpenAI GPT-5
-export OPENAI_API_KEY=sk-...
-autocode -m gpt-5
+export AUTOCODE_API_KEY=sk-...
+export AUTOCODE_MODEL=gpt-5
+autocode
 
 # DeepSeek V3
-export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://api.deepseek.com
-autocode -m deepseek-chat
+export AUTOCODE_API_KEY=sk-... AUTOCODE_BASE_URL=https://api.deepseek.com
+export AUTOCODE_MODEL=deepseek-chat
+autocode
 
 # Qwen 3.5
-export OPENAI_API_KEY=sk-... OPENAI_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-autocode -m qwen-max
+export AUTOCODE_API_KEY=sk-... AUTOCODE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
+export AUTOCODE_MODEL=qwen-max
+autocode
 
 # Ollama（本地）
-export OPENAI_API_KEY=ollama OPENAI_BASE_URL=http://localhost:11434/v1
-autocode -m qwen3:32b
+export AUTOCODE_API_KEY=ollama AUTOCODE_BASE_URL=http://localhost:11434/v1
+export AUTOCODE_MODEL=qwen3:32b
+autocode
 
 # 单次模式
 autocode -p "给 parse_config() 加上错误处理"
@@ -132,8 +149,10 @@ autocode-feishu
 这个飞书控制层采用官方的“应用机器人 + 长连接事件”模式：
 
 - 发送任意文本即可启动或继续代码任务
-- `/task`、`/tasks`、`/trace`、`/resume`、`/reset` 与 Telegram 保持一致
+- `/task`、`/trace`、`/resume`、`/reset` 支持直接文本输入
 - `/approve`、`/approve_all`、`/reject` 也支持直接文本输入
+- `/resume` 会以交互卡片列出当前项目最近可恢复会话
+- `/send_image <path>` 和 `/send_file <path>` 可以把当前项目里的图片、PDF 等本地文件直接回传到飞书聊天
 - 待审批操作会以交互卡片形式发送，内置 **Approve / Approve All / Reject** 按钮
 - 整个适配层直接复用现有任务运行时和审批状态，不再额外造第二套工作流
 
@@ -141,25 +160,44 @@ autocode-feishu
 
 ## 架构
 
-整个项目一目了然：
+现在的仓库依然不大，但已经不是最初那种单文件教学内核：
 
 ```
 autocode/
-├── cli.py            REPL + 命令                   218 行
-├── agent.py          Agent 循环 + 并行执行          122 行
-├── llm.py            流式客户端 + 重试              156 行
-├── context.py        三层压缩                       196 行
-├── session.py        会话保存/恢复                   68 行
-├── prompt.py         系统提示词                      33 行
-├── config.py         环境变量配置                    55 行
-└── tools/
-    ├── bash.py       Shell + 安全 + cd 追踪         115 行
-    ├── edit.py       搜索替换 + diff                  85 行
-    ├── read.py       文件读取                         53 行
-    ├── write.py      文件写入                         36 行
-    ├── glob_tool.py  文件搜索                         47 行
-    ├── grep.py       内容搜索                         78 行
-    └── agent.py      子代理生成                       58 行
+├── cli.py              REPL + 本地命令
+├── llm.py              OpenAI-compatible / LiteLLM 客户端
+├── config.py           环境变量与工作区配置
+├── agent/
+│   └── loop.py         主 agent 循环
+├── context/
+│   ├── manager.py      三层上下文压缩
+│   ├── prompt.py       动态系统提示词
+│   └── memory.py       项目记忆管理
+├── infra/
+│   ├── filesystem.py   工作区边界文件系统
+│   ├── sandbox.py      Shell 执行
+│   └── processes.py    受控后台进程
+├── runtime/
+│   ├── engine.py       LLM / tool 执行运行时
+│   ├── policy.py       审批与安全策略
+│   └── hooks.py        事件总线
+├── state/
+│   ├── checkpoint.py   会话/任务持久化
+│   ├── trace.py        trace 聚合
+│   ├── transcript.py   原始消息日志
+│   └── llm_rounds.py   每轮请求/响应日志
+├── tools/
+│   ├── read.py / write.py / edit.py / grep.py / glob_tool.py
+│   ├── bash.py         shell 工具
+│   ├── process.py      后台进程 start/read/wait/stop
+│   ├── todo_write.py   显式计划状态
+│   └── agent.py        子 agent 工具
+└── remote/
+    ├── telegram_bot.py
+    ├── feishu_bot.py
+    └── manager.py
+eval/
+└── ...                 本地评测 harness
 ```
 
 ## 当库用
@@ -195,13 +233,17 @@ class HttpTool(Tool):
 /compact         压缩上下文（对标 Claude Code 的 /compact）
 /tokens          查看 token 用量 + 费用估算
 /diff            查看本次会话修改的文件
-/save            保存会话
-/sessions        列出已保存的会话
+/resume          列出当前项目可恢复会话
+/resume <id>     按 id 恢复会话
+/task            查看当前任务状态
+/todo            查看当前 todo 列表
+/trace           查看当前会话 trace
+/approve         批准待执行的工具调用
+/approve_all     批准当前操作，并自动放行后续普通确认
+/reject          拒绝待执行的工具调用
 /reset           清空历史
 quit             退出
 ```
-
-保存的会话 ID 会先安全化再作为文件名，恢复数据始终留在 `~/.autocode/sessions` 目录内。
 
 Telegram 命令：
 
@@ -222,12 +264,13 @@ Telegram 命令：
 ```
 /start           显示飞书帮助
 /task            查看当前任务状态
-/tasks           列出最近的 checkpoint
 /trace           查看当前任务的 trace
 /approve         批准待执行的工具调用
 /approve_all     批准当前操作，并自动放行后续普通确认
 /reject          拒绝待执行的工具调用
-/resume <id>     把保存的任务 checkpoint 恢复到当前聊天
+/resume          列出当前项目可恢复会话
+/send_image <path> 发送当前项目中的图片附件
+/send_file <path>   发送当前项目中的文件附件（如 PDF）
 /reset           清空当前聊天对应的内存会话
 ```
 
@@ -235,7 +278,7 @@ Telegram 命令：
 
 |  | Claude Code | Claw-Code | Aider | AutoCode |
 |---|---|---|---|---|
-| 代码量 | 51万行（闭源） | 10万+行 | 5万+行 | **~1,400 行** |
+| 代码量 | 51万行（闭源） | 10万+行 | 5万+行 | **5k+ 行核心包** |
 | 模型 | 仅 Anthropic | 多模型 | 多模型 | **任意 OpenAI 兼容** |
 | 能通读吗？ | 不能 | 很难 | 有点费劲 | **一个下午** |
 | 适合 | 直接用 | 直接用 | 直接用 | **先看懂，再造自己的** |
@@ -248,7 +291,12 @@ Telegram 命令：
 
 **AutoCode 支持 Skill / Subagent / MCP 吗？**
 
-不支持，这是刻意的。AutoCode 只保留可运行的最小核心 —— agent 循环、工具、流式、压缩。Skill、Subagent、MCP、hook、plugin 都是 Claude Code 在上层加的特性；如果 AutoCode 也全都做了，就不再是一个可读的教学产物。上面的架构导读系列讲了 Claude Code 里这些系统是怎么工作的，你可以照着自己加。
+部分支持。
+
+- Subagent：支持。内置了 `agent` 工具，会生成一个隔离上下文的子 agent。
+- MCP 和 Skills：还不支持原生框架，这两层目前仍然刻意缺席。
+
+所以旧版 README 里“只保留最小核心、不支持 Subagent”的说法，已经和当前实现不完全一致。更准确地说，AutoCode 已经长成了一个轻量 runtime，但还没有继续扩成完整的 plugin / MCP 平台。
 
 如果你只是想要 Skill，配方很简单：启动时扫 `~/.claude/skills/*.md`，把标题列进 system prompt，让 agent 按名字请求某个 skill，再把那个文件的内容 inline 进对话就行了。
 

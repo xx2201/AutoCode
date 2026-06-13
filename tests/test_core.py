@@ -6,7 +6,6 @@ import pathlib
 from autocode import Agent, LLM, Config, ALL_TOOLS, __version__
 from autocode.context import ContextManager, MemoryManager, estimate_tokens
 from autocode.llm import LLMResponse
-from autocode.state import save_session, load_session, list_sessions
 from autocode.tools import get_tool
 
 
@@ -19,7 +18,7 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    assert len(ALL_TOOLS) == 8
+    assert len(ALL_TOOLS) == 12
 
 
 def test_config_from_env(monkeypatch):
@@ -71,15 +70,14 @@ def test_config_ignores_openai_fallback(monkeypatch):
     os.environ.update(saved)
 
 
-def test_load_dotenv_falls_back_to_repo_env(monkeypatch, tmp_path):
+def test_load_dotenv_reads_workspace_env_only(monkeypatch, tmp_path):
     import autocode.config as config_mod
 
-    repo_root = tmp_path / "repo"
-    pkg_dir = repo_root / "autocode"
-    pkg_dir.mkdir(parents=True)
-    (pkg_dir / "config.py").write_text("# stub\n", encoding="utf-8")
-    repo_env = repo_root / ".env"
-    repo_env.write_text("AUTOCODE_MODEL=repo-model\n", encoding="utf-8")
+    workspace = tmp_path / "workspace"
+    project = workspace / "demo"
+    project.mkdir(parents=True)
+    workspace_env = workspace / ".env"
+    workspace_env.write_text("AUTOCODE_MODEL=workspace-model\n", encoding="utf-8")
 
     loaded = []
 
@@ -96,15 +94,24 @@ def test_load_dotenv_falls_back_to_repo_env(monkeypatch, tmp_path):
             fake_load_dotenv(path, override=override)
 
     monkeypatch.setitem(__import__("sys").modules, "dotenv", FakeDotenvModule())
-    monkeypatch.setattr(config_mod, "__file__", str(pkg_dir / "config.py"))
-    workspace = tmp_path / "workspace"
-    workspace.mkdir(exist_ok=True)
-    monkeypatch.chdir(workspace)
+    monkeypatch.chdir(project)
     monkeypatch.delenv("AUTOCODE_MODEL", raising=False)
     config_mod._load_dotenv()
 
-    assert os.environ["AUTOCODE_MODEL"] == "repo-model"
-    assert loaded[-1][0] == repo_env
+    assert os.environ["AUTOCODE_MODEL"] == "workspace-model"
+    assert loaded[-1][0] == workspace_env
+
+
+def test_config_workspace_defaults_to_cwd(monkeypatch, tmp_path):
+    monkeypatch.setattr("autocode.config._load_dotenv", lambda: None)
+    workspace = tmp_path / "redis_work"
+    workspace.mkdir()
+    monkeypatch.chdir(workspace)
+    monkeypatch.delenv("AUTOCODE_WORKSPACE_ROOT", raising=False)
+
+    config = Config.from_env()
+
+    assert pathlib.Path(config.workspace_root) == workspace
 
 
 # --- Context ---
@@ -154,17 +161,17 @@ def test_memory_manager_reads_project_memory(monkeypatch, tmp_path):
     workspace.mkdir()
     (workspace / "AGENTS.md").write_text("项目规则\n", encoding="utf-8")
     (workspace / "CLAUDE.md").write_text("项目备注\n", encoding="utf-8")
-    (workspace / ".autocode").mkdir()
-    (workspace / ".autocode" / "PROJECT_MEMORY.md").write_text("# Project Memory\n\n- 使用 conda 环境 langgraph\n", encoding="utf-8")
-    monkeypatch.setattr("autocode.context.memory.TaskStore.recent_task_summaries", staticmethod(lambda limit=3: ["- task_x (completed, step 3, model test)"]))
 
     manager = MemoryManager(str(workspace))
+    memory_path = manager.memory_file_path()
+    memory_path.parent.mkdir(parents=True, exist_ok=True)
+    memory_path.write_text("# Project Memory\n\n- 使用 conda 环境 langgraph\n", encoding="utf-8")
     block = manager.build_memory_block()
 
     assert "## Project Rules" in block
     assert "## Project Memory" in block
     assert "使用 conda 环境 langgraph" in block
-    assert "## Recent Tasks" in block
+    assert "## Recent Sessions" not in block
 
 
 def test_memory_manager_refreshes_project_memory_without_duplicates(tmp_path):
@@ -184,7 +191,7 @@ def test_memory_manager_refreshes_project_memory_without_duplicates(tmp_path):
     assert manager.refresh_project_memory(messages, FakeLLM()) is True
     assert manager.refresh_project_memory(messages, FakeLLM()) is False
 
-    memory_path = workspace / ".autocode" / "PROJECT_MEMORY.md"
+    memory_path = manager.memory_file_path()
     content = memory_path.read_text(encoding="utf-8")
     assert "# Project Memory" in content
     assert content.count("- [fact] 当前项目使用 conda 环境 langgraph") == 1
@@ -194,8 +201,10 @@ def test_memory_manager_refreshes_project_memory_without_duplicates(tmp_path):
 def test_memory_manager_refresh_rewrites_project_memory_with_llm_judgment(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
-    (workspace / ".autocode").mkdir()
-    (workspace / ".autocode" / "PROJECT_MEMORY.md").write_text(
+    manager = MemoryManager(str(workspace))
+    memory_path = manager.memory_file_path()
+    memory_path.parent.mkdir(parents=True, exist_ok=True)
+    memory_path.write_text(
         "# Project Memory\n\n"
         "- Project root: `G:/demo` contains `main.py` and `utils.py`\n"
         "- Entry point: `python main.py`\n"
@@ -203,8 +212,6 @@ def test_memory_manager_refresh_rewrites_project_memory_with_llm_judgment(tmp_pa
         "- [pitfall] PowerShell here string must end at column 1\n",
         encoding="utf-8",
     )
-
-    manager = MemoryManager(str(workspace))
 
     class FakeLLM:
         def chat(self, messages, tools=None, on_token=None):
@@ -217,52 +224,63 @@ def test_memory_manager_refresh_rewrites_project_memory_with_llm_judgment(tmp_pa
 
     assert manager.refresh_project_memory(messages, FakeLLM(), force=True) is True
 
-    content = (workspace / ".autocode" / "PROJECT_MEMORY.md").read_text(encoding="utf-8")
+    content = memory_path.read_text(encoding="utf-8")
     assert "Project root" not in content
     assert "Entry point" not in content
     assert content.count("- [pitfall] PowerShell here-string terminator must stay at column 1") == 1
 
 
-# --- Session ---
+def test_memory_manager_allows_model_selected_runbook_lines(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = MemoryManager(str(workspace))
 
-def test_session_save_load():
-    msgs = [{"role": "user", "content": "test message"}]
-    sid = save_session(msgs, "test-model", "pytest_test_session")
-    loaded = load_session("pytest_test_session")
-    assert loaded is not None
-    assert loaded[0] == msgs
-    assert loaded[1] == "test-model"
-    # cleanup
-    pathlib.Path.home().joinpath(".autocode/sessions/pytest_test_session.json").unlink()
+    class FakeLLM:
+        def chat(self, messages, tools=None, on_token=None):
+            return LLMResponse(content=(
+                "- 后台进程命名格式 `proc_20260610_xxx`，日志落在 `.autocode\\\\processes\\\\`\n"
+                "- 跑通流程固定顺序：先启动 worker -> 再发消息 -> 最后 stop_process\n"
+                "- [pitfall] Windows 下重定向 stdout 的子 Python 进程要强制 UTF-8 输出\n"
+            ))
 
+    messages = [
+        {"role": "user", "content": "总结这里真正值得长期记住的内容"},
+        {"role": "tool", "content": "背景进程日志和 UTF-8 输出验证"},
+    ]
 
-def test_session_name_is_sanitized():
-    msgs = [{"role": "user", "content": "test message"}]
-    sid = save_session(msgs, "test-model", "../Research Notes!")
+    assert manager.refresh_project_memory(messages, FakeLLM(), force=True) is True
 
-    assert sid == "Research-Notes"
-    path = pathlib.Path.home().joinpath(".autocode/sessions/Research-Notes.json")
-    assert path.exists()
-    assert load_session("../Research Notes!") is not None
-    path.unlink()
-
-
-def test_session_is_written_as_utf8():
-    msgs = [{"role": "user", "content": "你好，世界"}]
-    save_session(msgs, "test-model", "utf8_session")
-    path = pathlib.Path.home().joinpath(".autocode/sessions/utf8_session.json")
-    raw = path.read_bytes()
-    assert b"\xe4\xbd\xa0\xe5\xa5\xbd" in raw
-    path.unlink()
+    content = manager.memory_file_path().read_text(encoding="utf-8")
+    assert "proc_20260610_xxx" in content
+    assert "固定顺序" in content
+    assert "强制 UTF-8 输出" in content
 
 
-def test_session_not_found():
-    assert load_session("nonexistent_session_id") is None
+def test_memory_manager_can_schedule_async_refresh(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = MemoryManager(str(workspace))
 
+    class FakeLLM:
+        def __init__(self):
+            self.calls = 0
 
-def test_list_sessions():
-    sessions = list_sessions()
-    assert isinstance(sessions, list)
+        def clone(self):
+            return self
+
+        def chat(self, messages, tools=None, on_token=None):
+            self.calls += 1
+            return LLMResponse(content="- [fact] 项目真实 conda 环境是 langgraph")
+
+    llm = FakeLLM()
+    messages = [{"role": "user", "content": "请记住项目真实 conda 环境"}]
+
+    assert manager.schedule_project_memory_refresh(messages, llm, force=True) is True
+    manager.wait_for_pending_refresh(timeout=2)
+
+    content = manager.memory_file_path().read_text(encoding="utf-8")
+    assert "langgraph" in content
+    assert llm.calls == 1
 
 
 # --- Cost estimation ---

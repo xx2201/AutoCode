@@ -1,4 +1,4 @@
-"""Checkpoint persistence for in-flight tasks."""
+"""Checkpoint persistence for in-flight sessions."""
 
 import json
 import re
@@ -6,39 +6,56 @@ import time
 import uuid
 from pathlib import Path
 
-from .model import TaskState
+from .model import SessionState
 
-TASKS_DIR = Path.home() / ".autocode" / "tasks"
+SESSIONS_DIR = Path.home() / ".autocode" / "sessions"
+_SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_TASK_RE = re.compile(r"[^A-Za-z0-9._-]+")
+
+
+def new_session_id() -> str:
+    return f"session_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
 
 def new_task_id() -> str:
     return f"task_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
 
-def _normalize_task_id(task_id: str) -> str:
-    name = _SAFE_TASK_RE.sub("-", task_id.strip()).strip(".-_")
+def _normalize_name(value: str, pattern: re.Pattern[str]) -> str:
+    name = pattern.sub("-", value.strip()).strip(".-_")
     if not name:
-        raise ValueError("Invalid task id")
+        raise ValueError("Invalid identifier")
     return name
 
 
-def task_dir(task_id: str) -> Path:
-    root = TASKS_DIR.resolve()
-    target = (root / _normalize_task_id(task_id)).resolve()
+def session_dir(session_id: str) -> Path:
+    root = SESSIONS_DIR.resolve()
+    target = (root / _normalize_name(session_id, _SAFE_SESSION_RE)).resolve()
     if target.parent != root:
-        raise ValueError("Invalid task id")
+        raise ValueError("Invalid session id")
     return target
 
 
-def save_checkpoint(task_state: TaskState, messages: list[dict], model: str):
-    directory = task_dir(task_state.task_id)
+def _normalize_workspace_root(workspace_root: str | None) -> str:
+    if not workspace_root:
+        return ""
+    try:
+        return Path(workspace_root).expanduser().resolve().as_posix().lower()
+    except OSError:
+        return Path(workspace_root).expanduser().as_posix().lower()
+
+
+def save_checkpoint(session_state: SessionState, messages: list[dict], model: str, workspace_root: str):
+    directory = session_dir(session_state.session_id)
     directory.mkdir(parents=True, exist_ok=True)
     payload = {
-        "task": task_state.to_dict(),
+        "session": session_state.to_dict(),
         "messages": messages,
         "model": model,
+        "workspace_root": _normalize_workspace_root(workspace_root),
         "transcript_file": "transcript.jsonl",
+        "llm_rounds_file": "llm_rounds.md",
+        "llm_rounds_raw_file": "llm_rounds.jsonl",
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     (directory / "checkpoint.json").write_text(
@@ -47,23 +64,24 @@ def save_checkpoint(task_state: TaskState, messages: list[dict], model: str):
     )
 
 
-def load_checkpoint(task_id: str) -> tuple[TaskState, list[dict], str] | None:
-    path = task_dir(task_id) / "checkpoint.json"
+def load_checkpoint(session_id: str) -> tuple[SessionState, list[dict], str] | None:
+    path = session_dir(session_id) / "checkpoint.json"
     if not path.exists():
         return None
     try:
         data = _read_json(path)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
-    return TaskState.from_dict(data["task"]), data["messages"], data["model"]
+    return SessionState.from_dict(data["session"]), data["messages"], data["model"]
 
 
-def list_checkpoints() -> list[dict]:
-    if not TASKS_DIR.exists():
+def list_sessions(workspace_root: str | None = None, limit: int = 20) -> list[dict]:
+    if not SESSIONS_DIR.exists():
         return []
 
+    workspace_filter = _normalize_workspace_root(workspace_root)
     entries = []
-    for directory in sorted(TASKS_DIR.iterdir(), reverse=True):
+    for directory in sorted(SESSIONS_DIR.iterdir(), reverse=True):
         if not directory.is_dir():
             continue
         path = directory / "checkpoint.json"
@@ -71,19 +89,25 @@ def list_checkpoints() -> list[dict]:
             continue
         try:
             data = _read_json(path)
-            task = data.get("task", {})
+            session = data.get("session", {})
+            current_task = session.get("current_task") or {}
+            item_workspace = _normalize_workspace_root(data.get("workspace_root", ""))
+            if workspace_filter and item_workspace != workspace_filter:
+                continue
             entries.append({
-                "task_id": task.get("task_id", directory.name),
-                "status": task.get("status", "?"),
-                "step_index": task.get("step_index", 0),
+                "session_id": session.get("session_id", directory.name),
+                "task_id": current_task.get("task_id", ""),
+                "title": current_task.get("title", ""),
+                "status": current_task.get("status", "idle"),
+                "step_index": current_task.get("step_index", 0),
                 "saved_at": data.get("saved_at", "?"),
                 "model": data.get("model", "?"),
+                "workspace_root": item_workspace,
             })
         except (UnicodeDecodeError, json.JSONDecodeError, KeyError):
             continue
-    return entries[:20]
+    return entries[:limit]
 
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
-

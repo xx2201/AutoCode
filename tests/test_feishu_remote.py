@@ -1,12 +1,26 @@
 from autocode.config import Config
-from autocode.remote.feishu_bot import _build_api_client, _build_patch_request, _build_reply_request, _session_key
+from autocode.remote.feishu_bot import (
+    _attachment_kind,
+    _build_api_client,
+    _build_file_upload_request,
+    _build_image_upload_request,
+    _build_patch_request,
+    _build_reply_request,
+    _guess_feishu_file_type,
+    _resolve_workspace_attachment,
+    _session_key,
+)
 from autocode.remote.feishu_formatting import (
     build_approval_card,
+    build_file_content,
+    build_image_content,
     build_live_status_card,
+    build_resume_card,
     build_text_content,
     parse_text_content,
     split_text_chunks,
 )
+from autocode.remote.feishu_tool import FeishuSendTool
 from autocode.remote.manager import RemoteTurnResult
 
 
@@ -19,9 +33,18 @@ def test_build_text_content_preserves_unicode():
     assert build_text_content("hello 世界") == '{"text": "hello 世界"}'
 
 
+def test_build_image_content_uses_image_key():
+    assert build_image_content("img_123") == '{"image_key": "img_123"}'
+
+
+def test_build_file_content_uses_file_key_and_name():
+    assert build_file_content("file_123", "report.pdf") == '{"file_key": "file_123", "file_name": "report.pdf"}'
+
+
 def test_build_approval_card_embeds_actions():
     result = RemoteTurnResult(
         text="waiting for approval",
+        session_id="session_123",
         task_id="task_123",
         status="waiting_approval",
         pending_tool="bash",
@@ -37,6 +60,7 @@ def test_build_approval_card_embeds_actions():
     assert actions == ["approve", "approve_all", "reject"]
     assert "python app.py" in card["body"]["elements"][0]["content"]
     assert "Approve_all" in card["body"]["elements"][0]["content"]
+    assert "session_123" in card["body"]["elements"][0]["content"]
 
 
 def test_build_live_status_card_shows_runtime_progress():
@@ -44,6 +68,7 @@ def test_build_live_status_card_shows_runtime_progress():
         title="Fix import",
         phase="Running Tool",
         status="running",
+        session_id="session_123",
         task_id="task_123",
         step_index=2,
         llm_calls=1,
@@ -57,7 +82,27 @@ def test_build_live_status_card_shows_runtime_progress():
     content = card["body"]["elements"][0]["content"]
     assert "Running Tool" in content
     assert "read_file" in content
+    assert "session_123" in content
     assert "task_123" in content
+
+
+def test_build_resume_card_embeds_resume_buttons():
+    card = build_resume_card(
+        tasks=[
+            {"session_id": "session_1", "task_id": "task_1", "title": "Fix import", "status": "completed", "saved_at": "2026-06-08 23:00:00"},
+            {"session_id": "session_2", "task_id": "task_2", "title": "Add tests", "status": "failed", "saved_at": "2026-06-08 23:10:00"},
+        ],
+        session_key="user:ou_xxx",
+        owner_open_id="ou_owner",
+        workspace_root="G:/repo/demo",
+    )
+    assert card["header"]["title"]["content"] == "Resume Session"
+    resume_buttons = []
+    for element in card["body"]["elements"]:
+        if element["tag"] == "column_set":
+            resume_buttons.append(element["columns"][0]["elements"][0]["value"])
+    assert [item["command"] for item in resume_buttons] == ["resume", "resume"]
+    assert [item["session_id"] for item in resume_buttons] == ["session_1", "session_2"]
 
 
 def test_split_text_chunks_respects_feishu_limit():
@@ -144,8 +189,97 @@ def test_build_patch_request_uses_builder_initialized_uri():
     assert request.body.content == '{"schema":"2.0"}'
 
 
+def test_build_image_upload_request_uses_image_endpoint():
+    import io
+
+    request = _build_image_upload_request(_fake_lark_request_api(), io.BytesIO(b"image"))
+    assert request.uri == "/open-apis/im/v1/images"
+    assert request.body.image_type == "message"
+
+
+def test_build_file_upload_request_uses_file_endpoint():
+    import io
+
+    request = _build_file_upload_request(_fake_lark_request_api(), io.BytesIO(b"pdf"), "report.pdf")
+    assert request.uri == "/open-apis/im/v1/files"
+    assert request.body.file_name == "report.pdf"
+    assert request.body.file_type == "pdf"
+
+
+def test_guess_feishu_file_type_defaults_to_stream():
+    assert _guess_feishu_file_type("notes.txt") == "stream"
+    assert _guess_feishu_file_type("slides.pptx") == "ppt"
+
+
+def test_attachment_kind_detects_images():
+    from pathlib import Path
+
+    assert _attachment_kind(Path("shot.png")) == "image"
+    assert _attachment_kind(Path("report.pdf")) == "file"
+
+
+def test_resolve_workspace_attachment_accepts_relative_file(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "report.pdf"
+    target.write_text("demo", encoding="utf-8")
+
+    resolved = _resolve_workspace_attachment(str(workspace), "report.pdf", image_only=False)
+
+    assert resolved == target.resolve()
+
+
+def test_resolve_workspace_attachment_rejects_outside_workspace(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    outside = tmp_path / "outside.pdf"
+    outside.write_text("demo", encoding="utf-8")
+
+    try:
+        _resolve_workspace_attachment(str(workspace), str(outside), image_only=False)
+    except ValueError as exc:
+        assert "path must stay inside workspace" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_resolve_workspace_attachment_rejects_non_image_for_send_image(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    target = workspace / "report.pdf"
+    target.write_text("demo", encoding="utf-8")
+
+    try:
+        _resolve_workspace_attachment(str(workspace), "report.pdf", image_only=True)
+    except ValueError as exc:
+        assert "Image must be one of" in str(exc)
+    else:
+        raise AssertionError("expected ValueError")
+
+
+def test_feishu_send_tool_uses_sender_callback():
+    calls = []
+
+    tool = FeishuSendTool(lambda path: calls.append(path) or f"sent:{path}")
+
+    assert tool.execute("reports/out.pdf") == "sent:reports/out.pdf"
+    assert calls == ["reports/out.pdf"]
+
+
+def test_feishu_send_tool_clone_keeps_sender():
+    calls = []
+    clone = FeishuSendTool(lambda path: calls.append(path) or "ok").clone()
+
+    assert clone.execute("demo.png") == "ok"
+    assert calls == ["demo.png"]
+
+
 def _fake_lark_request_api():
     from lark_oapi.api.im.v1 import (
+        CreateFileRequest,
+        CreateFileRequestBody,
+        CreateImageRequest,
+        CreateImageRequestBody,
         PatchMessageRequest,
         PatchMessageRequestBody,
         ReplyMessageRequest,
@@ -153,6 +287,10 @@ def _fake_lark_request_api():
     )
 
     return {
+        "CreateFileRequest": CreateFileRequest,
+        "CreateFileRequestBody": CreateFileRequestBody,
+        "CreateImageRequest": CreateImageRequest,
+        "CreateImageRequestBody": CreateImageRequestBody,
         "ReplyMessageRequest": ReplyMessageRequest,
         "ReplyMessageRequestBody": ReplyMessageRequestBody,
         "PatchMessageRequest": PatchMessageRequest,

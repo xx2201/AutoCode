@@ -3,6 +3,7 @@ from autocode.config import Config
 from autocode.llm import LLMResponse, ToolCall
 from autocode.remote.formatting import render_turn_result, split_message
 from autocode.remote.manager import RemoteManager
+from autocode.state import SessionState, TaskState
 from autocode.tools.base import Tool
 
 
@@ -58,17 +59,40 @@ def test_remote_manager_handles_approval_flow(tmp_path):
 
 
 def test_remote_manager_can_resume_checkpoint(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint_module, "TASKS_DIR", tmp_path)
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
     llm = _FakeLLM([LLMResponse(content="finished")])
     manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
 
     result = manager.submit(202, "finish task")
     assert result.status == "completed"
-    task_id = result.task_id
+    session_id = result.session_id
 
-    resumed = manager.resume_task(202, task_id)
-    assert resumed.task_id == task_id
+    resumed = manager.resume_session(202, session_id)
+    assert resumed.session_id == session_id
     assert resumed.status == "completed"
+
+
+def test_remote_manager_lists_resume_candidates_for_current_workspace(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    checkpoint_module.save_checkpoint(
+        SessionState(session_id="session_a", current_task=TaskState(task_id="task_a", title="current", status="completed")),
+        [],
+        "m1",
+        workspace_root=str(tmp_path),
+    )
+    checkpoint_module.save_checkpoint(
+        SessionState(session_id="session_b", current_task=TaskState(task_id="task_b", title="other", status="completed")),
+        [],
+        "m2",
+        workspace_root="G:/other",
+    )
+
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: _FakeLLM([LLMResponse(content="ok")]), tools=[])
+    items = manager.list_resume_candidates()
+
+    assert len(items) == 1
+    assert items[0]["session_id"] == "session_a"
+    assert items[0]["task_id"] == "task_a"
 
 
 def test_remote_manager_reset_drops_chat_runtime(tmp_path):
@@ -90,6 +114,7 @@ def test_render_turn_result_includes_approval_hint():
     text = render_turn_result(
         type("Result", (), {
             "text": "waiting",
+            "session_id": "session_123",
             "task_id": "task_123",
             "status": "waiting_approval",
             "pending_tool": "bash",
@@ -101,6 +126,7 @@ def test_render_turn_result_includes_approval_hint():
     )
     assert "/approve" in text
     assert "/approve_all" in text
+    assert "session_123" in text
     assert "task_123" in text
     assert "python app.py" in text
 
@@ -141,4 +167,18 @@ def test_remote_manager_temporary_hook_receives_events_and_unsubscribes(tmp_path
     runtime = manager._require_runtime(505)
     for event in manager._HOOK_EVENTS:
         assert _hook not in runtime.agent.hooks._handlers.get(event, [])
+
+
+def test_remote_manager_reuses_same_session_id_within_same_chat(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
+    llm = _FakeLLM([LLMResponse(content="first"), LLMResponse(content="second")])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
+
+    first = manager.submit(606, "hello")
+    second = manager.submit(606, "again")
+
+    assert first.status == "completed"
+    assert second.status == "completed"
+    assert second.session_id == first.session_id
+    assert second.task_id != first.task_id
 

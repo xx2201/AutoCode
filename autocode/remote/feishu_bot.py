@@ -4,26 +4,57 @@ from __future__ import annotations
 
 import json
 import logging
+import threading
 import time
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from pathlib import Path
 from uuid import uuid4
 
 from ..config import Config
+from ..tools import ALL_TOOLS
 from .feishu_formatting import (
-    build_action_status_card,
     build_approval_card,
     build_error_card,
+    build_file_content,
+    build_image_content,
     build_live_status_card,
+    build_resume_card,
     build_text_content,
     parse_text_content,
     render_text_result,
     split_text_chunks,
 )
-from .formatting import render_task_list
 from .manager import RemoteManager, RemoteTurnResult
+from .feishu_tool import FeishuSendTool
 
 logger = logging.getLogger(__name__)
+_IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp", ".ico", ".tif", ".tiff", ".heic"}
+_FILE_TYPE_MAP = {
+    ".opus": "opus",
+    ".mp4": "mp4",
+    ".pdf": "pdf",
+    ".doc": "doc",
+    ".docx": "doc",
+    ".xls": "xls",
+    ".xlsx": "xls",
+    ".ppt": "ppt",
+    ".pptx": "ppt",
+}
+
+
+@dataclass
+class _ResumeSelection:
+    tasks: list[dict]
+    session_key: str
+    owner_open_id: str
+
+
+@dataclass
+class _AttachmentReply:
+    kind: str
+    path: Path
 
 
 def main():
@@ -37,7 +68,8 @@ class FeishuBot:
     def __init__(self, config: Config):
         self.config = config
         self.lark = _import_lark()
-        self.manager = RemoteManager(config)
+        self._tool_context = threading.local()
+        self.manager = RemoteManager(config, tools=[*ALL_TOOLS, FeishuSendTool(self._send_attachment_from_tool)])
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="autocode-feishu")
         self._live_states: dict[str, _LiveStatus] = {}
         self.client = _build_api_client(self.lark, config)
@@ -110,12 +142,15 @@ class FeishuBot:
         command = value.get("command", "")
         session_key = value.get("session_key", "")
         message_id = getattr(context, "open_message_id", "") or ""
-        task_id = value.get("task_id", "")
-        if command not in {"approve", "approve_all", "reject"} or not session_key or not message_id:
+        session_id = value.get("session_id", "")
+        if command not in {"approve", "approve_all", "reject", "resume"} or not session_key or not message_id:
             response.toast = self.lark["CallBackToast"]({"type": "warning", "content": "Invalid action payload."})
             return response
+        if command == "resume" and not session_id:
+            response.toast = self.lark["CallBackToast"]({"type": "warning", "content": "Missing session id."})
+            return response
 
-        self.executor.submit(self._handle_card_action, session_key, message_id, task_id, command, sender_open_id)
+        self.executor.submit(self._handle_card_action, session_key, message_id, session_id, command, sender_open_id)
         return response
 
     def _handle_message(self, message, sender_open_id: str):
@@ -133,10 +168,11 @@ class FeishuBot:
 
         session_key = _session_key(message, sender_open_id)
         try:
-            if text.startswith("/"):
-                result = self._handle_text(session_key, text)
-            else:
-                result = self._run_live_task(message_id, session_key, sender_open_id, text)
+            with self._bind_reply_target(message_id):
+                if text.startswith("/"):
+                    result = self._handle_text(session_key, text, sender_open_id)
+                else:
+                    result = self._run_live_task(message_id, session_key, sender_open_id, text)
             self._deliver_result(message_id, result, session_key, sender_open_id)
         except Exception as exc:
             logger.exception("Feishu message handling failed")
@@ -146,34 +182,39 @@ class FeishuBot:
         self,
         session_key: str,
         message_id: str,
-        task_id: str,
+        session_id: str,
         command: str,
         sender_open_id: str,
     ):
         try:
-            live = self._live_states.get(session_key) or _LiveStatus.from_pending(
-                session_key=session_key,
-                owner_open_id=sender_open_id,
-                message_id=message_id,
-                title=f"Task {task_id or ''}".strip(),
-            )
-            live.message_id = message_id
-            live.phase = "Continuing"
-            live.detail = f"Action: {command}"
-            self._patch_live_card(live, force=True)
-            result = self._resolve_command(session_key, command, hook_handler=self._make_live_hook(live))
+            with self._bind_reply_target(message_id):
+                if command == "resume":
+                    result = self.manager.resume_session(session_key, session_id)
+                    self._deliver_result(message_id, result, session_key, sender_open_id)
+                    return
+                live = self._live_states.get(session_key) or _LiveStatus.from_pending(
+                    session_key=session_key,
+                    owner_open_id=sender_open_id,
+                    message_id=message_id,
+                    title=f"Session {session_id or ''}".strip(),
+                )
+                live.message_id = message_id
+                live.phase = "Continuing"
+                live.detail = f"Action: {command}"
+                self._patch_live_card(live, force=True)
+                result = self._resolve_command(session_key, command, hook_handler=self._make_live_hook(live))
             self._deliver_result(message_id, result, session_key, sender_open_id)
         except Exception as exc:
             logger.exception("Feishu card action failed")
             self._reply_card(message_id, build_error_card("AutoCode Error", f"Error: {exc}"))
 
-    def _handle_text(self, session_key: str, text: str) -> RemoteTurnResult | str:
+    def _handle_text(self, session_key: str, text: str, sender_open_id: str) -> RemoteTurnResult | str | _ResumeSelection | _AttachmentReply:
         try:
             if not text.startswith("/"):
                 return self.manager.submit(session_key, text)
 
-            command, _, arg_text = text.partition(" ")
-            arg_text = arg_text.strip()
+            command, _, argument = text.partition(" ")
+            argument = argument.strip()
             if command in {"/start", "/help"}:
                 return _help_text()
             if command == "/reset":
@@ -181,10 +222,17 @@ class FeishuBot:
                 return "Chat session cleared."
             if command == "/task":
                 return self.manager.current_task_summary(session_key)
-            if command == "/tasks":
-                return render_task_list(self.manager.list_recent_tasks())
             if command == "/trace":
                 return self.manager.current_trace(session_key)
+            if command == "/resume":
+                tasks = self.manager.list_resume_candidates(limit=10)
+                if not tasks:
+                    return "No resumable sessions for the current project."
+                return _ResumeSelection(tasks=tasks, session_key=session_key, owner_open_id=sender_open_id)
+            if command == "/send_image":
+                return _AttachmentReply("image", _resolve_workspace_attachment(self.config.workspace_root, argument, image_only=True))
+            if command == "/send_file":
+                return _AttachmentReply("file", _resolve_workspace_attachment(self.config.workspace_root, argument, image_only=False))
             if command in {"/approve", "/approve_all", "/reject"}:
                 live = self._live_states.get(session_key)
                 hook_handler = self._make_live_hook(live) if live else None
@@ -193,10 +241,6 @@ class FeishuBot:
                     live.detail = f"Action: {command[1:]}"
                     self._patch_live_card(live, force=True)
                 return self._resolve_command(session_key, command[1:], hook_handler=hook_handler)
-            if command == "/resume":
-                if not arg_text:
-                    return "Usage: /resume <task_id>"
-                return self.manager.resume_task(session_key, arg_text)
             return "Unknown command. Send /help for available commands."
         except ValueError as exc:
             return str(exc)
@@ -218,10 +262,27 @@ class FeishuBot:
     def _deliver_result(
         self,
         message_id: str,
-        result: RemoteTurnResult | str,
+        result: RemoteTurnResult | str | _ResumeSelection | _AttachmentReply,
         session_key: str,
         sender_open_id: str,
     ):
+        if isinstance(result, _ResumeSelection):
+            self._reply_card(
+                message_id,
+                build_resume_card(
+                    result.tasks,
+                    session_key=result.session_key,
+                    owner_open_id=result.owner_open_id,
+                    workspace_root=self.config.workspace_root,
+                ),
+            )
+            return
+        if isinstance(result, _AttachmentReply):
+            if result.kind == "image":
+                self._reply_image(message_id, result.path)
+            else:
+                self._reply_file(message_id, result.path)
+            return
         if isinstance(result, str):
             for chunk in split_text_chunks(result):
                 self._reply_text(message_id, chunk)
@@ -229,6 +290,7 @@ class FeishuBot:
         live = self._live_states.get(session_key)
         if result.pending_tool:
             if live:
+                live.session_id = result.session_id or live.session_id
                 live.task_id = result.task_id or live.task_id
                 live.status = result.status or live.status
                 live.auto_approve_for_task = result.auto_approve_for_task
@@ -242,6 +304,7 @@ class FeishuBot:
             self._reply_card(message_id, build_approval_card(result, session_key, sender_open_id))
             return
         if live:
+            live.session_id = result.session_id or live.session_id
             live.task_id = result.task_id or live.task_id
             live.status = result.status or live.status or "completed"
             live.auto_approve_for_task = result.auto_approve_for_task
@@ -288,6 +351,22 @@ class FeishuBot:
             raise RuntimeError(f"Feishu reply failed: {response.code} {response.msg}")
         return getattr(getattr(response, "data", None), "message_id", "") or ""
 
+    def _reply_image(self, message_id: str, path: Path):
+        image_key = self._upload_image(path)
+        request = _build_reply_request(self.lark, message_id, "image", build_image_content(image_key))
+        response = self.client.im.v1.message.reply(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu image reply failed: {response.code} {response.msg}")
+        return getattr(getattr(response, "data", None), "message_id", "") or ""
+
+    def _reply_file(self, message_id: str, path: Path):
+        file_key = self._upload_file(path)
+        request = _build_reply_request(self.lark, message_id, "file", build_file_content(file_key, path.name))
+        response = self.client.im.v1.message.reply(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu file reply failed: {response.code} {response.msg}")
+        return getattr(getattr(response, "data", None), "message_id", "") or ""
+
     def _reply_card(self, message_id: str, card: dict):
         request = _build_reply_request(self.lark, message_id, "interactive", json.dumps(card, ensure_ascii=False))
         response = self.client.im.v1.message.reply(request)
@@ -300,6 +379,54 @@ class FeishuBot:
         response = self.client.im.v1.message.patch(request)
         if not response.success():
             raise RuntimeError(f"Feishu card patch failed: {response.code} {response.msg}")
+
+    def _upload_image(self, path: Path) -> str:
+        with path.open("rb") as file_obj:
+            request = _build_image_upload_request(self.lark, file_obj)
+            response = self.client.im.v1.image.create(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu image upload failed: {response.code} {response.msg}")
+        image_key = getattr(getattr(response, "data", None), "image_key", "") or ""
+        if not image_key:
+            raise RuntimeError("Feishu image upload returned an empty image_key.")
+        return image_key
+
+    def _upload_file(self, path: Path) -> str:
+        with path.open("rb") as file_obj:
+            request = _build_file_upload_request(self.lark, file_obj, path.name)
+            response = self.client.im.v1.file.create(request)
+        if not response.success():
+            raise RuntimeError(f"Feishu file upload failed: {response.code} {response.msg}")
+        file_key = getattr(getattr(response, "data", None), "file_key", "") or ""
+        if not file_key:
+            raise RuntimeError("Feishu file upload returned an empty file_key.")
+        return file_key
+
+    def _send_attachment_from_tool(self, file_path: str) -> str:
+        message_id = getattr(self._tool_context, "message_id", "") or ""
+        if not message_id:
+            raise RuntimeError("No active Feishu reply target.")
+        path = _resolve_workspace_attachment(self.config.workspace_root, file_path, image_only=False)
+        if _attachment_kind(path) == "image":
+            self._reply_image(message_id, path)
+            return f"Sent image to Feishu chat: {path.name}"
+        self._reply_file(message_id, path)
+        return f"Sent file to Feishu chat: {path.name}"
+
+    @contextmanager
+    def _bind_reply_target(self, message_id: str):
+        previous = getattr(self._tool_context, "message_id", None)
+        self._tool_context.message_id = message_id
+        try:
+            yield
+        finally:
+            if previous is None:
+                try:
+                    del self._tool_context.message_id
+                except AttributeError:
+                    pass
+            else:
+                self._tool_context.message_id = previous
 
     def _is_allowed(self, sender_open_id: str, chat_id: str) -> bool:
         allowed_open_ids = set(self.config.feishu_allowed_open_ids)
@@ -315,13 +442,14 @@ def _help_text() -> str:
     return (
         "AutoCode Feishu control is ready.\n\n"
         "Commands:\n"
-        "/task - show current task\n"
-        "/tasks - list recent checkpoints\n"
-        "/trace - show the current trace\n"
+        "/task - show current session and task\n"
+        "/trace - show the current session trace\n"
         "/approve - approve the pending tool call\n"
         "/approve_all - approve this tool call and auto-approve later normal confirms\n"
         "/reject - reject the pending tool call\n"
-        "/resume <task_id> - restore a checkpoint into this chat\n"
+        "/resume - show resumable sessions for the current project\n"
+        "/send_image <path> - upload and reply with an image from the current project\n"
+        "/send_file <path> - upload and reply with a file from the current project\n"
         "/reset - clear the in-memory chat session\n\n"
         "Any non-command text is sent to the coding agent."
     )
@@ -375,10 +503,58 @@ def _build_patch_request(lark_api: dict, message_id: str, content: str):
     return lark_api["PatchMessageRequest"].builder().message_id(message_id).request_body(body).build()
 
 
+def _build_image_upload_request(lark_api: dict, file_obj):
+    body = lark_api["CreateImageRequestBody"].builder().image_type("message").image(file_obj).build()
+    return lark_api["CreateImageRequest"].builder().request_body(body).build()
+
+
+def _build_file_upload_request(lark_api: dict, file_obj, file_name: str):
+    body = (
+        lark_api["CreateFileRequestBody"]
+        .builder()
+        .file_type(_guess_feishu_file_type(file_name))
+        .file_name(file_name)
+        .file(file_obj)
+        .build()
+    )
+    return lark_api["CreateFileRequest"].builder().request_body(body).build()
+
+
+def _guess_feishu_file_type(file_name: str) -> str:
+    return _FILE_TYPE_MAP.get(Path(file_name).suffix.lower(), "stream")
+
+
+def _attachment_kind(path: Path) -> str:
+    return "image" if path.suffix.lower() in _IMAGE_EXTENSIONS else "file"
+
+
+def _resolve_workspace_attachment(workspace_root: str, raw_path: str, *, image_only: bool) -> Path:
+    if not raw_path:
+        raise ValueError("Missing file path.")
+    workspace = Path(workspace_root).expanduser().resolve()
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = workspace / path
+    path = path.resolve()
+    try:
+        path.relative_to(workspace)
+    except ValueError as exc:
+        raise ValueError(f"path must stay inside workspace: {workspace}") from exc
+    if not path.is_file():
+        raise ValueError(f"File not found: {path}")
+    if image_only and path.suffix.lower() not in _IMAGE_EXTENSIONS:
+        raise ValueError("Image must be one of: jpg, jpeg, png, webp, gif, bmp, ico, tif, tiff, heic.")
+    return path
+
+
 def _import_lark():
     try:
         import lark_oapi as lark
         from lark_oapi.api.im.v1 import (
+            CreateFileRequest,
+            CreateFileRequestBody,
+            CreateImageRequest,
+            CreateImageRequestBody,
             PatchMessageRequest,
             PatchMessageRequestBody,
             ReplyMessageRequest,
@@ -394,6 +570,10 @@ def _import_lark():
         ) from exc
     return {
         "Client": lark.Client,
+        "CreateFileRequest": CreateFileRequest,
+        "CreateFileRequestBody": CreateFileRequestBody,
+        "CreateImageRequest": CreateImageRequest,
+        "CreateImageRequestBody": CreateImageRequestBody,
         "EventDispatcherHandler": lark.EventDispatcherHandler,
         "LogLevel": lark.LogLevel,
         "PatchMessageRequest": PatchMessageRequest,
@@ -413,6 +593,7 @@ class _LiveStatus:
     owner_open_id: str
     session_key: str
     message_id: str = ""
+    session_id: str = ""
     task_id: str = ""
     status: str = "running"
     phase: str = "Starting"
@@ -431,6 +612,7 @@ class _LiveStatus:
         return cls(title=title or "(untitled task)", owner_open_id=owner_open_id, session_key=session_key, message_id=message_id)
 
     def handle(self, event: str, payload: dict):
+        self.session_id = payload.get("session_id", self.session_id)
         self.task_id = payload.get("task_id", self.task_id)
         if event == "before_llm":
             self.phase = "Thinking"
@@ -482,6 +664,7 @@ class _LiveStatus:
             "title": self.title,
             "phase": self.phase,
             "status": self.status,
+            "session_id": self.session_id,
             "task_id": self.task_id,
             "step_index": self.step_index,
             "llm_calls": self.llm_calls,

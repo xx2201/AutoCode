@@ -1,0 +1,54 @@
+{% extends "base.html" %}
+{% block title %}Redis 检视 - 教学重点{% endblock %}
+{% block content %}
+<div class="card">
+  <h1>Redis 中当前的 Session 数据</h1>
+
+  {% if not redis_ok %}
+  <div class="alert">Redis 未连接! 请确认本地 6379 端口有 Redis 服务。</div>
+  {% endif %}
+
+  <p class="muted">
+    这一页直接读 Redis。打开 <a href="{{ url_for('inspect') }}">新标签页</a> 多刷新几次,
+    配合登录/登出, 就能直观看到 session key 怎么出现、过期、消失。
+  </p>
+
+  <h2>全局信息</h2>
+  <ul>
+    <li>key 前缀: <code>session:*</code></li>
+    <li>新建 session 时设置的 TTL: <strong>{{ ttl_setting }} 秒</strong></li>
+    <li>当前 session 总数: <strong>{{ sessions | length }}</strong></li>
+  </ul>
+
+  <h2>所有 session:&lt;id&gt; keys</h2>
+
+  {% if sessions %}
+    {% for s in sessions %}
+    <div class="session-block {% if s.__ttl__ is lt 10 %}expiring{% endif %}">
+      <div class="session-header">
+        <code class="key">{{ s.__key__ }}</code>
+        <span class="ttl">
+          TTL: <strong>{{ s.__ttl__ }}</strong> 秒
+          {% if s.__ttl__ is lt 10 %}<span class="badge">即将过期</span>{% endif %}
+          {% if s.__ttl__ == -2 %}<span class="badge red">已过期</span>{% endif %}
+        </span>
+      </div>
+      <table>
+        <tr><th>Field</th><th>Value</th></tr>
+        {% for k, v in s.items() %}
+          {% if not k.startswith('__') %}
+          <tr><td>{{ k }}</td><td>{{ v }}</td></tr>
+          {% endif %}
+        {% endfor %}
+      </table>
+    </div>
+    {% endfor %}
+  {% else %}
+    <p class="empty">Redis 中还没有 session. <a href="{{ url_for('login') }}">去登录一个 →</a></p>
+  {% endif %}
+
+  <h2>对照: 浏览器里的 cookie</h2>
+  <p>浏览器 F12 打开 DevTools → Application → Cookies, 看到名为 <code>SID</code> 的 cookie,
+    它的值就是上面 <code>session:</code> 后面的那串字符串。</p>
+</div>
+{% endblock %}

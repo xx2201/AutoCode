@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "autocode"
 version = "0.3.0"
-description = "AutoCode - Minimal AI coding agent (~1400 LoC) inspired by Claude Code. Works with any LLM."
+description = "AutoCode - A lightweight local coding agent runtime inspired by Claude Code. Works with any LLM."
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
@@ -52,4 +52,7 @@ autocode-feishu = "autocode.remote.feishu_bot:main"
 Homepage = "https://github.com/he-yufeng/AutoCode"
 Repository = "https://github.com/he-yufeng/AutoCode"
 Issues = "https://github.com/he-yufeng/AutoCode/issues"
+
+[tool.pytest.ini_options]
+testpaths = ["tests", "eval"]
 

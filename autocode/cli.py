@@ -7,9 +7,12 @@ import argparse
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from prompt_toolkit.application import get_app
+from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.shortcuts import CompleteStyle
 
 from .agent import Agent
 from .config import Config
@@ -17,16 +20,35 @@ from .context import render_todos
 from .llm import LLM, LiteLLM
 from .state import (
     format_trace,
-    list_checkpoints,
     list_sessions,
     load_checkpoint,
-    load_session,
     load_trace,
-    save_session,
 )
 from . import __version__
 
 console = Console()
+_PROMPT_MESSAGE = [("ansibrightblue bold", "You > ")]
+_APPROVAL_PROMPT_MESSAGE = [("ansibrightyellow bold", "Approve > ")]
+_APPROVAL_OPTIONS = [
+    ("/approve", "Approve the pending tool call"),
+    ("/approve_all", "Approve now and auto-approve later normal confirms"),
+    ("/reject", "Reject the pending tool call"),
+    ("/later", "Keep approval pending and return"),
+]
+
+
+class _ApprovalCompleter(Completer):
+    def get_completions(self, document, complete_event):
+        prefix = document.text_before_cursor.strip().lower()
+        start_position = -len(document.text_before_cursor)
+        for command, description in _APPROVAL_OPTIONS:
+            if not prefix or command.startswith(prefix):
+                yield Completion(
+                    command,
+                    start_position=start_position,
+                    display=command,
+                    display_meta=description,
+                )
 
 
 def _parse_args():
@@ -38,8 +60,7 @@ def _parse_args():
     p.add_argument("--base-url", help="API base URL (default: current configured base URL)")
     p.add_argument("--api-key", help="API key (default: current configured API key)")
     p.add_argument("-p", "--prompt", help="One-shot prompt (non-interactive mode)")
-    p.add_argument("-r", "--resume", metavar="ID", help="Resume a saved session")
-    p.add_argument("--resume-task", metavar="ID", help="Resume an in-flight task checkpoint")
+    p.add_argument("-r", "--resume", metavar="ID", help="Resume a session")
     p.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     return p.parse_args()
 
@@ -59,7 +80,7 @@ def main():
     if not config.model:
         console.print("[red bold]No model configured.[/]")
         console.print(
-            "Set `AUTOCODE_MODEL`, pass `-m/--model`, or configure the agent repo `.env`.\n"
+            "Set `AUTOCODE_MODEL`, pass `-m/--model`, or configure the current workspace `.env`.\n"
             f"Current workspace: [cyan]{config.workspace_root}[/cyan]"
         )
         sys.exit(1)
@@ -101,34 +122,22 @@ def main():
         auto_approve=config.auto_approve,
     )
 
-    # resume saved session
     if args.resume:
-        loaded = load_session(args.resume)
+        loaded = _load_resumable_session(args.resume, config.workspace_root)
         if loaded:
-            agent.messages, loaded_model = loaded
-            # restore the model from the saved session unless overridden by CLI
+            session_state, messages, loaded_model = loaded
+            agent.restore_session(session_state, messages, loaded_model)
             if not args.model:
                 agent.llm.model = loaded_model
                 config.model = loaded_model
-            console.print(f"[green]Resumed session: {args.resume} (model: {agent.llm.model})[/green]")
-        else:
-            console.print(f"[red]Session '{args.resume}' not found.[/red]")
-            sys.exit(1)
-
-    if args.resume_task:
-        loaded = load_checkpoint(args.resume_task)
-        if loaded:
-            task_state, messages, loaded_model = loaded
-            agent.restore_task(task_state, messages, loaded_model)
-            if not args.model:
-                agent.llm.model = loaded_model
-                config.model = loaded_model
+            current_task = session_state.current_task
+            status = current_task.status if current_task else "idle"
             console.print(
-                f"[green]Resumed task: {task_state.task_id} "
-                f"(status: {task_state.status}, model: {agent.llm.model})[/green]"
+                f"[green]Resumed session: {session_state.session_id} "
+                f"(status: {status}, model: {agent.llm.model})[/green]"
             )
         else:
-            console.print(f"[red]Task '{args.resume_task}' not found.[/red]")
+            console.print(f"[red]Session '{args.resume}' not found.[/red]")
             sys.exit(1)
 
     # one-shot mode
@@ -137,7 +146,7 @@ def main():
         return
 
     # interactive REPL
-    _repl(agent, config, session_id=args.resume)
+    _repl(agent, config)
 
 
 def _run_once(agent: Agent, prompt: str):
@@ -158,7 +167,7 @@ def _run_once(agent: Agent, prompt: str):
         console.print(Markdown(response))
 
 
-def _repl(agent: Agent, config: Config, session_id: str | None = None):
+def _repl(agent: Agent, config: Config):
     """Interactive read-eval-print loop."""
     current_model = agent.llm.model
     console.print(Panel(
@@ -168,8 +177,6 @@ def _repl(agent: Agent, config: Config, session_id: str | None = None):
         + "\nType [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, [bold]quit[/bold] to exit.",
         border_style="blue",
     ))
-    session_id = _autosave_session(agent.messages, config.model, session_id)
-
     hist_path = os.path.expanduser("~/.autocode_history")
     history = FileHistory(hist_path)
 
@@ -185,7 +192,6 @@ def _repl(agent: Agent, config: Config, session_id: str | None = None):
         event.current_buffer.insert_text("\n")
 
     def _run_pending_approval(approved: bool, enable_auto_approve: bool = False):
-        nonlocal session_id
         streamed: list[str] = []
 
         def on_token(tok):
@@ -206,12 +212,31 @@ def _repl(agent: Agent, config: Config, session_id: str | None = None):
             print()
         else:
             console.print(Markdown(response))
-        session_id = _autosave_session(agent.messages, config.model, session_id)
+
+    def _prompt_pending_approval() -> bool:
+        handled = False
+        while agent.task_state is not None and agent.task_state.pending_approval is not None:
+            choice = _prompt_approval(agent.task_state.pending_approval)
+            if choice is None:
+                console.print(
+                    "[yellow]Approval is still pending. "
+                    "Choose Approve, Approve All, or Reject to continue.[/yellow]"
+                )
+                return handled
+            _run_pending_approval(
+                approved=choice in {"approve", "approve_all"},
+                enable_auto_approve=choice == "approve_all",
+            )
+            handled = True
+        return handled
 
     while True:
+        if agent.task_state is not None and agent.task_state.pending_approval is not None:
+            if _prompt_pending_approval():
+                continue
         try:
             user_input = pt_prompt(
-                "You > ",
+                _PROMPT_MESSAGE,
                 history=history,
                 multiline=True,
                 key_bindings=kb,
@@ -224,6 +249,17 @@ def _repl(agent: Agent, config: Config, session_id: str | None = None):
         if not user_input:
             continue
 
+        if (
+            agent.task_state is not None
+            and agent.task_state.pending_approval is not None
+            and not user_input.startswith("/")
+        ):
+            console.print(
+                "[yellow]Approval is pending. Choose an action in the dialog or use "
+                "/approve, /approve_all, or /reject.[/yellow]"
+            )
+            continue
+
         # built-in commands
         if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
             break
@@ -232,7 +268,6 @@ def _repl(agent: Agent, config: Config, session_id: str | None = None):
             continue
         if user_input == "/reset":
             agent.reset()
-            session_id = None
             console.print("[yellow]Conversation reset.[/yellow]")
             continue
         if user_input == "/tokens":
@@ -249,7 +284,6 @@ def _repl(agent: Agent, config: Config, session_id: str | None = None):
             if new_model:
                 agent.llm.model = new_model
                 config.model = new_model
-                session_id = _autosave_session(agent.messages, config.model, session_id)
                 console.print(f"Switched to [cyan]{new_model}[/cyan]")
             else:
                 console.print(f"Current model: [cyan]{config.model}[/cyan]")
@@ -277,23 +311,19 @@ def _repl(agent: Agent, config: Config, session_id: str | None = None):
                 for f in sorted(_changed_files):
                     console.print(f"  [cyan]{f}[/cyan]")
             continue
-        if user_input == "/sessions":
-            sessions = list_sessions()
-            if not sessions:
-                console.print("[dim]No saved sessions.[/dim]")
-            else:
-                for s in sessions:
-                    console.print(f"  [cyan]{s['id']}[/cyan] ({s['model']}, {s['saved_at']}) {s['preview']}")
-            continue
         if user_input == "/task":
-            if agent.task_state is None:
-                console.print("[dim]No active task.[/dim]")
+            if agent.session_state is None:
+                console.print("[dim]No active session.[/dim]")
             else:
+                if agent.task_state is None:
+                    console.print(f"Session: [cyan]{agent.session_state.session_id}[/cyan]  current task: [dim](none)[/dim]")
+                    continue
                 pending = ""
                 if agent.task_state.pending_approval:
                     pending = f"  pending: {agent.task_state.pending_approval.tool_name}"
                 auto = "on" if agent.task_state.auto_approve_for_task else "off"
                 console.print(
+                    f"Session: [cyan]{agent.session_state.session_id}[/cyan]  "
                     f"Task: [cyan]{agent.task_state.task_id}[/cyan]  "
                     f"title: [bold]{agent.task_state.title or '(untitled)'}[/bold]  "
                     f"status: [yellow]{agent.task_state.status}[/yellow]  "
@@ -307,22 +337,39 @@ def _repl(agent: Agent, config: Config, session_id: str | None = None):
             else:
                 console.print(Panel(render_todos(agent.task_state.todos), title="Todo", border_style="dim"))
             continue
-        if user_input == "/tasks":
-            tasks = list_checkpoints()
-            if not tasks:
-                console.print("[dim]No task checkpoints.[/dim]")
+        if user_input == "/resume" or user_input.startswith("/resume "):
+            target = user_input[8:].strip() if user_input.startswith("/resume ") else ""
+            if target:
+                loaded = _load_resumable_session(target, config.workspace_root)
+                if loaded is None:
+                    console.print(f"[red]Session '{target}' not found.[/red]")
+                    continue
+                session_state, messages, loaded_model = loaded
+                agent.restore_session(session_state, messages, loaded_model)
+                agent.llm.model = loaded_model
+                config.model = loaded_model
+                current_task = session_state.current_task
+                status = current_task.status if current_task else "idle"
+                console.print(
+                    f"[green]Resumed session: {session_state.session_id} "
+                    f"(status: {status}, model: {agent.llm.model})[/green]"
+                )
+                continue
+            sessions = _resume_candidates(config.workspace_root, limit=10)
+            if not sessions:
+                console.print("[dim]No resumable sessions for the current project.[/dim]")
             else:
-                for t in tasks:
+                for session in sessions:
                     console.print(
-                        f"  [cyan]{t['task_id']}[/cyan] ({t['status']}, step {t['step_index']}, "
-                        f"{t['model']}, {t['saved_at']})"
+                        f"  [cyan]{session['session_id']}[/cyan] ({session['status']}, step {session['step_index']}, "
+                        f"{session['model']}, {session['saved_at']})"
                     )
             continue
         if user_input == "/trace":
-            if agent.task_state is None:
-                console.print("[dim]No active task.[/dim]")
+            if agent.session_state is None:
+                console.print("[dim]No active session.[/dim]")
                 continue
-            trace = load_trace(agent.task_state.task_id)
+            trace = load_trace(agent.session_state.session_id)
             if trace is None:
                 console.print("[dim]No trace recorded yet.[/dim]")
             else:
@@ -353,9 +400,12 @@ def _repl(agent: Agent, config: Config, session_id: str | None = None):
                 user_input,
                 on_token=on_token,
                 on_tool=on_tool,
-                approval_handler=None if config.auto_approve else _prompt_approval,
+                approval_handler=None,
             )
-            session_id = _autosave_session(agent.messages, config.model, session_id)
+            if agent.task_state is not None and agent.task_state.pending_approval is not None:
+                if not _prompt_pending_approval():
+                    console.print(Markdown(response))
+                continue
             if streamed:
                 print()  # newline after streamed tokens
             else:
@@ -377,11 +427,11 @@ def _show_help():
         "  /tokens        Show token usage\n"
         "  /compact       Compress conversation context\n"
         "  /diff          Show files modified this session\n"
-        "  /sessions      List saved sessions\n"
-        "  /task          Show the current task state\n"
+        "  /resume        List resumable sessions for the current project\n"
+        "  /resume <id>   Resume a session by id\n"
+        "  /task          Show the current session and task state\n"
         "  /todo          Show the current todo list\n"
-        "  /tasks         List task checkpoints\n"
-        "  /trace         Show the current task trace\n"
+        "  /trace         Show the current session trace\n"
         "  /approve       Approve the pending tool call\n"
         "  /approve_all   Approve this tool call and auto-approve later normal confirms\n"
         "  /reject        Reject the pending tool call\n"
@@ -400,28 +450,50 @@ def _brief(kwargs: dict, maxlen: int = 80) -> str:
     return s[:maxlen] + ("..." if len(s) > maxlen else "")
 
 
-def _autosave_session(messages: list[dict], model: str, session_id: str | None) -> str | None:
-    if not messages:
-        return session_id
-    return save_session(messages, model, session_id)
+def _resume_candidates(workspace_root: str, limit: int = 10) -> list[dict]:
+    return list_sessions(workspace_root=workspace_root, limit=limit)
 
 
-def _prompt_approval(pending) -> str | bool:
-    command_line = ""
+def _load_resumable_session(session_id: str, workspace_root: str):
+    allowed = {item["session_id"] for item in _resume_candidates(workspace_root, limit=200)}
+    if session_id not in allowed:
+        return None
+    return load_checkpoint(session_id)
+
+
+def _prompt_approval(pending) -> str | bool | None:
+    command = ""
     if getattr(pending, "tool_name", "") == "bash":
         command = getattr(pending, "arguments", {}).get("command", "")
-        if command:
-            command_line = f"\nCommand: [dim]{command}[/dim]"
-    prompt = (
-        f"\nApprove tool call [cyan]{pending.tool_name}[/cyan] "
-        f"because: {pending.reason or 'confirmation required'}?"
-        f"{command_line}\n[y/N or /approve /approve_all /reject] "
+
+    body = (
+        f"Tool: {pending.tool_name}\n"
+        f"Reason: {pending.reason or 'confirmation required'}"
+        + (f"\n\nCommand:\n{command}" if command else "")
     )
-    console.print(prompt, end="")
-    choice = input().strip().lower()
-    if choice in {"y", "yes", "/approve"}:
-        return "approve"
-    if choice == "/approve_all":
-        return "approve_all"
-    return False
+    console.print(Panel(body, title="Pending Approval", border_style="yellow"))
+
+    completer = _ApprovalCompleter()
+    while True:
+        try:
+            result = pt_prompt(
+                _APPROVAL_PROMPT_MESSAGE,
+                default="/",
+                completer=completer,
+                complete_style=CompleteStyle.MULTI_COLUMN,
+                complete_while_typing=True,
+                pre_run=lambda: get_app().current_buffer.start_completion(select_first=False),
+            ).strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return None
+
+        if result in {"", "/later"}:
+            return None
+        if result == "/approve":
+            return "approve"
+        if result == "/approve_all":
+            return "approve_all"
+        if result == "/reject":
+            return False
+        console.print("[yellow]Choose /approve, /approve_all, /reject, or /later.[/yellow]")
 

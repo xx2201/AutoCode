@@ -3,11 +3,12 @@ from autocode.state import TraceRecorder, format_trace, load_trace
 
 
 def test_trace_recorder_aggregates_events(tmp_path, monkeypatch):
-    monkeypatch.setattr(checkpoint_module, "TASKS_DIR", tmp_path)
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
 
     recorder = TraceRecorder()
-    recorder.handle("user_message", {"task_id": "task_trace", "content_preview": "hi"})
+    recorder.handle("user_message", {"session_id": "session_trace", "task_id": "task_trace", "content_preview": "hi"})
     recorder.handle("after_llm", {
+        "session_id": "session_trace",
         "task_id": "task_trace",
         "step_index": 1,
         "prompt_tokens": 10,
@@ -15,23 +16,26 @@ def test_trace_recorder_aggregates_events(tmp_path, monkeypatch):
         "tool_calls": 1,
     })
     recorder.handle("policy_decision", {
+        "session_id": "session_trace",
         "task_id": "task_trace",
         "tool_name": "bash",
         "decision": {"action": "confirm", "reason": "unsafe"},
     })
     recorder.handle("before_tool", {
+        "session_id": "session_trace",
         "task_id": "task_trace",
         "tool_name": "edit_file",
-        "arguments": {"file_path": "autocode/session.py"},
+        "arguments": {"file_path": "autocode/checkpoint.py"},
     })
     recorder.handle("after_tool", {
+        "session_id": "session_trace",
         "task_id": "task_trace",
         "tool_name": "edit_file",
-        "result": "Edited autocode/session.py",
+        "result": "Edited autocode/checkpoint.py",
     })
-    recorder.handle("task_status", {"task_id": "task_trace", "status": "completed"})
+    recorder.handle("task_status", {"session_id": "session_trace", "task_id": "task_trace", "status": "completed"})
 
-    trace = load_trace("task_trace")
+    trace = load_trace("session_trace")
     assert trace is not None
     assert trace["status"] == "completed"
     assert trace["llm_calls"] == 1
@@ -39,12 +43,13 @@ def test_trace_recorder_aggregates_events(tmp_path, monkeypatch):
     assert trace["approval_requests"] == 1
     assert trace["prompt_tokens"] == 10
     assert trace["completion_tokens"] == 5
-    assert "autocode/session.py" in trace["modified_files"]
+    assert "autocode/checkpoint.py" in trace["modified_files"]
 
 
 def test_format_trace_contains_key_fields():
     text = format_trace({
-        "task_id": "task_1",
+        "session_id": "session_1",
+        "current_task_id": "task_1",
         "status": "completed",
         "steps": 2,
         "llm_calls": 1,
@@ -58,7 +63,8 @@ def test_format_trace_contains_key_fields():
         "tools": {"edit_file": 1},
         "duration_seconds": 1.25,
     })
-    assert "Task: task_1" in text
+    assert "Session: session_1" in text
+    assert "Current Task: task_1" in text
     assert "Tool calls: 1" in text
     assert "Modified files: a.py" in text
 
