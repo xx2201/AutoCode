@@ -4,6 +4,7 @@ from .bash import BashTool
 from .read import ReadFileTool
 from .write import WriteFileTool
 from .edit import EditFileTool
+from .delete import DeletePathTool
 from .glob_tool import GlobTool
 from .grep import GrepTool
 from .agent import AgentTool
@@ -15,6 +16,7 @@ ALL_TOOLS = [
     ReadFileTool(),
     WriteFileTool(),
     EditFileTool(),
+    DeletePathTool(),
     GlobTool(),
     GrepTool(),
     StartProcessTool(),

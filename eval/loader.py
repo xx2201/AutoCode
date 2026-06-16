@@ -9,7 +9,10 @@ from .schema import EvalTaskSpec
 
 def discover_tasks(tasks_dir: str | Path) -> list[Path]:
     base = Path(tasks_dir)
-    return sorted(base.glob("*.json"))
+    files = list(base.glob("*.json"))
+    files.extend(base.glob("*.yaml"))
+    files.extend(base.glob("*.yml"))
+    return sorted(files)
 
 
 def load_tasks(tasks_dir: str | Path, task_ids: list[str] | None = None, tags: list[str] | None = None) -> list[EvalTaskSpec]:

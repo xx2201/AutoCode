@@ -1,0 +1,10 @@
+{
+  "installMethod": "unknown",
+  "autoUpdates": true,
+  "cachedStatsigGates": {
+    "tengu_disable_bypass_permissions_mode": false
+  },
+  "firstStartTime": "2026-06-15T06:29:18.863Z",
+  "sonnet45MigrationComplete": true,
+  "opus45MigrationComplete": true
+}

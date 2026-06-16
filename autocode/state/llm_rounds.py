@@ -29,12 +29,16 @@ def _response_payload(
     tool_calls: list[dict],
     prompt_tokens: int,
     completion_tokens: int,
+    cache_read_tokens: int,
+    cache_miss_tokens: int,
 ) -> dict:
     return {
         "content": content,
         "tool_calls": tool_calls,
         "prompt_tokens": prompt_tokens,
         "completion_tokens": completion_tokens,
+        "cache_read_tokens": cache_read_tokens,
+        "cache_miss_tokens": cache_miss_tokens,
     }
 
 
@@ -57,6 +61,8 @@ class LLMRoundRecorder:
         response_tool_calls: list[dict],
         prompt_tokens: int,
         completion_tokens: int,
+        cache_read_tokens: int = 0,
+        cache_miss_tokens: int = 0,
     ):
         directory = session_dir(session_id)
         directory.mkdir(parents=True, exist_ok=True)
@@ -73,6 +79,8 @@ class LLMRoundRecorder:
                 tool_calls=response_tool_calls,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                cache_read_tokens=cache_read_tokens,
+                cache_miss_tokens=cache_miss_tokens,
             ),
         }
         jsonl_path = directory / "llm_rounds.jsonl"

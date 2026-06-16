@@ -1,0 +1,69 @@
+2026-06-15T06:29:18.865Z [ERROR] Failed to save config with lock: Error: ENOENT: no such file or directory, lstat 'G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json'
+2026-06-15T06:29:18.867Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json.tmp.47112.1781504958867
+2026-06-15T06:29:18.867Z [DEBUG] Setting permissions for new file: 600
+2026-06-15T06:29:18.873Z [DEBUG] Temp file written successfully, size: 103 bytes
+2026-06-15T06:29:18.873Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json.tmp.47112.1781504958867 to G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json
+2026-06-15T06:29:18.875Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json written atomically
+2026-06-15T06:29:18.918Z [DEBUG] Using bash path: "C:\Program Files\Git\bin\bash.exe"
+2026-06-15T06:29:19.022Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-06-15T06:29:19.022Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-06-15T06:29:19.022Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-06-15T06:29:19.022Z [DEBUG] [LSP SERVER MANAGER] initialize() called
+2026-06-15T06:29:19.022Z [DEBUG] [LSP SERVER MANAGER] Calling getAllLspServers()
+2026-06-15T06:29:19.036Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json.tmp.47112.1781504959036
+2026-06-15T06:29:19.037Z [DEBUG] Preserving file permissions: 100666
+2026-06-15T06:29:19.044Z [DEBUG] Temp file written successfully, size: 140 bytes
+2026-06-15T06:29:19.045Z [DEBUG] Applied original permissions to temp file
+2026-06-15T06:29:19.045Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json.tmp.47112.1781504959036 to G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json
+2026-06-15T06:29:19.047Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json written atomically
+2026-06-15T06:29:19.059Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json.tmp.47112.1781504959059
+2026-06-15T06:29:19.059Z [DEBUG] Preserving file permissions: 100666
+2026-06-15T06:29:19.066Z [DEBUG] Temp file written successfully, size: 175 bytes
+2026-06-15T06:29:19.067Z [DEBUG] Applied original permissions to temp file
+2026-06-15T06:29:19.067Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json.tmp.47112.1781504959059 to G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json
+2026-06-15T06:29:19.068Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json written atomically
+2026-06-15T06:29:19.452Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-06-15T06:29:19.459Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json.tmp.47112.1781504959459
+2026-06-15T06:29:19.459Z [DEBUG] Preserving file permissions: 100666
+2026-06-15T06:29:19.468Z [DEBUG] Temp file written successfully, size: 257 bytes
+2026-06-15T06:29:19.469Z [DEBUG] Applied original permissions to temp file
+2026-06-15T06:29:19.469Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json.tmp.47112.1781504959459 to G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json
+2026-06-15T06:29:19.471Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json written atomically
+2026-06-15T06:29:19.471Z [DEBUG] Total LSP servers loaded: 0
+2026-06-15T06:29:19.472Z [DEBUG] [LSP SERVER MANAGER] getAllLspServers returned 0 server(s)
+2026-06-15T06:29:19.472Z [DEBUG] LSP manager initialized with 0 servers
+2026-06-15T06:29:19.472Z [DEBUG] LSP server manager initialized successfully
+2026-06-15T06:29:19.472Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-06-15T06:29:19.489Z [DEBUG] Loading skills from directories: managed=C:\ProgramData\ClaudeCode\.claude\skills, user=G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude\skills, project=G:\mycode\CoreCoder\tmp\claude_arg_probe2\workspace\.claude\skills
+2026-06-15T06:29:19.490Z [DEBUG] >>>>> getPluginSkills CALLED <<<<<
+2026-06-15T06:29:21.688Z [DEBUG] installed_plugins.json doesn't exist yet at G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude\plugins\installed_plugins.json, returning empty object
+2026-06-15T06:29:21.953Z [DEBUG] Creating shell snapshot for bash (C:\Program Files\Git\bin\bash.exe)
+2026-06-15T06:29:21.954Z [DEBUG] Looking for shell config file: G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.bashrc
+2026-06-15T06:29:21.954Z [DEBUG] Shell config file not found: G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.bashrc, creating snapshot with Claude Code defaults only
+2026-06-15T06:29:21.954Z [DEBUG] Snapshots directory: G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude\shell-snapshots
+2026-06-15T06:29:21.993Z [DEBUG] Creating snapshot at: G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude\shell-snapshots\snapshot-bash-1781504961954-3z9fwa.sh
+2026-06-15T06:29:21.993Z [DEBUG] Shell binary exists: true
+2026-06-15T06:29:21.993Z [DEBUG] Execution timeout: 10000ms
+2026-06-15T06:29:22.010Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude\todos\bd77dad2-f96a-4d67-aae7-eacc33b25273-agent-bd77dad2-f96a-4d67-aae7-eacc33b25273.json.tmp.47112.1781504962010
+2026-06-15T06:29:22.019Z [DEBUG] Temp file written successfully, size: 2 bytes
+2026-06-15T06:29:22.019Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude\todos\bd77dad2-f96a-4d67-aae7-eacc33b25273-agent-bd77dad2-f96a-4d67-aae7-eacc33b25273.json.tmp.47112.1781504962010 to G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude\todos\bd77dad2-f96a-4d67-aae7-eacc33b25273-agent-bd77dad2-f96a-4d67-aae7-eacc33b25273.json
+2026-06-15T06:29:22.021Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude\todos\bd77dad2-f96a-4d67-aae7-eacc33b25273-agent-bd77dad2-f96a-4d67-aae7-eacc33b25273.json written atomically
+2026-06-15T06:29:22.023Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-06-15T06:29:22.023Z [DEBUG] Total plugin skills loaded: 0
+2026-06-15T06:29:22.023Z [DEBUG] Total plugin commands loaded: 0
+2026-06-15T06:29:22.023Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-06-15T06:29:22.057Z [DEBUG] Loaded 0 unique skills (managed: 0, user: 0, project: 0, duplicates removed: 0)
+2026-06-15T06:29:22.058Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills
+2026-06-15T06:29:22.058Z [DEBUG] Total plugin agents loaded: 0
+2026-06-15T06:29:22.412Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json.tmp.47112.1781504962412
+2026-06-15T06:29:22.412Z [DEBUG] Preserving file permissions: 100666
+2026-06-15T06:29:22.422Z [DEBUG] Temp file written successfully, size: 302 bytes
+2026-06-15T06:29:22.422Z [DEBUG] Applied original permissions to temp file
+2026-06-15T06:29:22.422Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json.tmp.47112.1781504962412 to G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json
+2026-06-15T06:29:22.423Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_arg_probe2\home\.claude.json written atomically
+2026-06-15T06:29:22.426Z [DEBUG] Getting matching hook commands for SessionStart with query: startup
+2026-06-15T06:29:22.426Z [DEBUG] Found 0 hook matchers in settings
+2026-06-15T06:29:22.426Z [DEBUG] Matched 0 unique hooks for query "startup" (0 before deduplication)
+2026-06-15T06:29:22.427Z [DEBUG] Getting matching hook commands for SessionEnd with query: other
+2026-06-15T06:29:22.427Z [DEBUG] Found 0 hook matchers in settings
+2026-06-15T06:29:22.427Z [DEBUG] Matched 0 unique hooks for query "other" (0 before deduplication)

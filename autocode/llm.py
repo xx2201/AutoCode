@@ -21,6 +21,8 @@ class ToolCall:
     id: str
     name: str
     arguments: dict
+    raw_arguments: str | None = None
+    parse_error: str | None = None
 
 
 @dataclass
@@ -29,6 +31,8 @@ class LLMResponse:
     tool_calls: list[ToolCall] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_miss_tokens: int = 0
 
     @property
     def message(self) -> dict:
@@ -41,12 +45,58 @@ class LLMResponse:
                     "type": "function",
                     "function": {
                         "name": tc.name,
-                        "arguments": json.dumps(tc.arguments),
+                        "arguments": (
+                            tc.raw_arguments
+                            if tc.parse_error and tc.raw_arguments is not None
+                            else json.dumps(tc.arguments)
+                        ),
                     },
                 }
                 for tc in self.tool_calls
             ]
         return msg
+
+
+def _parse_tool_arguments(raw_args: str) -> tuple[dict, str | None]:
+    if not raw_args:
+        return {}, "tool-call arguments were empty"
+    try:
+        parsed = json.loads(raw_args)
+    except json.JSONDecodeError as exc:
+        return {}, f"tool-call arguments were not valid JSON: {exc.msg} at char {exc.pos}"
+    if not isinstance(parsed, dict):
+        return {}, f"tool-call arguments must decode to a JSON object, got {type(parsed).__name__}"
+    return parsed, None
+
+
+def _usage_field(obj, name: str):
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _usage_int(obj, name: str) -> int:
+    value = _usage_field(obj, name)
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _extract_cache_usage(usage) -> tuple[int, int]:
+    hit = _usage_int(usage, "prompt_cache_hit_tokens")
+    miss = _usage_int(usage, "prompt_cache_miss_tokens")
+    details = _usage_field(usage, "prompt_tokens_details")
+    cached = _usage_int(details, "cached_tokens")
+    prompt_tokens = _usage_int(usage, "prompt_tokens")
+    has_cache_metadata = bool(hit or miss or cached or details is not None)
+    if hit == 0 and cached:
+        hit = cached
+    if miss == 0 and has_cache_metadata and prompt_tokens:
+        miss = max(prompt_tokens - hit, 0)
+    return hit, miss
 
 
 # pricing per million tokens: (input, output)
@@ -95,6 +145,8 @@ class LLM:
         self.extra = kwargs  # temperature, max_tokens, etc.
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        self.total_cache_read_tokens = 0
+        self.total_cache_miss_tokens = 0
 
     def clone(self) -> "LLM":
         return type(self)(
@@ -144,12 +196,15 @@ class LLM:
         tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
         prompt_tok = 0
         completion_tok = 0
+        cache_read_tok = 0
+        cache_miss_tok = 0
 
         for chunk in stream:
             # usage info comes in the final chunk
             if chunk.usage:
-                prompt_tok = chunk.usage.prompt_tokens
-                completion_tok = chunk.usage.completion_tokens
+                prompt_tok = _usage_int(chunk.usage, "prompt_tokens")
+                completion_tok = _usage_int(chunk.usage, "completion_tokens")
+                cache_read_tok, cache_miss_tok = _extract_cache_usage(chunk.usage)
 
             if not chunk.choices:
                 continue
@@ -179,20 +234,29 @@ class LLM:
         parsed: list[ToolCall] = []
         for idx in sorted(tc_map):
             raw = tc_map[idx]
-            try:
-                args = json.loads(raw["args"])
-            except (json.JSONDecodeError, KeyError):
-                args = {}
-            parsed.append(ToolCall(id=raw["id"], name=raw["name"], arguments=args))
+            args, parse_error = _parse_tool_arguments(raw.get("args", ""))
+            parsed.append(
+                ToolCall(
+                    id=raw["id"],
+                    name=raw["name"],
+                    arguments=args,
+                    raw_arguments=raw.get("args", ""),
+                    parse_error=parse_error,
+                )
+            )
 
         self.total_prompt_tokens += prompt_tok
         self.total_completion_tokens += completion_tok
+        self.total_cache_read_tokens += cache_read_tok
+        self.total_cache_miss_tokens += cache_miss_tok
 
         return LLMResponse(
             content="".join(content_parts),
             tool_calls=parsed,
             prompt_tokens=prompt_tok,
             completion_tokens=completion_tok,
+            cache_read_tokens=cache_read_tok,
+            cache_miss_tokens=cache_miss_tok,
         )
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):
@@ -240,6 +304,8 @@ class LiteLLM(LLM):
         self.extra = kwargs
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        self.total_cache_read_tokens = 0
+        self.total_cache_miss_tokens = 0
 
     def clone(self) -> "LiteLLM":
         return type(self)(
@@ -271,12 +337,15 @@ class LiteLLM(LLM):
         tc_map: dict[int, dict] = {}
         prompt_tok = 0
         completion_tok = 0
+        cache_read_tok = 0
+        cache_miss_tok = 0
 
         for chunk in stream:
             usage = getattr(chunk, "usage", None)
             if usage:
-                prompt_tok = getattr(usage, "prompt_tokens", 0) or 0
-                completion_tok = getattr(usage, "completion_tokens", 0) or 0
+                prompt_tok = _usage_int(usage, "prompt_tokens")
+                completion_tok = _usage_int(usage, "completion_tokens")
+                cache_read_tok, cache_miss_tok = _extract_cache_usage(usage)
 
             if not getattr(chunk, "choices", None):
                 continue
@@ -303,20 +372,29 @@ class LiteLLM(LLM):
         parsed: list[ToolCall] = []
         for idx in sorted(tc_map):
             raw = tc_map[idx]
-            try:
-                args = json.loads(raw["args"])
-            except (json.JSONDecodeError, KeyError):
-                args = {}
-            parsed.append(ToolCall(id=raw["id"], name=raw["name"], arguments=args))
+            args, parse_error = _parse_tool_arguments(raw.get("args", ""))
+            parsed.append(
+                ToolCall(
+                    id=raw["id"],
+                    name=raw["name"],
+                    arguments=args,
+                    raw_arguments=raw.get("args", ""),
+                    parse_error=parse_error,
+                )
+            )
 
         self.total_prompt_tokens += prompt_tok
         self.total_completion_tokens += completion_tok
+        self.total_cache_read_tokens += cache_read_tok
+        self.total_cache_miss_tokens += cache_miss_tok
 
         return LLMResponse(
             content="".join(content_parts),
             tool_calls=parsed,
             prompt_tokens=prompt_tok,
             completion_tokens=completion_tok,
+            cache_read_tokens=cache_read_tok,
+            cache_miss_tokens=cache_miss_tok,
         )
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):

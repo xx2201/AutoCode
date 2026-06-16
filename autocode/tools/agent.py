@@ -41,9 +41,13 @@ class AgentTool(Tool):
         from ..agent import Agent
 
         parent = self._parent_agent
+        sub_tools = [tool for tool in parent._fresh_tools() if tool.name != "agent"]
         sub = Agent(
             llm=parent.llm,
-            tools=[t for t in parent.tools if t.name != "agent"],  # no recursive agents
+            tools=sub_tools,
+            tool_factory=parent._tool_factory,
+            mcp_manager=parent.mcp_manager,
+            own_mcp_manager=False,
             max_context_tokens=parent.context.max_tokens,
             max_rounds=20,
             workspace_root=str(parent.fs.workspace_root),

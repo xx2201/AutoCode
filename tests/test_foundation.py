@@ -82,9 +82,8 @@ def test_memory_manager_reads_project_files(tmp_path, monkeypatch):
     memory_path = manager.memory_file_path()
     memory_path.parent.mkdir(parents=True, exist_ok=True)
     memory_path.write_text("# Project Memory\n\nproject-one", encoding="utf-8")
-    block = manager.build_memory_block()
-    assert "rule-one" in block
-    assert "project-one" in block
+    assert "rule-one" in manager.build_rules_block()
+    assert "project-one" in manager.build_project_memory_block()
 
 
 def test_todo_helpers_render():

@@ -13,7 +13,15 @@ def test_trace_recorder_aggregates_events(tmp_path, monkeypatch):
         "step_index": 1,
         "prompt_tokens": 10,
         "completion_tokens": 5,
+        "cache_read_tokens": 6,
+        "cache_miss_tokens": 4,
         "tool_calls": 1,
+    })
+    recorder.handle("context_compaction", {
+        "session_id": "session_trace",
+        "task_id": "task_trace",
+        "saved_tokens": 120,
+        "layers": ["tool_snip", "summarize_old"],
     })
     recorder.handle("policy_decision", {
         "session_id": "session_trace",
@@ -43,6 +51,11 @@ def test_trace_recorder_aggregates_events(tmp_path, monkeypatch):
     assert trace["approval_requests"] == 1
     assert trace["prompt_tokens"] == 10
     assert trace["completion_tokens"] == 5
+    assert trace["cache_read_tokens"] == 6
+    assert trace["cache_miss_tokens"] == 4
+    assert trace["compactions"] == 1
+    assert trace["cache_segments"] == 2
+    assert trace["context_saved_tokens"] == 120
     assert "autocode/checkpoint.py" in trace["modified_files"]
 
 
@@ -58,6 +71,11 @@ def test_format_trace_contains_key_fields():
         "blocked_tool_calls": 0,
         "prompt_tokens": 10,
         "completion_tokens": 4,
+        "cache_read_tokens": 7,
+        "cache_miss_tokens": 3,
+        "compactions": 2,
+        "cache_segments": 3,
+        "context_saved_tokens": 180,
         "errors": 0,
         "modified_files": ["a.py"],
         "tools": {"edit_file": 1},
@@ -66,5 +84,7 @@ def test_format_trace_contains_key_fields():
     assert "Session: session_1" in text
     assert "Current Task: task_1" in text
     assert "Tool calls: 1" in text
+    assert "Prompt cache hit rate: 70.0%" in text
+    assert "Cache segments: 3" in text
     assert "Modified files: a.py" in text
 

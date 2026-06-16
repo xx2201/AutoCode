@@ -1,0 +1,114 @@
+2026-06-15T06:29:44.934Z [ERROR] Failed to save config with lock: Error: ENOENT: no such file or directory, lstat 'G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json'
+2026-06-15T06:29:44.935Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504984935
+2026-06-15T06:29:44.935Z [DEBUG] Setting permissions for new file: 600
+2026-06-15T06:29:44.942Z [DEBUG] Temp file written successfully, size: 103 bytes
+2026-06-15T06:29:44.943Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504984935 to G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json
+2026-06-15T06:29:44.944Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json written atomically
+2026-06-15T06:29:45.003Z [DEBUG] Using bash path: "C:\Program Files\Git\bin\bash.exe"
+2026-06-15T06:29:45.075Z [DEBUG] [LSP MANAGER] initializeLspServerManager() called
+2026-06-15T06:29:45.075Z [DEBUG] [LSP MANAGER] Created manager instance, state=pending
+2026-06-15T06:29:45.075Z [DEBUG] [LSP MANAGER] Starting async initialization (generation 1)
+2026-06-15T06:29:45.075Z [DEBUG] [LSP SERVER MANAGER] initialize() called
+2026-06-15T06:29:45.075Z [DEBUG] [LSP SERVER MANAGER] Calling getAllLspServers()
+2026-06-15T06:29:45.088Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504985088
+2026-06-15T06:29:45.089Z [DEBUG] Preserving file permissions: 100666
+2026-06-15T06:29:45.095Z [DEBUG] Temp file written successfully, size: 140 bytes
+2026-06-15T06:29:45.096Z [DEBUG] Applied original permissions to temp file
+2026-06-15T06:29:45.096Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504985088 to G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json
+2026-06-15T06:29:45.097Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json written atomically
+2026-06-15T06:29:45.105Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504985105
+2026-06-15T06:29:45.105Z [DEBUG] Preserving file permissions: 100666
+2026-06-15T06:29:45.111Z [DEBUG] Temp file written successfully, size: 175 bytes
+2026-06-15T06:29:45.112Z [DEBUG] Applied original permissions to temp file
+2026-06-15T06:29:45.112Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504985105 to G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json
+2026-06-15T06:29:45.113Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json written atomically
+2026-06-15T06:29:45.430Z [DEBUG] Found 0 plugins (0 enabled, 0 disabled)
+2026-06-15T06:29:45.435Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504985435
+2026-06-15T06:29:45.436Z [DEBUG] Preserving file permissions: 100666
+2026-06-15T06:29:45.442Z [DEBUG] Temp file written successfully, size: 257 bytes
+2026-06-15T06:29:45.443Z [DEBUG] Applied original permissions to temp file
+2026-06-15T06:29:45.443Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504985435 to G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json
+2026-06-15T06:29:45.444Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json written atomically
+2026-06-15T06:29:45.445Z [DEBUG] Total LSP servers loaded: 0
+2026-06-15T06:29:45.445Z [DEBUG] [LSP SERVER MANAGER] getAllLspServers returned 0 server(s)
+2026-06-15T06:29:45.445Z [DEBUG] LSP manager initialized with 0 servers
+2026-06-15T06:29:45.445Z [DEBUG] LSP server manager initialized successfully
+2026-06-15T06:29:45.445Z [DEBUG] LSP notification handlers registered successfully for all 0 server(s)
+2026-06-15T06:29:45.448Z [DEBUG] Git remote URL: null
+2026-06-15T06:29:45.448Z [DEBUG] No git remote URL found
+2026-06-15T06:29:45.448Z [DEBUG] Not in a GitHub repository, skipping path mapping update
+2026-06-15T06:29:45.459Z [DEBUG] Loading skills from directories: managed=C:\ProgramData\ClaudeCode\.claude\skills, user=G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude\skills, project=G:\mycode\CoreCoder\tmp\claude_git_probe\workspace\.claude\skills
+2026-06-15T06:29:45.460Z [DEBUG] >>>>> getPluginSkills CALLED <<<<<
+2026-06-15T06:29:47.393Z [DEBUG] installed_plugins.json doesn't exist yet at G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude\plugins\installed_plugins.json, returning empty object
+2026-06-15T06:29:47.655Z [DEBUG] Creating shell snapshot for bash (C:\Program Files\Git\bin\bash.exe)
+2026-06-15T06:29:47.655Z [DEBUG] Looking for shell config file: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.bashrc
+2026-06-15T06:29:47.655Z [DEBUG] Shell config file not found: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.bashrc, creating snapshot with Claude Code defaults only
+2026-06-15T06:29:47.655Z [DEBUG] Snapshots directory: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude\shell-snapshots
+2026-06-15T06:29:47.693Z [DEBUG] Creating snapshot at: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude\shell-snapshots\snapshot-bash-1781504987655-gfxobl.sh
+2026-06-15T06:29:47.693Z [DEBUG] Shell binary exists: true
+2026-06-15T06:29:47.693Z [DEBUG] Execution timeout: 10000ms
+2026-06-15T06:29:47.706Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude\todos\29615161-9bae-47ca-a9b9-67fcf8ee7564-agent-29615161-9bae-47ca-a9b9-67fcf8ee7564.json.tmp.27368.1781504987706
+2026-06-15T06:29:47.716Z [DEBUG] Temp file written successfully, size: 2 bytes
+2026-06-15T06:29:47.716Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude\todos\29615161-9bae-47ca-a9b9-67fcf8ee7564-agent-29615161-9bae-47ca-a9b9-67fcf8ee7564.json.tmp.27368.1781504987706 to G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude\todos\29615161-9bae-47ca-a9b9-67fcf8ee7564-agent-29615161-9bae-47ca-a9b9-67fcf8ee7564.json
+2026-06-15T06:29:47.717Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude\todos\29615161-9bae-47ca-a9b9-67fcf8ee7564-agent-29615161-9bae-47ca-a9b9-67fcf8ee7564.json written atomically
+2026-06-15T06:29:47.720Z [DEBUG] getPluginSkills: Processing 0 enabled plugins
+2026-06-15T06:29:47.720Z [DEBUG] Total plugin skills loaded: 0
+2026-06-15T06:29:47.720Z [DEBUG] Total plugin commands loaded: 0
+2026-06-15T06:29:47.720Z [DEBUG] Registered 0 hooks from 0 plugins
+2026-06-15T06:29:47.755Z [DEBUG] Loaded 0 unique skills (managed: 0, user: 0, project: 0, duplicates removed: 0)
+2026-06-15T06:29:47.755Z [DEBUG] getSkills returning: 0 skill dir commands, 0 plugin skills
+2026-06-15T06:29:47.755Z [DEBUG] Total plugin agents loaded: 0
+2026-06-15T06:29:48.086Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504988086
+2026-06-15T06:29:48.086Z [DEBUG] Preserving file permissions: 100666
+2026-06-15T06:29:48.095Z [DEBUG] Temp file written successfully, size: 302 bytes
+2026-06-15T06:29:48.096Z [DEBUG] Applied original permissions to temp file
+2026-06-15T06:29:48.096Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504988086 to G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json
+2026-06-15T06:29:48.097Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json written atomically
+2026-06-15T06:29:48.100Z [DEBUG] Getting matching hook commands for SessionStart with query: startup
+2026-06-15T06:29:48.100Z [DEBUG] Found 0 hook matchers in settings
+2026-06-15T06:29:48.100Z [DEBUG] Matched 0 unique hooks for query "startup" (0 before deduplication)
+2026-06-15T06:29:48.270Z [DEBUG] Total plugin output styles loaded: 0
+2026-06-15T06:29:48.693Z [DEBUG] Ripgrep first use test: PASSED (mode=builtin, path=C:\Users\26465\AppData\Roaming\npm\node_modules\@anthropic-ai\claude-code\vendor\ripgrep\x64-win32\rg.exe)
+2026-06-15T06:29:48.824Z [DEBUG] Getting matching hook commands for SubagentStart with query: Explore
+2026-06-15T06:29:48.824Z [DEBUG] Found 0 hook matchers in settings
+2026-06-15T06:29:48.824Z [DEBUG] Matched 0 unique hooks for query "Explore" (0 before deduplication)
+2026-06-15T06:29:48.825Z [DEBUG] Getting matching hook commands for SubagentStart with query: Plan
+2026-06-15T06:29:48.825Z [DEBUG] Found 0 hook matchers in settings
+2026-06-15T06:29:48.825Z [DEBUG] Matched 0 unique hooks for query "Plan" (0 before deduplication)
+2026-06-15T06:29:48.833Z [DEBUG] [TeammateMailbox] getTeammateMailboxAttachments called: agentId=undefined, CLAUDE_CODE_AGENT_NAME=undefined, CLAUDE_CODE_AGENT_TYPE=undefined, resolved agentName=undefined, teamName=undefined
+2026-06-15T06:29:48.833Z [DEBUG] [TeammateMailbox] Not checking inbox - no agent name (neither CLAUDE_CODE_AGENT_NAME nor CLAUDE_CODE_AGENT_TYPE set)
+2026-06-15T06:29:48.834Z [DEBUG] LSP Diagnostics: getLSPDiagnosticAttachments called
+2026-06-15T06:29:48.834Z [DEBUG] LSP Diagnostics: Checking registry - 0 pending
+2026-06-15T06:29:48.835Z [DEBUG] Hooks: Found 0 total hooks in registry
+2026-06-15T06:29:48.835Z [DEBUG] Hooks: checkForNewResponses returning 0 responses
+2026-06-15T06:29:48.841Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504988841
+2026-06-15T06:29:48.841Z [DEBUG] Preserving file permissions: 100666
+2026-06-15T06:29:48.848Z [DEBUG] Temp file written successfully, size: 332 bytes
+2026-06-15T06:29:48.848Z [DEBUG] Applied original permissions to temp file
+2026-06-15T06:29:48.848Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504988841 to G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json
+2026-06-15T06:29:48.849Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json written atomically
+2026-06-15T06:29:48.859Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504988859
+2026-06-15T06:29:48.860Z [DEBUG] Preserving file permissions: 100666
+2026-06-15T06:29:48.866Z [DEBUG] Temp file written successfully, size: 362 bytes
+2026-06-15T06:29:48.866Z [DEBUG] Applied original permissions to temp file
+2026-06-15T06:29:48.866Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504988859 to G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json
+2026-06-15T06:29:48.868Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json written atomically
+2026-06-15T06:29:48.880Z [DEBUG] Writing to temp file: G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504988880
+2026-06-15T06:29:48.880Z [DEBUG] Preserving file permissions: 100666
+2026-06-15T06:29:48.887Z [DEBUG] Temp file written successfully, size: 442 bytes
+2026-06-15T06:29:48.888Z [DEBUG] Applied original permissions to temp file
+2026-06-15T06:29:48.888Z [DEBUG] Renaming G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json.tmp.27368.1781504988880 to G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json
+2026-06-15T06:29:48.889Z [DEBUG] File G:\mycode\CoreCoder\tmp\claude_git_probe\home\.claude.json written atomically
+2026-06-15T06:29:48.896Z [DEBUG] Getting matching hook commands for UserPromptSubmit with query: undefined
+2026-06-15T06:29:48.896Z [DEBUG] Found 0 hook matchers in settings
+2026-06-15T06:29:48.896Z [DEBUG] Matched 0 unique hooks for query "no match query" (0 before deduplication)
+2026-06-15T06:29:48.924Z [DEBUG] Slash commands included in SlashCommand tool:
+2026-06-15T06:29:48.924Z [DEBUG] Skills and commands included in Skill tool:
+2026-06-15T06:29:49.150Z [DEBUG] Shell snapshot created successfully (342 bytes)
+2026-06-15T06:29:51.756Z [DEBUG] Stream started - received first chunk
+2026-06-15T06:29:51.926Z [DEBUG] Getting matching hook commands for Stop with query: undefined
+2026-06-15T06:29:51.926Z [DEBUG] Found 0 hook matchers in settings
+2026-06-15T06:29:51.926Z [DEBUG] Matched 0 unique hooks for query "no match query" (0 before deduplication)
+2026-06-15T06:29:51.927Z [DEBUG] Getting matching hook commands for SessionEnd with query: other
+2026-06-15T06:29:51.927Z [DEBUG] Found 0 hook matchers in settings
+2026-06-15T06:29:51.927Z [DEBUG] Matched 0 unique hooks for query "other" (0 before deduplication)

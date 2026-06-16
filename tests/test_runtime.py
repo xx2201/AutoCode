@@ -67,6 +67,22 @@ class _SafeBashTool(Tool):
         return f"ran:{command}|confirmed={_confirmed_sensitive}"
 
 
+class _WriteToolShouldNotRun(Tool):
+    name = "write_file"
+    description = "Should not execute when arguments are invalid"
+    parameters = {
+        "type": "object",
+        "properties": {
+            "file_path": {"type": "string"},
+            "content": {"type": "string"},
+        },
+        "required": ["file_path", "content"],
+    }
+
+    def execute(self, file_path: str, content: str) -> str:
+        raise AssertionError("write_file should not execute for invalid tool-call JSON")
+
+
 class _FakeLLM:
     def __init__(self, responses):
         self._responses = list(responses)
@@ -142,6 +158,41 @@ def test_agent_approves_pending_tool(tmp_path):
     assert reply == "done"
     assert agent.task_state is not None
     assert agent.task_state.status == "completed"
+
+
+def test_agent_returns_explicit_error_for_invalid_tool_call_json(tmp_path):
+    llm = _RecordingLLM([
+        LLMResponse(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="1",
+                    name="write_file",
+                    arguments={},
+                    raw_arguments='{"file_path":"demo.txt","content":"hello"',
+                    parse_error="tool-call arguments were not valid JSON: Expecting ',' delimiter at char 41",
+                )
+            ],
+        ),
+        LLMResponse(content="done"),
+    ])
+    agent = Agent(
+        llm=llm,
+        tools=[_WriteToolShouldNotRun()],
+        workspace_root=str(tmp_path),
+    )
+
+    reply = agent.chat("write file")
+
+    assert reply == "done"
+    assert len(llm.calls) == 2
+    second_call_tool_messages = [m for m in llm.calls[1] if m.get("role") == "tool"]
+    assert len(second_call_tool_messages) == 1
+    tool_result = second_call_tool_messages[0]["content"]
+    assert "Error: invalid arguments for write_file" in tool_result
+    assert "Raw arguments:" in tool_result
+    assert "Resend the same tool call" in tool_result
+    assert "[recovery]" in tool_result
 
 
 def test_agent_approve_all_completes_remaining_tool_calls_before_next_llm(tmp_path):
@@ -387,4 +438,58 @@ def test_agent_schedules_project_memory_refresh_in_background(tmp_path):
 
     assert reply == "done"
     assert calls == [True]
+
+
+def test_agent_cleans_temporary_processes_when_task_completes(tmp_path):
+    agent = Agent(
+        llm=_FakeLLM([LLMResponse(content="done")]),
+        workspace_root=str(tmp_path),
+        auto_approve=True,
+    )
+    cleaned = []
+    agent.processes.cleanup_task_processes = lambda task_id: cleaned.append(task_id) or []
+
+    reply = agent.chat("finish work")
+
+    assert reply == "done"
+    assert agent.task_state is not None
+    assert cleaned == [agent.task_state.task_id]
+
+
+def test_agent_cleans_temporary_processes_when_task_fails(tmp_path):
+    agent = Agent(
+        llm=_FakeLLM([
+            LLMResponse(content="", tool_calls=[ToolCall(id="1", name="echo", arguments={"text": "hi"})]),
+            LLMResponse(content="已完成\n- 已达到本轮最大工具调用次数。\n\n当前卡点\n- 达到最大轮数。\n\n建议下一步\n- 如需继续，请回复“继续”。"),
+        ]),
+        tools=[_EchoTool()],
+        workspace_root=str(tmp_path),
+        auto_approve=True,
+        max_rounds=1,
+    )
+    cleaned = []
+    agent.processes.cleanup_task_processes = lambda task_id: cleaned.append(task_id) or []
+
+    reply = agent.chat("run echo")
+
+    assert "已完成" in reply
+    assert agent.task_state is not None
+    assert agent.task_state.status == "failed"
+    assert cleaned == [agent.task_state.task_id]
+
+
+def test_agent_reset_cleans_all_managed_processes(tmp_path):
+    agent = Agent(
+        llm=_FakeLLM([]),
+        workspace_root=str(tmp_path),
+        auto_approve=True,
+    )
+    calls = []
+    agent.processes.cleanup_all = lambda include_persistent=True: calls.append(include_persistent) or []
+
+    agent.reset()
+
+    assert calls == [True]
+    assert agent.session_state is None
+    assert agent.messages == []
 

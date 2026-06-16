@@ -1,0 +1,15 @@
+{
+  "name": "debug-billing-settlement-03",
+  "version": "1.0.0",
+  "private": true,
+  "scripts": {
+    "test": "vitest run",
+    "build": "tsc --noEmit",
+    "size-report": "node scripts/size-report.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^22.15.30",
+    "typescript": "^5.8.3",
+    "vitest": "^3.2.4"
+  }
+}

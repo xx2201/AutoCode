@@ -52,15 +52,24 @@ class ContextManager:
         self._snip_at = int(max_tokens * 0.50)    # 50% -> snip tool outputs
         self._summarize_at = int(max_tokens * 0.70)  # 70% -> LLM summarize
         self._collapse_at = int(max_tokens * 0.90)   # 90% -> hard collapse
-        self._summary_keep_recent = max(8, min(24, max_tokens // 40_000))
-        self._collapse_keep_recent = max(4, min(12, max_tokens // 80_000))
+        self._summary_keep_recent = max(2, min(6, max_tokens // 200_000))
+        self._collapse_keep_recent = max(1, min(3, max_tokens // 400_000))
         self._summary_input_chars = max(15_000, min(120_000, max_tokens // 6))
 
-    def maybe_compress(self, messages: list[dict], llm: LLM | None = None) -> CompressionResult:
+    @staticmethod
+    def effective_used(messages: list[dict], last_prompt_tokens: int = 0) -> int:
+        return max(estimate_tokens(messages), max(0, int(last_prompt_tokens or 0)))
+
+    def maybe_compress(
+        self,
+        messages: list[dict],
+        llm: LLM | None = None,
+        last_prompt_tokens: int = 0,
+    ) -> CompressionResult:
         """Apply compression layers as needed and return structured stats."""
         before_tokens = estimate_tokens(messages)
         before_messages = len(messages)
-        current = before_tokens
+        current = self.effective_used(messages, last_prompt_tokens=last_prompt_tokens)
         layers: list[str] = []
 
         # Layer 1: snip verbose tool outputs
@@ -116,14 +125,33 @@ class ContextManager:
             changed = True
         return changed
 
-    def _summarize_old(self, messages: list[dict], llm: LLM | None,
-                       keep_recent: int = 8) -> bool:
-        """Layer 2: Summarize old conversation, keep recent messages intact."""
-        if len(messages) <= keep_recent:
+    @staticmethod
+    def _is_real_user_turn_start(message: dict) -> bool:
+        if message.get("role") != "user":
             return False
+        content = (message.get("content", "") or "").strip()
+        return not content.startswith(("[Context compressed - conversation summary]", "[Hard context reset]"))
 
-        old = messages[:-keep_recent]
-        tail = messages[-keep_recent:]
+    def _split_by_recent_turns(
+        self,
+        messages: list[dict],
+        keep_recent_turns: int,
+        fallback_keep_messages: int | None = None,
+    ) -> tuple[list[dict], list[dict]]:
+        user_indices = [i for i, message in enumerate(messages) if self._is_real_user_turn_start(message)]
+        if keep_recent_turns > 0 and len(user_indices) > keep_recent_turns:
+            tail_start = user_indices[-keep_recent_turns]
+            return messages[:tail_start], messages[tail_start:]
+        if fallback_keep_messages is not None and len(messages) > fallback_keep_messages:
+            return messages[:-fallback_keep_messages], messages[-fallback_keep_messages:]
+        return [], list(messages)
+
+    def _summarize_old(self, messages: list[dict], llm: LLM | None,
+                       keep_recent: int = 2) -> bool:
+        """Layer 2: Summarize old conversation, keep recent user turns intact."""
+        old, tail = self._split_by_recent_turns(messages, keep_recent_turns=keep_recent)
+        if not old:
+            return False
 
         summary = self._get_summary(old, llm)
 
@@ -140,10 +168,15 @@ class ContextManager:
         return True
 
     def _hard_collapse(self, messages: list[dict], llm: LLM | None):
-        """Layer 3: Emergency compression. Keep only a recent tail + summary."""
-        keep_recent = self._collapse_keep_recent
-        tail = messages[-keep_recent:] if len(messages) > keep_recent else messages[-2:]
-        summary = self._get_summary(messages[:-len(tail)], llm)
+        """Layer 3: Emergency compression. Prefer whole recent turns; fall back if needed."""
+        old, tail = self._split_by_recent_turns(
+            messages,
+            keep_recent_turns=self._collapse_keep_recent,
+            fallback_keep_messages=max(2, self._collapse_keep_recent * 4),
+        )
+        if not old:
+            return
+        summary = self._get_summary(old, llm)
 
         messages.clear()
         messages.append({

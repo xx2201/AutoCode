@@ -35,6 +35,7 @@ class Config:
     provider: str = "openai"
     workspace_root: str = ""
     auto_approve: bool = False
+    mcp_config_path: str = ""
     telegram_bot_token: str = ""
     telegram_allowed_chat_ids: tuple[int, ...] = ()
     feishu_app_id: str = ""
@@ -56,6 +57,7 @@ class Config:
             provider=os.getenv("AUTOCODE_PROVIDER", "openai"),
             workspace_root=os.getenv("AUTOCODE_WORKSPACE_ROOT", str(Path.cwd())),
             auto_approve=os.getenv("AUTOCODE_AUTO_APPROVE", "").lower() in {"1", "true", "yes", "on"},
+            mcp_config_path=os.getenv("AUTOCODE_MCP_CONFIG", ""),
             telegram_bot_token=os.getenv("AUTOCODE_TELEGRAM_BOT_TOKEN", ""),
             telegram_allowed_chat_ids=_parse_chat_ids(os.getenv("AUTOCODE_TELEGRAM_ALLOWED_CHATS", "")),
             feishu_app_id=os.getenv("AUTOCODE_FEISHU_APP_ID", ""),

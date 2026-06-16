@@ -10,11 +10,21 @@ from ..state import PolicyDecision
 
 _PROTECTED_NAMES = {".env"}
 _PROTECTED_PARTS = {".git"}
+_SHELL_DELETE_PREFIX = r"(?:^|[;&|]|\n)\s*"
 _DENY_COMMAND_PATTERNS = [
     (r":\(\)\s*\{.*:\|:.*\}", "fork bomb"),
     (r"\bcurl\b.*\|\s*(sudo\s+)?bash", "pipe curl to bash"),
     (r"\bgit\s+reset\s+--hard\b", "destructive git reset modifies the workspace"),
     (r"\bgit\s+clean\b", "git clean modifies the workspace"),
+    (
+        r"\b(taskkill|Stop-Process|killall|pkill)\b|\bkill\s+-\d+\b|\bkill\s+\d+\b",
+        "process termination via shell is not allowed; use stop_process for managed background processes",
+    ),
+]
+_STREAMING_COMMAND_PATTERNS = [
+    r"\bredis-cli\b[^\n]*\bMONITOR\b",
+    r"\btail\b[^\n]*\s-f\b",
+    r"\bwatch\b\b",
 ]
 
 
@@ -24,10 +34,21 @@ class Policy:
         self.auto_approve = auto_approve
 
     def evaluate_tool_call(self, tool_name: str, arguments: dict) -> PolicyDecision:
+        if tool_name.startswith("mcp_"):
+            return PolicyDecision("confirm", "external MCP tool call", requires_manual=False)
         if tool_name == "bash":
             return self._evaluate_bash(arguments.get("command", ""))
         if tool_name in {"read_file", "write_file", "edit_file"}:
             return self._evaluate_path(arguments.get("file_path"))
+        if tool_name == "delete_path":
+            decision = self._evaluate_path(arguments.get("path"))
+            if decision.action == "deny":
+                return decision
+            return PolicyDecision(
+                "confirm",
+                "deleting files modifies the workspace",
+                requires_manual=True,
+            )
         if tool_name in {"grep", "glob"}:
             path = arguments.get("path")
             if path is None:
@@ -71,6 +92,10 @@ class Policy:
         if dangerous is not None:
             return dangerous
 
+        streaming = self._evaluate_streaming_command(command)
+        if streaming is not None:
+            return streaming
+
         redirect_decision = self._evaluate_redirect_targets(command)
         if redirect_decision is not None:
             return redirect_decision
@@ -88,34 +113,51 @@ class Policy:
         return None
 
     def _evaluate_workspace_scoped_dangerous_command(self, command: str) -> PolicyDecision | None:
-        target = None
-        reason = ""
-
-        rm_match = re.search(r"\brm\s+(-\w+\s+)*(-rf|-fr)\s+(?P<path>[^\s&|;]+)", command, re.IGNORECASE)
-        if rm_match:
-            target = rm_match.group("path")
-            reason = "force recursive delete modifies the workspace"
-        else:
-            del_match = re.search(r"\bdel\b(?:\s+/[^\s]+)*\s+(?P<path>[^\s&|;]+)", command, re.IGNORECASE)
-            if del_match:
-                target = del_match.group("path")
-                reason = "delete modifies the workspace"
-            else:
-                remove_match = re.search(
-                    r"\bRemove-Item\b(?:\s+-[^\s]+\s+[^\s]+\s+)*\s+(?P<path>[^\s&|;]+)",
-                    command,
-                    re.IGNORECASE,
-                )
-                if remove_match and re.search(r"\b-Recurse\b", command, re.IGNORECASE):
-                    target = remove_match.group("path")
-                    reason = "recursive remove modifies the workspace"
-
-        if not reason:
+        scan = _mask_quoted_content(command)
+        if not re.search(
+            _SHELL_DELETE_PREFIX + r"(?:rm|rmdir|rd|del|erase|Remove-Item)\b",
+            scan,
+            re.IGNORECASE,
+        ):
             return None
-        if not target:
-            return PolicyDecision("deny", reason)
+        return PolicyDecision("deny", "delete via shell is not allowed; use delete_path instead")
 
-        path_decision = self._evaluate_path(target, allow_protected=True)
-        if path_decision.action == "deny":
-            return PolicyDecision("deny", f"dangerous command target must stay inside workspace: {target}")
-        return PolicyDecision("deny", reason)
+    def _evaluate_streaming_command(self, command: str) -> PolicyDecision | None:
+        scan = _mask_quoted_content(command)
+        for pattern in _STREAMING_COMMAND_PATTERNS:
+            if re.search(pattern, scan, re.IGNORECASE):
+                return PolicyDecision(
+                    "deny",
+                    "streaming or long-running shell command is not allowed; use start_process instead",
+                )
+        return None
+
+
+def _mask_quoted_content(command: str) -> str:
+    chars: list[str] = []
+    quote: str | None = None
+    escape = False
+    for ch in command:
+        if quote is None:
+            if ch in {"'", '"'}:
+                quote = ch
+            chars.append(ch)
+            continue
+
+        if escape:
+            escape = False
+            chars.append("\n" if ch == "\n" else " ")
+            continue
+
+        if quote == '"' and ch == "\\":
+            escape = True
+            chars.append(" ")
+            continue
+
+        if ch == quote:
+            quote = None
+            chars.append(ch)
+            continue
+
+        chars.append("\n" if ch == "\n" else " ")
+    return "".join(chars)

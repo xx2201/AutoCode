@@ -152,7 +152,6 @@ autocode-feishu
 - `/task`、`/trace`、`/resume`、`/reset` 支持直接文本输入
 - `/approve`、`/approve_all`、`/reject` 也支持直接文本输入
 - `/resume` 会以交互卡片列出当前项目最近可恢复会话
-- `/send_image <path>` 和 `/send_file <path>` 可以把当前项目里的图片、PDF 等本地文件直接回传到飞书聊天
 - 待审批操作会以交互卡片形式发送，内置 **Approve / Approve All / Reject** 按钮
 - 整个适配层直接复用现有任务运行时和审批状态，不再额外造第二套工作流
 
@@ -269,8 +268,6 @@ Telegram 命令：
 /approve_all     批准当前操作，并自动放行后续普通确认
 /reject          拒绝待执行的工具调用
 /resume          列出当前项目可恢复会话
-/send_image <path> 发送当前项目中的图片附件
-/send_file <path>   发送当前项目中的文件附件（如 PDF）
 /reset           清空当前聊天对应的内存会话
 ```
 

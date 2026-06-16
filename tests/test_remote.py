@@ -3,7 +3,9 @@ from autocode.config import Config
 from autocode.llm import LLMResponse, ToolCall
 from autocode.remote.formatting import render_turn_result, split_message
 from autocode.remote.manager import RemoteManager
+from autocode.runtime import Policy
 from autocode.state import SessionState, TaskState
+from autocode.state import PolicyDecision
 from autocode.tools.base import Tool
 
 
@@ -34,6 +36,21 @@ class _FakeLLM:
         return response
 
 
+class _ConfirmDelegationPolicy(Policy):
+    def evaluate_tool_call(self, tool_name: str, arguments: dict) -> PolicyDecision:
+        if tool_name == "agent":
+            return PolicyDecision("confirm", "approval required for delegation")
+        return super().evaluate_tool_call(tool_name, arguments)
+
+
+class _ConfirmingRemoteManager(RemoteManager):
+    def _build_agent(self):
+        agent = super()._build_agent()
+        agent.policy = _ConfirmDelegationPolicy(workspace_root=self.config.workspace_root)
+        agent.runtime.policy = agent.policy
+        return agent
+
+
 def _config(tmp_path):
     return Config(
         model="fake-model",
@@ -47,7 +64,7 @@ def test_remote_manager_handles_approval_flow(tmp_path):
         LLMResponse(content="", tool_calls=[ToolCall(id="1", name="agent", arguments={"task": "inspect"})]),
         LLMResponse(content="done"),
     ])
-    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[_DelegationTool()])
+    manager = _ConfirmingRemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[_DelegationTool()])
 
     pending = manager.submit(101, "run delegated task")
     assert pending.status == "waiting_approval"
@@ -100,14 +117,30 @@ def test_remote_manager_reset_drops_chat_runtime(tmp_path):
 
     first = manager.submit(303, "hello")
     assert first.text == "ok"
+    runtime = manager._require_runtime(303)
+    closed = []
+    runtime.agent.close = lambda: closed.append(True)
 
     manager.reset_chat(303)
+    assert closed == [True]
     try:
         manager.current_task_summary(303)
     except ValueError as exc:
         assert "No chat session yet" in str(exc)
     else:
         raise AssertionError("expected ValueError after reset")
+
+
+def test_remote_manager_replace_runtime_closes_previous_agent(tmp_path):
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: _FakeLLM([LLMResponse(content="ok")]), tools=[])
+    runtime = manager._get_or_create_runtime(909)
+    closed = []
+    runtime.agent.close = lambda: closed.append(True)
+
+    replaced = manager._get_or_create_runtime(909, replace=True)
+
+    assert closed == [True]
+    assert replaced is not runtime
 
 
 def test_render_turn_result_includes_approval_hint():
@@ -142,7 +175,7 @@ def test_remote_manager_approve_all_marks_task_state(tmp_path):
         LLMResponse(content="", tool_calls=[ToolCall(id="1", name="agent", arguments={"task": "inspect"})]),
         LLMResponse(content="done"),
     ])
-    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[_DelegationTool()])
+    manager = _ConfirmingRemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[_DelegationTool()])
     manager.submit(404, "run delegated task")
 
     result = manager.resolve_approval(404, approved=True, enable_auto_approve=True)

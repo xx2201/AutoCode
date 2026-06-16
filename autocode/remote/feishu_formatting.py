@@ -54,11 +54,21 @@ def build_live_status_card(
     tool_calls: int,
     prompt_tokens: int,
     completion_tokens: int,
+    cache_read_tokens: int,
+    cache_miss_tokens: int,
+    last_prompt_tokens: int,
+    last_completion_tokens: int,
+    last_cache_read_tokens: int,
+    last_cache_miss_tokens: int,
+    compactions: int,
+    cache_segments: int,
     last_tool: str = "",
     detail: str = "",
     auto_approve_for_task: bool = False,
     template: str = "blue",
 ) -> dict:
+    cache_total = cache_read_tokens + cache_miss_tokens
+    cache_hit_rate = f"{(cache_read_tokens / cache_total * 100):.1f}%" if cache_total else "n/a"
     lines = [
         f"**{_clip_markdown(title or '(untitled task)')}**",
         "",
@@ -69,8 +79,17 @@ def build_live_status_card(
         f"Step: `{step_index}`",
         f"LLM Calls: `{llm_calls}`",
         f"Tool Calls: `{tool_calls}`",
-        f"Prompt Tokens: `{prompt_tokens}`",
-        f"Completion Tokens: `{completion_tokens}`",
+        f"Prompt Tokens Total: `{prompt_tokens}`",
+        f"Completion Tokens Total: `{completion_tokens}`",
+        f"Prompt Cache Read Total: `{cache_read_tokens}`",
+        f"Prompt Cache Miss Total: `{cache_miss_tokens}`",
+        f"Prompt Cache Hit Rate: `{cache_hit_rate}`",
+        f"Last Prompt Tokens: `{last_prompt_tokens}`",
+        f"Last Completion Tokens: `{last_completion_tokens}`",
+        f"Last Cache Read: `{last_cache_read_tokens}`",
+        f"Last Cache Miss: `{last_cache_miss_tokens}`",
+        f"Compactions: `{compactions}`",
+        f"Cache Segments: `{cache_segments}`",
         f"Approve_all: `{'on' if auto_approve_for_task else 'off'}`",
     ]
     if last_tool:

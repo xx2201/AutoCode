@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 _SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "dist", "build"}
@@ -33,6 +34,22 @@ class WorkspaceFS:
         self.ensure_within_workspace(target)
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(content, encoding="utf-8")
+
+    def delete_path(self, path: str, recursive: bool = False) -> Path:
+        target = self.resolve_path(path)
+        self.ensure_within_workspace(target)
+        if target == self.workspace_root:
+            raise ValueError("cannot delete the workspace root")
+        if not target.exists():
+            raise FileNotFoundError(f"{path} not found")
+        if target.is_dir():
+            if recursive:
+                shutil.rmtree(target)
+            else:
+                target.rmdir()
+        else:
+            target.unlink()
+        return target
 
     def exists(self, path: str) -> bool:
         target = self.resolve_path(path)

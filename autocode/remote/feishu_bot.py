@@ -13,7 +13,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from ..config import Config
-from ..tools import ALL_TOOLS
+from ..mcp import get_shared_mcp_manager
+from ..tools.factory import build_agent_tools
 from .feishu_formatting import (
     build_approval_card,
     build_error_card,
@@ -51,12 +52,6 @@ class _ResumeSelection:
     owner_open_id: str
 
 
-@dataclass
-class _AttachmentReply:
-    kind: str
-    path: Path
-
-
 def main():
     config = Config.from_env()
     _validate_config(config)
@@ -69,7 +64,15 @@ class FeishuBot:
         self.config = config
         self.lark = _import_lark()
         self._tool_context = threading.local()
-        self.manager = RemoteManager(config, tools=[*ALL_TOOLS, FeishuSendTool(self._send_attachment_from_tool)])
+        mcp_manager = get_shared_mcp_manager(config.workspace_root, config.mcp_config_path)
+        self.manager = RemoteManager(
+            config,
+            tool_factory=lambda: build_agent_tools(
+                config,
+                extra_tools=[FeishuSendTool(self._send_attachment_from_tool)],
+                mcp_manager=mcp_manager,
+            ),
+        )
         self.executor = ThreadPoolExecutor(max_workers=4, thread_name_prefix="autocode-feishu")
         self._live_states: dict[str, _LiveStatus] = {}
         self.client = _build_api_client(self.lark, config)
@@ -208,13 +211,12 @@ class FeishuBot:
             logger.exception("Feishu card action failed")
             self._reply_card(message_id, build_error_card("AutoCode Error", f"Error: {exc}"))
 
-    def _handle_text(self, session_key: str, text: str, sender_open_id: str) -> RemoteTurnResult | str | _ResumeSelection | _AttachmentReply:
+    def _handle_text(self, session_key: str, text: str, sender_open_id: str) -> RemoteTurnResult | str | _ResumeSelection:
         try:
             if not text.startswith("/"):
                 return self.manager.submit(session_key, text)
 
-            command, _, argument = text.partition(" ")
-            argument = argument.strip()
+            command, _, _ = text.partition(" ")
             if command in {"/start", "/help"}:
                 return _help_text()
             if command == "/reset":
@@ -229,10 +231,6 @@ class FeishuBot:
                 if not tasks:
                     return "No resumable sessions for the current project."
                 return _ResumeSelection(tasks=tasks, session_key=session_key, owner_open_id=sender_open_id)
-            if command == "/send_image":
-                return _AttachmentReply("image", _resolve_workspace_attachment(self.config.workspace_root, argument, image_only=True))
-            if command == "/send_file":
-                return _AttachmentReply("file", _resolve_workspace_attachment(self.config.workspace_root, argument, image_only=False))
             if command in {"/approve", "/approve_all", "/reject"}:
                 live = self._live_states.get(session_key)
                 hook_handler = self._make_live_hook(live) if live else None
@@ -262,7 +260,7 @@ class FeishuBot:
     def _deliver_result(
         self,
         message_id: str,
-        result: RemoteTurnResult | str | _ResumeSelection | _AttachmentReply,
+        result: RemoteTurnResult | str | _ResumeSelection,
         session_key: str,
         sender_open_id: str,
     ):
@@ -276,12 +274,6 @@ class FeishuBot:
                     workspace_root=self.config.workspace_root,
                 ),
             )
-            return
-        if isinstance(result, _AttachmentReply):
-            if result.kind == "image":
-                self._reply_image(message_id, result.path)
-            else:
-                self._reply_file(message_id, result.path)
             return
         if isinstance(result, str):
             for chunk in split_text_chunks(result):
@@ -406,7 +398,7 @@ class FeishuBot:
         message_id = getattr(self._tool_context, "message_id", "") or ""
         if not message_id:
             raise RuntimeError("No active Feishu reply target.")
-        path = _resolve_workspace_attachment(self.config.workspace_root, file_path, image_only=False)
+        path = _resolve_workspace_attachment(self.config.workspace_root, file_path)
         if _attachment_kind(path) == "image":
             self._reply_image(message_id, path)
             return f"Sent image to Feishu chat: {path.name}"
@@ -448,8 +440,6 @@ def _help_text() -> str:
         "/approve_all - approve this tool call and auto-approve later normal confirms\n"
         "/reject - reject the pending tool call\n"
         "/resume - show resumable sessions for the current project\n"
-        "/send_image <path> - upload and reply with an image from the current project\n"
-        "/send_file <path> - upload and reply with a file from the current project\n"
         "/reset - clear the in-memory chat session\n\n"
         "Any non-command text is sent to the coding agent."
     )
@@ -528,7 +518,7 @@ def _attachment_kind(path: Path) -> str:
     return "image" if path.suffix.lower() in _IMAGE_EXTENSIONS else "file"
 
 
-def _resolve_workspace_attachment(workspace_root: str, raw_path: str, *, image_only: bool) -> Path:
+def _resolve_workspace_attachment(workspace_root: str, raw_path: str) -> Path:
     if not raw_path:
         raise ValueError("Missing file path.")
     workspace = Path(workspace_root).expanduser().resolve()
@@ -542,8 +532,6 @@ def _resolve_workspace_attachment(workspace_root: str, raw_path: str, *, image_o
         raise ValueError(f"path must stay inside workspace: {workspace}") from exc
     if not path.is_file():
         raise ValueError(f"File not found: {path}")
-    if image_only and path.suffix.lower() not in _IMAGE_EXTENSIONS:
-        raise ValueError("Image must be one of: jpg, jpeg, png, webp, gif, bmp, ico, tif, tiff, heic.")
     return path
 
 
@@ -603,6 +591,14 @@ class _LiveStatus:
     tool_calls: int = 0
     prompt_tokens: int = 0
     completion_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_miss_tokens: int = 0
+    last_prompt_tokens: int = 0
+    last_completion_tokens: int = 0
+    last_cache_read_tokens: int = 0
+    last_cache_miss_tokens: int = 0
+    compactions: int = 0
+    cache_segments: int = 1
     last_tool: str = ""
     auto_approve_for_task: bool = False
     last_patch_at: float = 0.0
@@ -622,11 +618,25 @@ class _LiveStatus:
         elif event == "after_llm":
             self.llm_calls += 1
             self.step_index = int(payload.get("step_index", self.step_index))
-            self.prompt_tokens += int(payload.get("prompt_tokens", 0))
-            self.completion_tokens += int(payload.get("completion_tokens", 0))
+            self.last_prompt_tokens = int(payload.get("prompt_tokens", 0))
+            self.last_completion_tokens = int(payload.get("completion_tokens", 0))
+            self.last_cache_read_tokens = int(payload.get("cache_read_tokens", 0))
+            self.last_cache_miss_tokens = int(payload.get("cache_miss_tokens", 0))
+            self.prompt_tokens += self.last_prompt_tokens
+            self.completion_tokens += self.last_completion_tokens
+            self.cache_read_tokens += self.last_cache_read_tokens
+            self.cache_miss_tokens += self.last_cache_miss_tokens
             tool_calls = int(payload.get("tool_calls", 0))
             self.phase = "Planning" if tool_calls else "Answering"
             self.detail = f"Model returned {tool_calls} tool call(s)." if tool_calls else "Model returned a direct answer."
+        elif event == "context_compaction":
+            self.compactions += 1
+            self.cache_segments = 1 + self.compactions
+            self.phase = "Compacting"
+            self.detail = (
+                f"Context compacted: saved {int(payload.get('saved_tokens', 0))} tokens "
+                f"via {', '.join(payload.get('layers', [])) or 'compression'}."
+            )
         elif event == "before_tool":
             self.tool_calls += 1
             self.last_tool = payload.get("tool_name", self.last_tool)
@@ -671,6 +681,14 @@ class _LiveStatus:
             "tool_calls": self.tool_calls,
             "prompt_tokens": self.prompt_tokens,
             "completion_tokens": self.completion_tokens,
+            "cache_read_tokens": self.cache_read_tokens,
+            "cache_miss_tokens": self.cache_miss_tokens,
+            "last_prompt_tokens": self.last_prompt_tokens,
+            "last_completion_tokens": self.last_completion_tokens,
+            "last_cache_read_tokens": self.last_cache_read_tokens,
+            "last_cache_miss_tokens": self.last_cache_miss_tokens,
+            "compactions": self.compactions,
+            "cache_segments": self.cache_segments,
             "last_tool": self.last_tool,
             "detail": self.detail,
             "auto_approve_for_task": self.auto_approve_for_task,

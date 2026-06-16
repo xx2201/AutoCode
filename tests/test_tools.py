@@ -9,7 +9,7 @@ from autocode.tools import ALL_TOOLS, get_tool
 
 
 def test_tool_count():
-    assert len(ALL_TOOLS) == 12
+    assert len(ALL_TOOLS) == 13
 
 
 def test_all_tools_have_valid_schema():
@@ -144,6 +144,35 @@ def test_edit_file_duplicate_string(tmp_path):
     assert "2 times" in r
 
 
+def test_delete_path_file(tmp_path):
+    delete = get_tool("delete_path")
+    path = tmp_path / "temp.txt"
+    path.write_text("temp\n", encoding="utf-8")
+    r = delete.execute(path=str(path))
+    assert "Deleted file" in r
+    assert not path.exists()
+
+
+def test_delete_path_directory_requires_recursive_for_non_empty(tmp_path):
+    delete = get_tool("delete_path")
+    path = tmp_path / "logs"
+    path.mkdir()
+    (path / "app.log").write_text("x", encoding="utf-8")
+    r = delete.execute(path=str(path))
+    assert r.startswith("Error:")
+    assert path.exists()
+
+
+def test_delete_path_directory_recursive(tmp_path):
+    delete = get_tool("delete_path")
+    path = tmp_path / "logs"
+    path.mkdir()
+    (path / "app.log").write_text("x", encoding="utf-8")
+    r = delete.execute(path=str(path), recursive=True)
+    assert "Deleted directory" in r
+    assert not path.exists()
+
+
 # --- glob ---
 
 def test_glob_finds_files():
@@ -192,4 +221,11 @@ def test_todo_tool_schema():
     s = todo_t.schema()
     assert s["function"]["name"] == "todo_write"
     assert "todos" in s["function"]["parameters"]["properties"]
+
+
+def test_delete_tool_schema():
+    delete_t = get_tool("delete_path")
+    s = delete_t.schema()
+    assert s["function"]["name"] == "delete_path"
+    assert "path" in s["function"]["parameters"]["properties"]
 

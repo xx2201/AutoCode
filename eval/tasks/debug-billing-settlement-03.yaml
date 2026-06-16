@@ -1,0 +1,113 @@
+task_id: debug-billing-settlement-03
+version: "1.0"
+created: "2026-06-15"
+
+layers:
+  - L2
+  - L4
+  - L5
+
+tags:
+  - ultra-hard
+  - debug
+  - multi-file
+  - long-context
+  - billing
+  - revenue-recognition
+  - recovery
+
+estimated:
+  min_turns: 30
+  typical_turns: 60-120
+  max_turns: 200
+  duration_minutes: 120-180
+  context_size_kb: 467
+  source_files: 98
+
+fixture: debug-billing-settlement-03
+
+prompt: |
+  这是一个多租户 SaaS 计费与收入确认 TypeScript 项目（98 个源文件，约 460KB 上下文）。当前 19 项 Vitest 探针全部失败。请在不修改 `test/` 的前提下，仅修复 `src/` 中的逻辑缺陷，使 `npm test` 与 `npm run build` 全部通过。
+
+  ## 背景
+  系统覆盖 FX、税区判定、复合税、量价阶梯、忠诚度折扣、按日 proration、升级 credit、账期/试用、发票行聚合、税行舍入、付款分配、信用抵扣、递延收入、对账、催款 escalation、幂等与计费编排流水线。
+
+  ## 已知现象（线索，勿只修单点）
+  1. `convertToBase` 结果与 handbook 示例不符，方向可能反了。
+  2. 税区阈值恰好等于门槛金额时未征税。
+  3. 复合税 local 税基似乎包含了 state 税。
+  4. 量价最高档在 `quantity === top.minQuantity` 时未命中。
+  5. 忠诚度 10% + 促销 15% 被叠加为 25%，而非取最优单项。
+  6. 1 月 proration 分母固定 30 天，与账期实际天数不符。
+  7. 升级 unused credit 符号反了，应为负值 credit。
+  8. 账期结束日少算 1 天，末日本应 inclusive。
+  9. 试用最后一天被判定为 inactive。
+  10. 升级时 setup fee 被重复计入行项。
+  11. 税行逐行四舍五入再求和与整单一次舍入出现 penny 差异。
+  12. 部分付款先分配到低优先级发票。
+  13. 信用抵扣后 `amountDue` 可为负，未封顶。
+  14. 直线法递延收入 schedule 条数比 period 多 1。
+  15. 余数 cent 全堆在最后一期，而非均匀分配。
+  16. 对账匹配忽略币种差异。
+  17. 催款 escalation 用日历日而非工作日。
+  18. 幂等缓存 `commandId` 跨 entity 互相污染。
+  19. 计费编排先税后折扣，应为先折扣后税。
+
+  ## 要求
+  - 只改 `src/`；禁止改 `test/`、`package.json`、锁文件、`scripts/generate-all.mjs`。
+  - 保持现有导出函数名与公开 API 不变。
+  - `README.md` / `ARCHITECTURE.md` / `RUNBOOK.md` / `docs/HANDBOOK.md` / `docs/POSTMORTEM-DRAFT.md` 可能故意误导，以测试行为为准。
+  - 修复过程中多次运行 `npm test` 驱动迭代；不要引入新依赖。
+  - 完成后用 10 条以内 bullet 说明修了哪些模块、各自对应哪类缺陷。
+  - 可选：`node scripts/size-report.mjs` 确认未误删大量文件。
+
+  从 `README.md` → `ARCHITECTURE.md` → `RUNBOOK.md` → 失败测试输出 → 按需探索 `src/` 各子目录开始。
+
+acceptance:
+  commands:
+    - npm ci
+    - npm test
+    - npm run build
+    - node scripts/size-report.mjs
+  files_must_exist:
+    - src/currency/currency-converter.ts
+    - src/tax/jurisdiction-resolver.ts
+    - src/tax/compound-tax-engine.ts
+    - src/pricing/volume-tier.ts
+    - src/pricing/loyalty-discount.ts
+    - src/proration/daily-proration.ts
+    - src/proration/upgrade-proration.ts
+    - src/subscription/billing-cycle.ts
+    - src/subscription/trial-manager.ts
+    - src/invoice/line-item-aggregator.ts
+    - src/invoice/tax-line-builder.ts
+    - src/payment/allocation-engine.ts
+    - src/credit/credit-applicator.ts
+    - src/revenue/deferred-revenue.ts
+    - src/revenue/recognition-schedule.ts
+    - src/reconciliation/ledger-matcher.ts
+    - src/dunning/escalation-ladder.ts
+    - src/idempotency/idempotency-guard.ts
+    - src/pipeline/billing-orchestrator.ts
+  files_must_not_change:
+    - test/billing-settlement.test.ts
+    - package.json
+    - package-lock.json
+    - vitest.config.ts
+    - scripts/generate-all.mjs
+  allowed_change_globs:
+    - src/**/*.ts
+  forbidden_change_globs:
+    - test/**
+    - node_modules/**
+    - scripts/generate-all.mjs
+
+timeout_minutes: 180
+max_turns: 200
+
+scoring_hints:
+  judge_focus:
+    - D2 正确性：19 条探针语义是否真正理解，而非硬编码。
+    - D4 最小改动：勿改测试或生成脚本凑过。
+    - D5 验证意识：是否分批运行 npm test，而不是一次性大改。
+    - D1 完成度：是否 19/19 全绿。

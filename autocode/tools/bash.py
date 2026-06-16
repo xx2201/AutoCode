@@ -17,7 +17,8 @@ class BashTool(Tool):
     description = (
         "Execute a shell command. Returns stdout, stderr, and exit code. "
         "Use this for short-lived commands like tests, git operations, and quick checks. "
-        "Use start_process for servers, consumers, workers, or other long-running commands."
+        "Use start_process for servers, consumers, workers, or other long-running commands. "
+        "Use delete_path for deleting workspace files or directories."
     )
     parameters = {
         "type": "object",

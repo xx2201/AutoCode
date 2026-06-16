@@ -7,6 +7,7 @@ import argparse
 from rich.console import Console
 from rich.markdown import Markdown
 from rich.panel import Panel
+from rich.table import Table
 from prompt_toolkit.application import get_app
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit import prompt as pt_prompt
@@ -18,6 +19,8 @@ from .agent import Agent
 from .config import Config
 from .context import render_todos
 from .llm import LLM, LiteLLM
+from .mcp import get_shared_mcp_manager
+from .tools.factory import build_agent_tools
 from .state import (
     format_trace,
     list_sessions,
@@ -115,8 +118,14 @@ def main():
         temperature=config.temperature,
         max_tokens=config.max_tokens,
     )
+    mcp_manager = get_shared_mcp_manager(config.workspace_root, config.mcp_config_path)
+    mcp_manager.start_background()
     agent = Agent(
         llm=llm,
+        tools=build_agent_tools(config, mcp_manager=mcp_manager),
+        tool_factory=lambda: build_agent_tools(config, mcp_manager=mcp_manager),
+        mcp_manager=mcp_manager,
+        own_mcp_manager=True,
         max_context_tokens=config.max_context_tokens,
         workspace_root=config.workspace_root,
         auto_approve=config.auto_approve,
@@ -142,6 +151,8 @@ def main():
 
     # one-shot mode
     if args.prompt:
+        mcp_manager.wait_until_ready()
+        agent._sync_mcp_tools()
         _run_once(agent, args.prompt)
         return
 
@@ -167,16 +178,51 @@ def _run_once(agent: Agent, prompt: str):
         console.print(Markdown(response))
 
 
-def _repl(agent: Agent, config: Config):
-    """Interactive read-eval-print loop."""
-    current_model = agent.llm.model
-    console.print(Panel(
+def _terminal_is_interactive() -> bool:
+    return sys.stdin.isatty() and sys.stdout.isatty()
+
+
+def _write_terminal_sequence(sequence: str):
+    sys.stdout.write(sequence)
+    sys.stdout.flush()
+
+
+def _welcome_panel(config: Config, current_model: str) -> Panel:
+    left = (
         f"[bold]AutoCode[/bold] v{__version__}\n"
         f"Model: [cyan]{current_model}[/cyan]"
-        + (f"  Base: [dim]{config.base_url}[/dim]" if config.base_url else "")
-        + "\nType [bold]/help[/bold] for commands, [bold]Ctrl+C[/bold] to cancel, [bold]quit[/bold] to exit.",
-        border_style="blue",
-    ))
+        + (f"\nBase: [dim]{config.base_url}[/dim]" if config.base_url else "")
+        + "\n\n[bold bright_cyan] /\\_/\\\\[/]\n"
+        + "[bold #ffd166]( o.o )[/]\n"
+        + "[bold #ef476f] > ^ <[/]"
+    )
+    right = (
+        "[bold]Workspace[/bold]\n"
+        + f"[dim]{config.workspace_root}[/dim]\n\n"
+        + "[bold]Tips[/bold]\n"
+        + "Type [bold]/help[/bold] for commands.\n"
+        + "Press [bold]Ctrl+C[/bold] to cancel, [bold]quit[/bold] to exit."
+    )
+    grid = Table.grid(expand=True, padding=(0, 3))
+    grid.add_column(ratio=2)
+    grid.add_column(ratio=3)
+    grid.add_row(left, right)
+    return Panel(grid, border_style="blue")
+
+
+def _clear_terminal():
+    if not _terminal_is_interactive():
+        return
+    if os.name == "nt":
+        os.system("cls")
+    _write_terminal_sequence("\x1b[3J\x1b[2J\x1b[H")
+
+
+def _repl(agent: Agent, config: Config):
+    """Interactive read-eval-print loop."""
+    _clear_terminal()
+    current_model = agent.llm.model
+    console.print(_welcome_panel(config, current_model))
     hist_path = os.path.expanduser("~/.autocode_history")
     history = FileHistory(hist_path)
 
@@ -243,6 +289,7 @@ def _repl(agent: Agent, config: Config):
                 prompt_continuation="...  ",
             ).strip()
         except (EOFError, KeyboardInterrupt):
+            agent.close()
             console.print("\nBye!")
             break
 
@@ -262,6 +309,7 @@ def _repl(agent: Agent, config: Config):
 
         # built-in commands
         if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
+            agent.close()
             break
         if user_input == "/help":
             _show_help()
@@ -273,11 +321,20 @@ def _repl(agent: Agent, config: Config):
         if user_input == "/tokens":
             p = agent.llm.total_prompt_tokens
             c = agent.llm.total_completion_tokens
+            cache_read = getattr(agent.llm, "total_cache_read_tokens", 0)
+            cache_miss = getattr(agent.llm, "total_cache_miss_tokens", 0)
             line = f"Tokens: [cyan]{p}[/cyan] prompt + [cyan]{c}[/cyan] completion = [bold]{p+c}[/bold] total"
             cost = agent.llm.estimated_cost
             if cost is not None:
                 line += f"  (~${cost:.4f})"
             console.print(line)
+            cache_total = cache_read + cache_miss
+            cache_rate = f"{(cache_read / cache_total * 100):.1f}%" if cache_total else "n/a"
+            console.print(
+                "Prompt cache: "
+                f"[cyan]{cache_read}[/cyan] hit + [cyan]{cache_miss}[/cyan] miss = [bold]{cache_total}[/bold] total  "
+                f"(hit rate {cache_rate})"
+            )
             continue
         if user_input == "/model" or user_input.startswith("/model "):
             new_model = user_input[7:].strip() if user_input.startswith("/model ") else ""
@@ -375,6 +432,27 @@ def _repl(agent: Agent, config: Config):
             else:
                 console.print(Panel(format_trace(trace), title="Trace", border_style="dim"))
             continue
+        if user_input == "/mcp":
+            infos = agent.mcp_manager.get_server_infos() if agent.mcp_manager is not None else []
+            if not infos:
+                console.print("[dim]No MCP servers configured.[/dim]")
+                continue
+            table = Table(title="MCP Servers", show_header=True, header_style="bold")
+            table.add_column("Server")
+            table.add_column("Status")
+            table.add_column("Tools", justify="right")
+            table.add_column("Error")
+            for info in infos:
+                table.add_row(info.name, info.status, str(info.tool_count), info.error or "-")
+            console.print(table)
+            for info in infos:
+                tool_names = [
+                    tool.name for tool in agent.mcp_manager.snapshot_tools()
+                    if getattr(tool, "server_name", "") == info.name
+                ]
+                if tool_names:
+                    console.print(f"[bold]{info.name}[/bold]: " + ", ".join(tool_names))
+            continue
         if user_input == "/approve":
             _run_pending_approval(True)
             continue
@@ -432,6 +510,7 @@ def _show_help():
         "  /task          Show the current session and task state\n"
         "  /todo          Show the current todo list\n"
         "  /trace         Show the current session trace\n"
+        "  /mcp           Show MCP server status and loaded tools\n"
         "  /approve       Approve the pending tool call\n"
         "  /approve_all   Approve this tool call and auto-approve later normal confirms\n"
         "  /reject        Reject the pending tool call\n"

@@ -1,6 +1,6 @@
 """Core agent loop."""
 
-from ..context import ContextManager, MemoryManager, estimate_tokens, render_todos, system_prompt
+from ..context import ContextManager, MemoryManager, estimate_tokens, render_todos, runtime_state_block, static_system_prompt
 from ..infra import BackgroundProcessManager, Sandbox, WorkspaceFS
 from ..llm import LLM, ToolCall
 from ..runtime import HookBus, Policy, RecoveryManager, Runtime
@@ -40,16 +40,28 @@ class Agent:
         self,
         llm: LLM,
         tools: list[Tool] | None = None,
+        tool_factory=None,
+        mcp_manager=None,
+        own_mcp_manager: bool = False,
         max_context_tokens: int = 1_000_000,
         max_rounds: int = 50,
         workspace_root: str | None = None,
         auto_approve: bool = False,
     ):
         self.llm = llm
-        self.tools = tools if tools is not None else [type(t)() for t in ALL_TOOLS]
-        self.tool_registry = build_tool_registry(self.tools)
+        self._tool_factory = tool_factory
+        self.mcp_manager = mcp_manager
+        self._owns_mcp_manager = own_mcp_manager
+        initial_tools = tools if tools is not None else self._fresh_tools()
+        self._static_tools = [
+            tool for tool in initial_tools
+            if not (self.mcp_manager is not None and tool.name.startswith("mcp_"))
+        ]
+        self.tools: list[Tool] = []
+        self.tool_registry: dict[str, Tool] = {}
         self.messages: list[dict] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
+        self._last_prompt_tokens = 0
         self.max_rounds = max_rounds
         self.workspace_root = workspace_root or "."
         self.fs = WorkspaceFS(self.workspace_root)
@@ -67,6 +79,7 @@ class Agent:
             "user_message",
             "before_llm",
             "after_llm",
+            "context_compaction",
             "policy_decision",
             "before_tool",
             "after_tool",
@@ -77,16 +90,12 @@ class Agent:
         ):
             self.hooks.on(event, self.audit.handle)
             self.hooks.on(event, self.trace.handle)
+        self.hooks.on("task_status", self._handle_lifecycle_event)
+        self.hooks.on("task_error", self._handle_lifecycle_event)
         self.policy = Policy(workspace_root=self.workspace_root, auto_approve=auto_approve)
+        self._sync_mcp_tools()
         self.runtime = Runtime(self.tool_registry, policy=self.policy, hooks=self.hooks, recovery=self.recovery)
         self.session_state: SessionState | None = None
-
-        for tool in self.tools:
-            setattr(tool, "_fs", self.fs)
-            setattr(tool, "_sandbox", self.sandbox)
-            setattr(tool, "_process_manager", self.processes)
-            if isinstance(tool, (AgentTool, TodoWriteTool)):
-                tool._parent_agent = self
 
     @property
     def task_state(self) -> TaskState | None:
@@ -94,16 +103,47 @@ class Agent:
             return None
         return self.session_state.current_task
 
-    def _full_messages(self) -> list[dict]:
-        return [{"role": "system", "content": self._build_system_prompt()}] + self.messages
+    def _fresh_tools(self) -> list[Tool]:
+        if self._tool_factory is not None:
+            return list(self._tool_factory())
+        return [tool.clone() for tool in ALL_TOOLS]
+
+    def _attach_tool(self, tool: Tool) -> None:
+        setattr(tool, "_fs", self.fs)
+        setattr(tool, "_sandbox", self.sandbox)
+        setattr(tool, "_process_manager", self.processes)
+        if isinstance(tool, (AgentTool, TodoWriteTool)):
+            tool._parent_agent = self
+
+    def _sync_mcp_tools(self) -> None:
+        dynamic = self.mcp_manager.snapshot_tools() if self.mcp_manager is not None else []
+        self.tools = [*self._static_tools, *dynamic]
+        for tool in self.tools:
+            self._attach_tool(tool)
+        self.tool_registry = build_tool_registry(self.tools)
+        if hasattr(self, "runtime"):
+            self.runtime.tool_registry = self.tool_registry
+
+    def _request_messages(self) -> list[dict]:
+        self._sync_mcp_tools()
+        messages = [{"role": "system", "content": self._build_static_system_prompt()}] + self.messages
+        runtime_tail = self._build_runtime_tail()
+        if runtime_tail:
+            messages.append({"role": "user", "content": runtime_tail})
+        return messages
 
     @staticmethod
     def _serialize_tool_call(tool_call: ToolCall) -> dict:
-        return {
+        data = {
             "id": tool_call.id,
             "name": tool_call.name,
             "arguments": dict(tool_call.arguments),
         }
+        if tool_call.raw_arguments is not None:
+            data["raw_arguments"] = tool_call.raw_arguments
+        if tool_call.parse_error is not None:
+            data["parse_error"] = tool_call.parse_error
+        return data
 
     @staticmethod
     def _deserialize_tool_calls(items: list[dict]) -> list[ToolCall]:
@@ -112,11 +152,14 @@ class Agent:
                 id=item.get("id", ""),
                 name=item.get("name", ""),
                 arguments=dict(item.get("arguments", {})),
+                raw_arguments=item.get("raw_arguments"),
+                parse_error=item.get("parse_error"),
             )
             for item in items
         ]
 
     def _tool_schemas(self) -> list[dict]:
+        self._sync_mcp_tools()
         return [tool.schema() for tool in self.tools]
 
     def _ensure_session(self) -> SessionState:
@@ -134,20 +177,35 @@ class Agent:
         payload.update(extra)
         return payload
 
-    def _build_system_prompt(self) -> str:
+    def _build_static_system_prompt(self) -> str:
+        return static_system_prompt(
+            self.tools,
+            cwd=str(self.fs.workspace_root),
+            rules_block=self.memory.build_rules_block(),
+        )
+
+    def _build_runtime_tail(self) -> str:
         todo_block = render_todos(self.task_state.todos) if self.task_state else ""
         task_block = self.sessions.render_task(self.task_state) if self.task_state else ""
         recovery_block = ""
         if self.task_state and self.task_state.recent_failures:
             recovery_block = "\n".join(f"- {item}" for item in self.task_state.recent_failures[-3:])
-        return system_prompt(
-            self.tools,
-            cwd=str(self.fs.workspace_root),
-            memory_block=self.memory.build_memory_block(),
+        return runtime_state_block(
+            project_memory_block=self.memory.build_project_memory_block(),
             todo_block=todo_block,
             task_block=task_block,
             recovery_block=recovery_block,
         )
+
+    def _handle_lifecycle_event(self, event: str, payload: dict):
+        task_id = payload.get("task_id", "")
+        try:
+            if event == "task_status" and payload.get("status") == "completed":
+                self.processes.cleanup_task_processes(task_id)
+            elif event == "task_error":
+                self.processes.cleanup_task_processes(task_id)
+        except Exception:
+            return
 
     def _ensure_task(self, title: str | None = None):
         session = self._ensure_session()
@@ -191,23 +249,44 @@ class Agent:
             self.transcript.append_message(self.session_state.session_id, message)
 
     def _maybe_compress_messages(self):
+        effective_used = self.context.effective_used(
+            self.messages,
+            last_prompt_tokens=self._last_prompt_tokens,
+        )
         if (
             self.task_state is not None
             and hasattr(self.llm, "_call_with_retry")
-            and estimate_tokens(self.messages) > int(self.context.max_tokens * 0.50)
+            and effective_used > int(self.context.max_tokens * 0.50)
         ):
             self.memory.schedule_project_memory_refresh(self.messages, self.llm)
-        result = self.context.maybe_compress(self.messages, self.llm)
+        result = self.context.maybe_compress(
+            self.messages,
+            self.llm,
+            last_prompt_tokens=self._last_prompt_tokens,
+        )
         if result.compressed and self.session_state is not None:
+            saved_tokens = max(0, result.before_tokens - result.after_tokens)
             self.transcript.append_compaction(
                 self.session_state.session_id,
                 {
                     "layers": list(result.layers),
                     "before_tokens": result.before_tokens,
                     "after_tokens": result.after_tokens,
+                    "saved_tokens": saved_tokens,
                     "before_messages": result.before_messages,
                     "after_messages": result.after_messages,
                 },
+            )
+            self.hooks.emit(
+                "context_compaction",
+                self._event_payload(
+                    layers=list(result.layers),
+                    before_tokens=result.before_tokens,
+                    after_tokens=result.after_tokens,
+                    saved_tokens=saved_tokens,
+                    before_messages=result.before_messages,
+                    after_messages=result.after_messages,
+                ),
             )
         return result
 
@@ -290,7 +369,7 @@ class Agent:
             self._ensure_task()
 
         for _ in range(self.max_rounds):
-            full_messages = self._full_messages()
+            full_messages = self._request_messages()
             tool_schemas = self._tool_schemas()
             resp = self.runtime.call_llm(
                 llm=self.llm,
@@ -300,6 +379,7 @@ class Agent:
                 session_id=self.session_state.session_id,
                 on_token=on_token,
             )
+            self._last_prompt_tokens = resp.prompt_tokens
             self.llm_rounds.append_round(
                 self.session_state.session_id,
                 task_id=self.task_state.task_id,
@@ -311,6 +391,8 @@ class Agent:
                 response_tool_calls=[self._serialize_tool_call(tool_call) for tool_call in resp.tool_calls],
                 prompt_tokens=resp.prompt_tokens,
                 completion_tokens=resp.completion_tokens,
+                cache_read_tokens=resp.cache_read_tokens,
+                cache_miss_tokens=resp.cache_miss_tokens,
             )
 
             if not resp.tool_calls:
@@ -343,12 +425,24 @@ class Agent:
         return summary
 
     def _handle_tool_calls(self, tool_calls, on_tool=None, approval_handler=None) -> str | None:
-        decisions = [
-            self.runtime.evaluate_tool_call(self.task_state, tool_call, self.session_state.session_id)
-            for tool_call in tool_calls
-        ]
+        decisions = []
+        invalid_results: dict[str, str] = {}
+        for tool_call in tool_calls:
+            if tool_call.parse_error:
+                invalid_results[tool_call.id] = self.runtime.invalid_tool_call_result(
+                    self.task_state,
+                    tool_call,
+                    self.session_state.session_id,
+                )
+                decisions.append(None)
+                continue
+            decisions.append(
+                self.runtime.evaluate_tool_call(self.task_state, tool_call, self.session_state.session_id)
+            )
 
-        if len(tool_calls) > 1 and all(decision.action == "allow" for decision in decisions):
+        if len(tool_calls) > 1 and decisions and all(
+            decision is not None and decision.action == "allow" for decision in decisions
+        ):
             try:
                 results = self.runtime.execute_tool_calls_parallel(
                     self.task_state,
@@ -363,7 +457,9 @@ class Agent:
             return None
 
         for index, (tool_call, decision) in enumerate(zip(tool_calls, decisions)):
-            if decision.action == "allow":
+            if decision is None:
+                result = invalid_results[tool_call.id]
+            elif decision.action == "allow":
                 result = self._execute_tool_call(tool_call, on_tool=on_tool)
             elif decision.action == "deny":
                 result = self.runtime.blocked_result(tool_call.name, decision)
@@ -414,6 +510,7 @@ class Agent:
         return None
 
     def _execute_tool_call(self, tool_call: ToolCall, on_tool=None, decision: PolicyDecision | None = None) -> str:
+        self._sync_mcp_tools()
         try:
             return self.runtime.execute_tool_call(
                 self.task_state,
@@ -440,7 +537,7 @@ class Agent:
 
     def _summarize_round_limit(self, on_token=None) -> str:
         summary_prompt = {"role": "user", "content": self._ROUND_LIMIT_SUMMARY_PROMPT}
-        messages = self._full_messages() + [summary_prompt]
+        messages = self._request_messages() + [summary_prompt]
         try:
             resp = self.runtime.call_llm(
                 llm=self.llm,
@@ -461,11 +558,31 @@ class Agent:
                 response_tool_calls=[],
                 prompt_tokens=resp.prompt_tokens,
                 completion_tokens=resp.completion_tokens,
+                cache_read_tokens=resp.cache_read_tokens,
+                cache_miss_tokens=resp.cache_miss_tokens,
             )
             return resp.content or "已完成\n- 已达到本轮最大工具调用次数。\n\n当前卡点\n- 未能生成有效总结。\n\n建议下一步\n- 如需继续，请回复“继续”。"
         except Exception:
             return "已完成\n- 已达到本轮最大工具调用次数。\n\n当前卡点\n- 运行时在收尾总结阶段失败。\n\n建议下一步\n- 如需继续，请回复“继续”。"
 
     def reset(self):
+        self.close()
         self.messages.clear()
         self.session_state = None
+
+    def close(self):
+        try:
+            self.processes.cleanup_all(include_persistent=True)
+        except Exception:
+            pass
+        finally:
+            if self._owns_mcp_manager and self.mcp_manager is not None:
+                try:
+                    self.mcp_manager.close()
+                except Exception:
+                    pass
+            for tool in self.tools:
+                try:
+                    tool.close()
+                except Exception:
+                    continue

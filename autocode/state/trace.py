@@ -35,6 +35,11 @@ class TraceRecorder:
             existing.setdefault("started_at_ts", time.time())
             existing.setdefault("modified_files", [])
             existing.setdefault("tools", {})
+            existing.setdefault("cache_read_tokens", 0)
+            existing.setdefault("cache_miss_tokens", 0)
+            existing.setdefault("compactions", 0)
+            existing.setdefault("cache_segments", 1)
+            existing.setdefault("context_saved_tokens", 0)
             return existing
         now = time.time()
         return {
@@ -52,6 +57,11 @@ class TraceRecorder:
             "blocked_tool_calls": 0,
             "prompt_tokens": 0,
             "completion_tokens": 0,
+            "cache_read_tokens": 0,
+            "cache_miss_tokens": 0,
+            "compactions": 0,
+            "cache_segments": 1,
+            "context_saved_tokens": 0,
             "errors": 0,
             "modified_files": [],
             "tools": {},
@@ -70,6 +80,12 @@ class TraceRecorder:
             stats["steps"] = max(stats["steps"], int(payload.get("step_index", 0)))
             stats["prompt_tokens"] += int(payload.get("prompt_tokens", 0))
             stats["completion_tokens"] += int(payload.get("completion_tokens", 0))
+            stats["cache_read_tokens"] += int(payload.get("cache_read_tokens", 0))
+            stats["cache_miss_tokens"] += int(payload.get("cache_miss_tokens", 0))
+        elif event == "context_compaction":
+            stats["compactions"] += 1
+            stats["cache_segments"] = 1 + int(stats["compactions"])
+            stats["context_saved_tokens"] += int(payload.get("saved_tokens", 0))
         elif event == "policy_decision":
             action = payload.get("decision", {}).get("action")
             if action == "confirm":
@@ -116,6 +132,10 @@ def format_trace(trace: dict) -> str:
     modified = ", ".join(trace.get("modified_files", [])[:5]) or "-"
     tools = trace.get("tools", {})
     tool_line = ", ".join(f"{name}={count}" for name, count in sorted(tools.items())) or "-"
+    cache_read = int(trace.get("cache_read_tokens", 0))
+    cache_miss = int(trace.get("cache_miss_tokens", 0))
+    cache_total = cache_read + cache_miss
+    cache_hit_rate = f"{(cache_read / cache_total * 100):.1f}%" if cache_total else "n/a"
     return (
         f"Session: {trace.get('session_id', '?')}\n"
         f"Current Task: {trace.get('current_task_id', '?')}\n"
@@ -127,6 +147,12 @@ def format_trace(trace: dict) -> str:
         f"Blocked tool calls: {trace.get('blocked_tool_calls', 0)}\n"
         f"Prompt tokens: {trace.get('prompt_tokens', 0)}\n"
         f"Completion tokens: {trace.get('completion_tokens', 0)}\n"
+        f"Prompt cache read tokens: {cache_read}\n"
+        f"Prompt cache miss tokens: {cache_miss}\n"
+        f"Prompt cache hit rate: {cache_hit_rate}\n"
+        f"Compactions: {trace.get('compactions', 0)}\n"
+        f"Cache segments: {trace.get('cache_segments', 1)}\n"
+        f"Context saved tokens: {trace.get('context_saved_tokens', 0)}\n"
         f"Errors: {trace.get('errors', 0)}\n"
         f"Modified files: {modified}\n"
         f"Tools: {tool_line}\n"

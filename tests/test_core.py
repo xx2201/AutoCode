@@ -4,7 +4,7 @@ import os
 import pathlib
 
 from autocode import Agent, LLM, Config, ALL_TOOLS, __version__
-from autocode.context import ContextManager, MemoryManager, estimate_tokens
+from autocode.context import CompressionResult, ContextManager, MemoryManager, estimate_tokens
 from autocode.llm import LLMResponse
 from autocode.tools import get_tool
 
@@ -18,7 +18,7 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    assert len(ALL_TOOLS) == 12
+    assert len(ALL_TOOLS) == 13
 
 
 def test_config_from_env(monkeypatch):
@@ -149,11 +149,102 @@ def test_context_compress():
     assert len(msgs) < 40  # should be compressed
 
 
+def test_context_summarize_old_keeps_complete_recent_turns():
+    ctx = ContextManager(max_tokens=2000)
+    msgs = [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "plan 1"},
+        {"role": "tool", "tool_call_id": "t1", "content": "tool 1"},
+        {"role": "user", "content": "turn 2"},
+        {"role": "assistant", "content": "plan 2"},
+        {"role": "tool", "tool_call_id": "t2", "content": "tool 2"},
+        {"role": "assistant", "content": "done 2"},
+        {"role": "user", "content": "turn 3"},
+        {"role": "assistant", "content": "plan 3"},
+    ]
+
+    original_tail = msgs[3:]
+    changed = ctx._summarize_old(msgs, llm=None, keep_recent=2)
+
+    assert changed is True
+    assert msgs[0]["content"].startswith("[Context compressed - conversation summary]")
+    assert msgs[1]["role"] == "assistant"
+    assert msgs[2:] == original_tail
+
+
+def test_context_hard_collapse_prefers_last_complete_turn():
+    ctx = ContextManager(max_tokens=2000)
+    ctx._collapse_keep_recent = 1
+    msgs = [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "done 1"},
+        {"role": "user", "content": "turn 2"},
+        {"role": "assistant", "content": "step 2"},
+        {"role": "tool", "tool_call_id": "t2", "content": "tool 2"},
+    ]
+
+    original_tail = msgs[2:]
+    ctx._hard_collapse(msgs, llm=None)
+
+    assert msgs[0]["content"].startswith("[Hard context reset]")
+    assert msgs[1]["role"] == "assistant"
+    assert msgs[2:] == original_tail
+
+
 def test_context_large_window_uses_larger_recent_tail_and_summary_budget():
     ctx = ContextManager(max_tokens=1_000_000)
-    assert ctx._summary_keep_recent == 24
-    assert ctx._collapse_keep_recent == 12
+    assert ctx._summary_keep_recent == 5
+    assert ctx._collapse_keep_recent == 2
     assert ctx._summary_input_chars == 120_000
+
+
+def test_context_can_trigger_compression_from_last_real_prompt_tokens():
+    ctx = ContextManager(max_tokens=2000)
+    msgs = [
+        {"role": "user", "content": "turn 1"},
+        {"role": "assistant", "content": "plan 1"},
+        {"role": "user", "content": "turn 2"},
+        {"role": "assistant", "content": "plan 2"},
+        {"role": "user", "content": "turn 3"},
+        {"role": "assistant", "content": "plan 3"},
+    ]
+
+    no_real_usage = ctx.maybe_compress([dict(m) for m in msgs], None)
+    with_real_usage = ctx.maybe_compress([dict(m) for m in msgs], None, last_prompt_tokens=1500)
+
+    assert no_real_usage.compressed is False
+    assert with_real_usage.compressed is True
+    assert "summarize_old" in with_real_usage.layers
+
+
+def test_agent_passes_last_real_prompt_tokens_into_compression(tmp_path):
+    class _NoopLLM:
+        def __init__(self):
+            self.model = "fake"
+            self.total_prompt_tokens = 0
+            self.total_completion_tokens = 0
+            self.total_cache_read_tokens = 0
+            self.total_cache_miss_tokens = 0
+
+    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), auto_approve=True)
+    agent._last_prompt_tokens = 4321
+    captured = {}
+
+    def _fake_maybe_compress(messages, llm=None, last_prompt_tokens=0):
+        captured["last_prompt_tokens"] = last_prompt_tokens
+        return CompressionResult(
+            compressed=False,
+            layers=(),
+            before_tokens=0,
+            after_tokens=0,
+            before_messages=len(messages),
+            after_messages=len(messages),
+        )
+
+    agent.context.maybe_compress = _fake_maybe_compress
+    agent._maybe_compress_messages()
+
+    assert captured["last_prompt_tokens"] == 4321
 
 
 def test_memory_manager_reads_project_memory(monkeypatch, tmp_path):
@@ -166,12 +257,12 @@ def test_memory_manager_reads_project_memory(monkeypatch, tmp_path):
     memory_path = manager.memory_file_path()
     memory_path.parent.mkdir(parents=True, exist_ok=True)
     memory_path.write_text("# Project Memory\n\n- 使用 conda 环境 langgraph\n", encoding="utf-8")
-    block = manager.build_memory_block()
+    rules_block = manager.build_rules_block()
+    project_memory_block = manager.build_project_memory_block()
 
-    assert "## Project Rules" in block
-    assert "## Project Memory" in block
-    assert "使用 conda 环境 langgraph" in block
-    assert "## Recent Sessions" not in block
+    assert "## Project Rules" in rules_block
+    assert "使用 conda 环境 langgraph" in project_memory_block
+    assert "## Recent Sessions" not in project_memory_block
 
 
 def test_memory_manager_refreshes_project_memory_without_duplicates(tmp_path):
@@ -276,11 +367,103 @@ def test_memory_manager_can_schedule_async_refresh(tmp_path):
     messages = [{"role": "user", "content": "请记住项目真实 conda 环境"}]
 
     assert manager.schedule_project_memory_refresh(messages, llm, force=True) is True
-    manager.wait_for_pending_refresh(timeout=2)
 
-    content = manager.memory_file_path().read_text(encoding="utf-8")
-    assert "langgraph" in content
-    assert llm.calls == 1
+
+def test_agent_request_messages_keep_rules_in_system_and_runtime_state_in_tail(tmp_path):
+    from autocode.agent import Agent
+
+    (tmp_path / "AGENTS.md").write_text("规则一\n", encoding="utf-8")
+    memory_dir = tmp_path / ".autocode"
+    memory_dir.mkdir()
+    (memory_dir / "PROJECT_MEMORY.md").write_text("# Project Memory\n\n- 项目记忆一\n", encoding="utf-8")
+
+    class _NoopLLM:
+        def __init__(self):
+            self.model = "fake"
+            self.total_prompt_tokens = 0
+            self.total_completion_tokens = 0
+            self.total_cache_read_tokens = 0
+            self.total_cache_miss_tokens = 0
+
+    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), auto_approve=True)
+    agent._ensure_task("处理任务")
+    agent.task_state.todos = [{"content": "读文件", "status": "pending"}]
+    agent.messages = [{"role": "user", "content": "开始"}]
+
+    request_messages = agent._request_messages()
+
+    assert request_messages[0]["role"] == "system"
+    assert "# Rules Memory" in request_messages[0]["content"]
+    assert "# Task" not in request_messages[0]["content"]
+    assert request_messages[-1]["role"] == "user"
+    assert "[Runtime state for this turn." in request_messages[-1]["content"]
+    assert "# Project Memory" in request_messages[-1]["content"]
+    assert "# Current Todo" in request_messages[-1]["content"]
+
+
+def test_memory_manager_uses_llm_selected_project_file_evidence(tmp_path):
+    workspace = tmp_path / "workspace"
+    (workspace / "backend").mkdir(parents=True)
+    (workspace / "frontend").mkdir(parents=True)
+    (workspace / "README.md").write_text("启动方式: 先启动 backend 再启动 frontend", encoding="utf-8")
+    (workspace / "backend" / "models.py").write_text(
+        "from sqlalchemy import Column, Integer\n\nid = Column(Integer, primary_key=True)\n",
+        encoding="utf-8",
+    )
+    (workspace / "frontend" / "vite.config.js").write_text(
+        "export default { server: { proxy: { '/api': 'http://localhost:8000' } } }\n",
+        encoding="utf-8",
+    )
+    (workspace / "backend" / ".venv").mkdir()
+    (workspace / "backend" / ".venv" / "ignored.py").write_text("ignored", encoding="utf-8")
+
+    manager = MemoryManager(str(workspace))
+
+    class FakeLLM:
+        def __init__(self):
+            self.calls = []
+
+        def chat(self, messages, tools=None, on_token=None):
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                return LLMResponse(content="README.md\nfrontend/vite.config.js")
+            return LLMResponse(content="- 后端监听 8000，前端通过 /api 代理联调")
+
+    llm = FakeLLM()
+    messages = [{"role": "user", "content": "总结这个 demo 真正值得记住的项目事实"}]
+
+    assert manager.refresh_project_memory(messages, llm, force=True) is True
+    assert len(llm.calls) == 2
+
+    selector_prompt = llm.calls[0][1]["content"]
+    summary_system_prompt = llm.calls[1][0]["content"]
+    summary_user_prompt = llm.calls[1][1]["content"]
+    assert "Project file inventory:" in selector_prompt
+    assert "- README.md (" in selector_prompt
+    assert "- backend/models.py (" in selector_prompt
+    assert "- frontend/vite.config.js (" in selector_prompt
+    assert ".venv/ignored.py" not in selector_prompt
+    assert "Never infer from generic library best practices" in summary_system_prompt
+    assert "[README.md]" in summary_user_prompt
+    assert "[frontend/vite.config.js]" in summary_user_prompt
+    assert "启动方式: 先启动 backend 再启动 frontend" in summary_user_prompt
+    assert "proxy" in summary_user_prompt
+    assert "[backend/models.py]" not in summary_user_prompt
+
+
+def test_memory_refresh_key_changes_when_project_inventory_changes(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    (workspace / "README.md").write_text("first", encoding="utf-8")
+
+    manager = MemoryManager(str(workspace))
+    source = manager._flatten_messages([{"role": "user", "content": "hello"}])
+    key_before = manager._memory_refresh_key(source, manager._project_file_inventory_key())
+
+    (workspace / "README.md").write_text("second", encoding="utf-8")
+    key_after = manager._memory_refresh_key(source, manager._project_file_inventory_key())
+
+    assert key_before != key_after
 
 
 # --- Cost estimation ---

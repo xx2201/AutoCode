@@ -25,3 +25,11 @@ class Tool(ABC):
                 "parameters": self.parameters,
             },
         }
+
+    def clone(self):
+        """Build a fresh tool instance for a new agent."""
+        return type(self)()
+
+    def close(self) -> None:
+        """Release tool-owned resources."""
+        return None

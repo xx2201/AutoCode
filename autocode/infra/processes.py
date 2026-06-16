@@ -26,6 +26,8 @@ class BackgroundProcess:
     log_path: str
     pid: int
     started_at: str
+    task_id: str = ""
+    keep_alive: bool = False
 
 
 class BackgroundProcessManager:
@@ -34,7 +36,14 @@ class BackgroundProcessManager:
         self._lock = threading.Lock()
         self._processes: dict[str, tuple[subprocess.Popen, BackgroundProcess, object]] = {}
 
-    def start_process(self, command: str, cwd: str = ".", log_file: str | None = None) -> str:
+    def start_process(
+        self,
+        command: str,
+        cwd: str = ".",
+        log_file: str | None = None,
+        keep_alive: bool = False,
+        task_id: str | None = None,
+    ) -> str:
         run_cwd = self.fs.resolve_path(cwd)
         self.fs.ensure_within_workspace(run_cwd)
         if not run_cwd.is_dir():
@@ -64,6 +73,8 @@ class BackgroundProcessManager:
             log_path=str(log_path),
             pid=proc.pid,
             started_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            task_id=task_id or "",
+            keep_alive=bool(keep_alive),
         )
         with self._lock:
             self._processes[process_id] = (proc, meta, log_handle)
@@ -96,10 +107,40 @@ class BackgroundProcessManager:
     def stop_process(self, process_id: str) -> str:
         proc, meta, log_handle = self._get_process_bundle(process_id)
         self._terminate_process_tree(proc)
-        log_handle.close()
+        if log_handle is not None:
+            log_handle.close()
         with self._lock:
             self._processes.pop(process_id, None)
         return f"Stopped background process {process_id} (pid {meta.pid})"
+
+    def cleanup_task_processes(self, task_id: str) -> list[str]:
+        if not task_id:
+            return []
+        return self._cleanup_matching_processes(
+            lambda meta: meta.task_id == task_id and not meta.keep_alive
+        )
+
+    def cleanup_all(self, include_persistent: bool = True) -> list[str]:
+        return self._cleanup_matching_processes(
+            lambda meta: include_persistent or not meta.keep_alive
+        )
+
+    def _cleanup_matching_processes(self, predicate) -> list[str]:
+        with self._lock:
+            process_ids = [
+                process_id
+                for process_id, (_, meta, _) in self._processes.items()
+                if predicate(meta)
+            ]
+
+        stopped: list[str] = []
+        for process_id in process_ids:
+            try:
+                self.stop_process(process_id)
+            except ValueError:
+                continue
+            stopped.append(process_id)
+        return stopped
 
     def _terminate_process_tree(self, proc: subprocess.Popen) -> None:
         if proc.poll() is not None:

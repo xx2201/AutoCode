@@ -7,11 +7,15 @@ from pathlib import Path
 
 from autocode.config import Config
 
-from .graders import evaluate_trial
+from .graders import evaluate_cross_agent_trial, evaluate_trial
 from .harness import default_output_dir, run_trial
 from .judge import JudgeConfig, LLMJudge
 from .loader import load_tasks
 from .report import aggregate_reports, build_trial_report, write_report
+
+DEFAULT_EVAL_AGENT_MODEL = "MiniMax-M2.7"
+DEFAULT_JUDGE_REPEATS = 2
+DEFAULT_JUDGE_ARBITRATION_DELTA = 3.0
 
 
 def _parse_args():
@@ -27,9 +31,15 @@ def _parse_args():
     p.add_argument("--list", action="store_true", help="List available tasks and exit")
     p.add_argument("--trials", type=int, help="Override trial count for all selected tasks")
     p.add_argument("--model", help="Override model name")
+    p.add_argument("--agent", action="append", choices=["autocode", "claude_code", "icecoder"], help="Agent runtime to evaluate (repeatable)")
+    p.add_argument("--icecoder-root", help="Path to the local iceCoder repository")
     p.add_argument("--judge-model", help="Override LLM judge model name")
     p.add_argument("--disable-llm-judge", action="store_true", help="Disable LLM judge even if configured")
     return p.parse_args()
+
+
+def _resolve_eval_agent_model(args_model: str | None) -> str:
+    return args_model or DEFAULT_EVAL_AGENT_MODEL
 
 
 def main():
@@ -45,43 +55,74 @@ def main():
         raise SystemExit("No tasks selected.")
 
     config = Config.from_env()
-    if not (args.model or config.model):
-        raise SystemExit("No agent model configured. Set AUTOCODE_MODEL or pass --model.")
+    eval_agent_model = _resolve_eval_agent_model(args.model)
     if not config.api_key:
         raise SystemExit("No agent API key configured. Set AUTOCODE_API_KEY before running evals.")
     judge_config = None if args.disable_llm_judge else JudgeConfig.from_env(model_override=args.judge_model)
     judge = None if judge_config is None else LLMJudge(judge_config)
+    agent_providers = args.agent or ["autocode"]
+    cross_agent_mode = len(agent_providers) > 1 or any(agent != "autocode" for agent in agent_providers)
 
     fixtures_dir = Path(args.fixtures_dir)
     output_dir = Path(args.output_dir) if args.output_dir else default_output_dir(Path("eval"))
     reports = []
 
-    for task in tasks:
-        trial_count = args.trials or task.trials
-        print(f"Running {task.id} ({trial_count} trial{'s' if trial_count != 1 else ''})")
-        for trial_index in range(1, trial_count + 1):
-            artifacts = run_trial(
-                task,
-                trial_index=trial_index,
-                fixtures_dir=fixtures_dir,
-                output_root=output_dir,
-                config=config,
-                model_override=args.model,
-            )
-            grader_results = evaluate_trial(task, artifacts)
-            if judge is not None and task.judge.enabled:
-                grader_results.append(judge.evaluate(task, artifacts))
-            report = build_trial_report(task, trial_index, grader_results)
-            reports.append(report)
+    for agent_provider in agent_providers:
+        for task in tasks:
+            trial_count = args.trials or task.trials
             print(
-                f"  trial {trial_index}: {'PASS' if report.passed else 'FAIL'} "
-                f"(score {report.score:.2f})"
+                f"Running {task.id} with {agent_provider} "
+                f"({trial_count} trial{'s' if trial_count != 1 else ''})"
             )
+            for trial_index in range(1, trial_count + 1):
+                trial_output_root = output_dir / agent_provider
+                artifacts = run_trial(
+                    task,
+                    trial_index=trial_index,
+                    fixtures_dir=fixtures_dir,
+                    output_root=trial_output_root,
+                    config=config,
+                    model_override=eval_agent_model,
+                    agent_provider=agent_provider,
+                    icecoder_root=args.icecoder_root,
+                )
+                grader_results = (
+                    evaluate_cross_agent_trial(task, artifacts)
+                    if cross_agent_mode
+                    else evaluate_trial(task, artifacts)
+                )
+                if judge is not None and task.judge.enabled:
+                    grader_results.append(
+                        judge.evaluate_consensus(
+                            task,
+                            artifacts,
+                            repeats=DEFAULT_JUDGE_REPEATS,
+                            arbitration_dimension_delta=DEFAULT_JUDGE_ARBITRATION_DELTA,
+                        )
+                    )
+                report = build_trial_report(
+                    task,
+                    trial_index,
+                    grader_results,
+                    agent_provider=agent_provider,
+                    artifacts=artifacts,
+                )
+                reports.append(report)
+                print(
+                    f"  trial {trial_index}: {'PASS' if report.passed else 'FAIL'} "
+                    f"(score {report.score:.2f})"
+                )
 
     summary = aggregate_reports(reports)
     summary["run_config"] = {
-        "agent_model": args.model or config.model,
+        "agent_model": eval_agent_model,
+        "agents": agent_providers,
+        "cross_agent_mode": cross_agent_mode,
         "judge_model": None if judge_config is None else judge_config.model,
+        "judge_repeats": 0 if judge_config is None else DEFAULT_JUDGE_REPEATS,
+        "judge_arbitration_dimension_delta": (
+            None if judge_config is None else DEFAULT_JUDGE_ARBITRATION_DELTA
+        ),
     }
     write_report(output_dir, summary)
     print(f"\nSummary written to {output_dir}")

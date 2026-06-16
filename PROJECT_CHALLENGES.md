@@ -400,3 +400,123 @@
 - 面试表达：我做过一次 IM 机器人附件回传能力补齐，关键不是简单多包一层“上传文件”接口，而是先厘清聊天附件协议和云盘协议不是一回事，再把发送能力做成只在飞书通道暴露的 agent tool，这样模型能自主调用，但核心 runtime 不会被渠道逻辑污染。
 - 更新时间：2026-06-13
 
+### C040：进程清理如果依赖 Prompt，自然会在 reset/exit/异常收尾时失效
+- 场景：agent 支持 `start_process / stop_process` 启动本地服务、worker 和 watcher，早期实现只在 system prompt 里提醒模型“结束前记得 stop_process”。
+- 问题：显式调用 `stop_process` 时可以正确杀整棵进程树，但用户直接 `exit`、`/reset`、remote chat reset、runtime replace 或任务异常结束时，后台进程仍可能残留。
+- 根因：资源回收职责被放在模型行为层，而不是 runtime 生命周期层；Prompt 只能影响“模型会不会想起来停”，不能覆盖宿主退出和中断。
+- 方案：删除资源清理提示词，把责任下沉到 runtime：`start_process` 记录 `task_id + keep_alive`，任务完成/失败时自动清理临时进程，CLI 退出、`/reset`、远程 reset 和 runtime replace 时统一 `cleanup_all()`。
+- 取舍：这样会多一层轻量进程托管状态，但边界更清楚；当前把 `keep_alive` 只定义为“跨任务保留”，不承诺跨 agent 退出继续托管，避免留下无跟踪进程。
+- 验证：补充真实 Windows 父子进程测试，确认 `stop_process` 通过 `taskkill /T /F` 会杀整棵树；再补单元测试覆盖 task cleanup、reset cleanup、remote reset/replace cleanup，定向测试通过。
+- 面试表达：我把 agent 的资源清理从 Prompt 规则改成了 runtime 生命周期职责，核心思路是“模型只表达意图，宿主负责最终回收”，这样才能真正消除残留和孤儿进程问题。
+- 更新时间：2026-06-13
+
+### C041：如果同时保留 `stop_process` 和任意 shell 杀进程能力，runtime 边界就会被模型一条 bash 绕穿
+- 场景：agent 已经具备受管后台进程体系，`stop_process(process_id)` 只会停止自己登记过的进程；但模型仍可通过 `bash` 生成 `Get-Process python | Stop-Process -Force` 之类命令。
+- 问题：一旦 shell 里还能随意杀进程，模型就可能绕过受管进程边界，误杀宿主 Python、自启服务或其他无关进程，导致任务日志停在中途、状态卡在 running。
+- 根因：进程管理边界虽然在工具层已经建立，但策略层没有把“shell 终止进程”和“受管 stop_process”分离，等于留了一条后门。
+- 方案：在 `policy.py` 里直接硬拒绝所有 shell 进程终止命令（`taskkill`、`Stop-Process`、`pkill`、`killall`、`kill <pid>` 等），要求 runtime 里只保留 `stop_process` 这一个正式出口。
+- 取舍：这样会失去 agent 通过 shell 停止“外部非受管进程”的能力，但换来的是进程边界绝对清楚，没有“工具层受管、bash 层失控”的双轨语义。
+- 验证：补充 policy 测试，覆盖 `taskkill /PID ... /T /F` 和 `Get-Process python | Stop-Process -Force`，确认都直接返回 deny，并提示改用 `stop_process`。
+- 面试表达：我做过一次很典型的 runtime 边界收敛，不是继续在 shell kill 命令里做白名单兼容，而是直接删掉这条能力，只保留受管的 `stop_process` 出口，让“谁能杀谁”从 prompt 约定变成策略强约束。
+- 更新时间：2026-06-13
+
+### C042：项目记忆只看最近聊天不看真实源码时，很容易把“常见最佳实践”误写成“项目事实”
+- 场景：agent 在任务结束后会自动重写 `.autocode/PROJECT_MEMORY.md`，原实现主要依据最近若干条对话内容做总结。
+- 问题：模型会把“SQLAlchemy 2.0 常见写法”“一般项目习惯”之类的泛化知识，错写成当前仓库已经存在的事实，导致 memory 半对半错。
+- 根因：记忆生成缺少源码侧 grounding，只看聊天里的自然语言总结，没有把真实项目文件片段一起作为证据输入；同时去重键只基于对话，源码变化但对话不变时还会跳过刷新。
+- 方案：改成两阶段 memory grounding：先把工作区候选文本文件清单交给 LLM，让它自己选择最值得读取的文件路径；再读取这些真实文件片段作为 `Project file evidence` 供最终记忆总结使用。prompt 明确要求“只允许写有证据支持的事实，禁止按通用最佳实践推断”；刷新 key 同时纳入项目文件清单变化。
+- 取舍：会额外增加一次很小的 LLM 选文件调用，但避免把“哪些文件重要”硬编码在代码里；代码仍保持轻量，不引入重型索引或本地规则过滤器。
+- 验证：补充测试覆盖 memory 先看到 `Project file inventory`、由 LLM 选择路径、最终 prompt 只注入选中的真实文件片段、忽略 `.venv` 等运行目录，并验证文件清单变化会触发新的 refresh key。
+- 面试表达：我修过 agent memory 一个很典型的可信度问题，关键不是继续手写高价值文件名单，而是把“先选证据，再写记忆”做成两阶段链路，让模型自己决定该读哪些项目文件，但最终只能基于真实片段落笔。
+- 更新时间：2026-06-13
+
+### C043：Agent 评测如果只看“是否改对文件”，很容易被改样例数据或硬编码输出的投机路径骗过
+- 场景：给本地 `eval/` 子系统新增“多文件 + 隐藏 bug”任务时，agent 很容易通过改 `main.py`、样例输入、路由表或 `.env` 直接把验证脚本跑绿，而不是真修根因。
+- 问题：如果 grader 只校验最终输出或某个文件包含目标字符串，会把“修业务逻辑”和“篡改样例/绕过校验”混为一谈，导致 benchmark 虚高。
+- 根因：复杂任务里真正的 bug 往往藏在配置链路、缓存失效、路径归一化这类跨模块流程里，单纯 outcome check 无法约束 agent 必须沿正确边界修复。
+- 方案：把复杂任务定义成“验证输出 + 禁改文件 + 至少改动候选根因文件 + read-before-edit + 效率上限”的组合约束；例如缓存题禁止改 `main.py/store.py`，路由题禁止改 `routes.py/scenarios.py`，只允许 agent 在服务层或归一化层完成修复。
+- 取舍：任务定义会更啰嗦一些，但评分信号更可信；相比引入重型 sandbox 或 AST grader，这种 schema 级约束成本低、可维护、能直接复用现有 `outcome/trajectory/efficiency` graders。
+- 验证：新增 3 组复杂 fixture（配置链路、缓存失效、路径归一化）和对应 task JSON，补 loader 测试后，真实运行 `python -m eval.runner --disable-llm-judge` 可生成完整 trial / report / summary。
+- 面试表达：我做 agent benchmark 时专门处理了“投机通过”的问题，不是继续堆一个更聪明的 judge，而是把任务定义本身设计成抗作弊结构：既检查结果，也限制能改什么、必须先读什么、最多花多少步，这样通过才更像真实修 bug。
+- 更新时间：2026-06-15
+
+### C044：外部 agent 评测超时如果不杀子进程树，会把 benchmark 基线目录悄悄污染
+- 场景：用 Claude Code 这类外部 agent 跑本地 `eval/fixtures/` 题库时，某些实验命令会超时退出。
+- 问题：父进程虽然超时返回，但底层 `node ... claude-code/cli.js` 仍在后台继续跑，随后把 fixture 源目录改脏，导致后续 trial 不改代码也会“验证通过”。
+- 根因：原 harness 直接用 `subprocess.run(timeout=...)`，超时时没有显式清理整棵进程树；Windows 下包装脚本和子 Node 进程会残留。
+- 方案：把外部进程执行统一收敛到 `_run_captured_process()`，超时后在 Windows 上用 `taskkill /T /F` 杀整棵树；同时新增回归测试，验证超时后子进程不会继续写文件，并补一条 fixture 必须保持 failing baseline 的测试。
+- 取舍：实现上增加了一层很小的进程执行封装，但换来的是 benchmark 可重复性和目录洁净性；没有引入更重的作业管理器。
+- 验证：`tests/test_eval_system.py` 新增 2 条回归测试并通过 `13 passed`；手工排查确认残留 `claude-code` 进程被清掉后，fixture 基线恢复稳定。
+- 面试表达：我处理过一个很隐蔽的 agent 基准污染问题，表面看是模型分数异常，根因其实是超时后的外部子进程没被杀干净，继续在后台改题库；最后我把它收敛成统一的进程树回收和基线守护问题。
+- 更新时间：2026-06-15
+
+### C045：把外部 agent 接到第三方模型时，重复 benchmark prompt 可能命中“无工具短路缓存”
+- 场景：用 Claude Code 驱动第三方模型跑评测题时，同一任务 prompt 会在多个 trial、多个 agent 之间反复出现。
+- 问题：Claude Code 在复制后的 trial workspace 里有时只返回第一句文本回复，`steps=1`、`tool_calls=0`、`input_tokens=4`，看起来像 agent 失效。
+- 根因：问题不在 workspace 复制本身，而在外部模型/CLI 的缓存键上；相同 prompt 被错误复用成首句纯文本回复，后续 tool loop 没有真正发生。
+- 方案：在 Claude provider 层追加仅用于 cache isolation 的唯一 run nonce，放到附加 system prompt，而不是污染任务原始 prompt；同时显式把评测配置里的模型名传给 Claude，避免它偷走本地默认模型。
+- 取舍：这样会让每次 eval 少量增加不可缓存 token，但换来的是跨 trial 可重复性；相比改 task 文案或禁用整套缓存，侵入更小。
+- 验证：对同一个 copied workspace，原 prompt 会稳定复现 `cache-...` 单轮假回复；只加 nonce 后立即恢复真实 Bash/Read 工具调用，并进入长时修复流程。
+- 面试表达：我修过一个很反直觉的 agent 适配问题，表面像“复制目录后 Claude 不会用了”，实际是第三方模型缓存把工具轨迹吞掉了；解法不是继续改 workspace，而是在 provider 协议层做 cache isolation。
+- 更新时间：2026-06-15
+
+### C046：Windows 超长路径会让 Claude Code 的项目日志“看得见却读不到”
+- 场景：Claude Code 已经在评测题上修复成功并通过验证，但 `trial.json` 里的 `project_log` 仍为空，`tool_calls` 被错误记成 0。
+- 问题：如果轨迹统计缺失，Claude Code 就不能作为“稳定可比”的正式评测选手，因为 PASS 结果和执行行为脱钩了。
+- 根因：Claude 把日志写到 `.claude/projects/<sanitized workspace path>/<session>.jsonl`；评测输出目录较深时，这个路径在 Windows 上超过常规长度。Python `glob()` 还能枚举到路径名，但 `Path.stat()/read_text()` 会因长路径失败，导致 harness 误判日志不存在。
+- 方案：在 `eval/harness.py` 的 Claude 日志回收边界新增最小的 Windows 长路径适配，只在 `stat/read` 时加 `\\\\?\\` 前缀；同时修正日志等待逻辑，已知 `session_id` 时优先等到 project log，而不是先拿到 debug log 就提前返回。
+- 取舍：没有把整个项目铺满长路径兼容，也没有强行缩短所有评测目录；只把修复压在 Claude provider 的日志读取边界，影响面最小。
+- 验证：`tests/test_eval_system.py` 新增 Claude 日志等待与路径适配测试并通过；真实运行 `python -m eval.runner --task issue_tracker_regression --agent claude_code --disable-llm-judge` 后，`trial.json` 正常写入 `project_log`，`tool_calls` 从 0 恢复为 11。
+- 面试表达：我修过一个非常隐蔽的 Windows benchmark 问题，任务其实已经做对了，但轨迹统计全是假象。最后不是去继续调 prompt，而是从文件系统边界定位到“长路径导致日志可枚举但不可读”，把兼容逻辑收敛在 provider 内层，才让评测结果真正可信。
+- 更新时间：2026-06-15
+
+### C047：Benchmark 需要剔除 agent 运行时产物，否则“功能做对”也会被误判越界失败
+- 场景：三家 agent 在同一道 debug benchmark 上都把测试跑绿，但评测结论却出现“19/19 通过仍 FAIL”。
+- 问题：如果把 `.claude/`、`.iceCoder/`、`data/sessions/`、Vitest 缓存等运行时文件也算进 diff，Gate 会把平台副作用误判成项目越界修改。
+- 根因：`eval/harness.py` 早期只对 Claude 的 `.claude/` 做了单点特判，没有把“项目代码变更”和“agent/runtime 产物”在抽象层分开。
+- 方案：把 diff 过滤提升为统一规则，按路径前缀排除 `.autocode/`、`.claude/`、`.iceCoder/`、`data/sessions/`、`node_modules/.vite/vitest/`，同时保留真实依赖改动的违规检测。
+- 取舍：过滤过宽会放过真实作弊，所以没有直接忽略整个 `node_modules/` 或 `data/`，只排除可证明属于运行时缓存/日志的固定前缀。
+- 验证：`tests/test_eval_system.py` 新增回归测试并通过 `25 passed`；过滤后 `node_modules/lodash/index.js` 这类真实依赖改动仍会保留在 diff 中。
+- 面试表达：我处理过 benchmark 公平性问题，关键不是调 prompt，而是把“平台副作用”和“项目源码变更”在评测协议层拆开，否则功能正确的 agent 也会被门禁误杀。
+- 更新时间：2026-06-15
+
+### C048：Benchmark 报告如果把 Gate 和 Judge 混成“平均分”，会失去原始评分体系的可解释性
+- 场景：评测系统已经有 Gate 门禁和 LLM judge，但早期汇总时直接把所有 grader 的 `score` 求平均。
+- 问题：这样既不等于原设计里的 `Gate(40)+Judge(60)`，也无法表达 `G1=0 封顶 F`、`G1<15 封顶 C` 这类硬规则，导致结果和设计稿口径不一致。
+- 根因：报告层没有把“客观成功率”“Gate 原始分”“Judge 六维总分”“Composite 等级”拆成独立概念，而是沿用了单一 `score` 字段。
+- 方案：在 `eval/report.py` 中显式重建四层结构：`objective success`、`gate_score`、`judge_score`、`composite+grade`；汇总指标补齐 `S+A rate / avg turns / avg duration / fallback rate`，并把 cross-agent judge 改成独立的 40/60 合成。
+- 取舍：为了兼容旧 summary，保留了归一化 `score` 字段，但报告主视图改为显示 `Gate/Judge/Composite/Grade`；没有继续堆更多 grader，重点是把评分协议拉直。
+- 验证：`tests/test_eval_system.py` 补到 `27 passed`；其中覆盖 Gate+Judge 合成、Judge 60 分制解析、agent 维度汇总指标。
+- 面试表达：我做过一次评测协议层重构，核心不是“换个更强 judge”，而是先把评分数学模型讲清楚并落到代码里，让每个分数都能解释回 Gate、Judge 和最终等级。
+- 更新时间：2026-06-15
+
+### C049：Prompt cache 要真正生效，关键不是“记 token”，而是把稳定前缀和动态运行态拆开
+- 场景：agent 多轮运行时，每轮都会重发 system prompt、任务状态、todo、恢复提示和项目记忆，累计 prompt token 很高，但从日志里看不出缓存是否命中。
+- 问题：如果动态块直接混在 system prompt 里，provider 侧前缀缓存很难稳定命中；同时 compaction 发生后也没有显式统计“缓存分段”。
+- 根因：原实现只有总 `prompt_tokens/completion_tokens` 统计，没有 `cache hit/miss` telemetry；消息装配也只有一层，主历史和 API 请求视图没有分开。
+- 方案：把提示词拆成 `static_system_prompt + runtime_state_tail`，让 `AGENTS.md/CLAUDE.md` 留在稳定前缀，把 task/todo/recovery/project memory 放到尾部动态块；同时统一解析 `prompt_cache_hit_tokens / prompt_cache_miss_tokens / cached_tokens`，并把 compaction 记录成新的 cache segment。
+- 取舍：没有引入双历史存储，也没有做旁路 LLM 前缀复用，只保留一层轻量 request view；这样能力不如重型 runtime 完整，但复杂度明显更低。
+- 验证：补了 LLM usage、trace、Feishu live card、request view 分层等回归测试，`pytest -q tests/test_llm.py tests/test_litellm.py tests/test_trace.py tests/test_feishu_remote.py tests/test_core.py tests/test_foundation.py tests/test_remote.py tests/test_llm_rounds.py` 通过 `100 passed`。
+- 面试表达：我做 prompt cache 优化时，没有上来就堆复杂缓存层，而是先把消息工程拉直：稳定前缀单独固定，动态状态放尾部，再把 cache hit/miss 和 compaction segment 做成可观测指标，这样既能看到收益，也不会把 runtime 做重。
+- 更新时间：2026-06-15
+
+### C050：给轻量 coding agent 接入 MCP，关键是把“工具发现”和“运行时治理”解耦
+- 场景：需要给 AutoCode 增加 MCP 能力，但又不想把当前本地 runtime 扩成一整套 plugin/skills 平台。
+- 问题：如果直接把 MCP server 生命周期、工具注册、远程入口和子代理各写一套，很快就会出现 CLI、远程聊天、子代理三套行为不一致的问题。
+- 根因：原实现的工具集是固定常量 `ALL_TOOLS`，入口层各自拼工具，没有统一的“按配置生成工具集”边界。
+- 方案：新增极简 `autocode/mcp.py`，只支持 stdio MCP 和 `tools/list` / `tools/call`；再补一个统一的 `build_agent_tools(config)` 入口，让 CLI、RemoteManager、Feishu 和子代理都通过同一工厂拿到“内置工具 + MCP 工具”。
+- 取舍：没有顺手引入 Skills、MCP 资源/Prompt、动态热更新或复杂 supervisor，只保留最小可用的工具发现与调用链路；同时把所有 `mcp_*` 工具默认设为 `confirm`，用现有审批层兜底。
+- 验证：新增 fake MCP stdio server 回归测试，验证工具发现、调用、关闭；并补策略测试确认 `mcp_*` 默认进入审批。`pytest -q tests/test_mcp.py tests/test_mcp_policy.py tests/test_remote.py tests/test_core.py tests/test_tools.py tests/test_policy.py` 通过。
+- 面试表达：我做 MCP 接入时，没有把 runtime 一次性升级成重平台，而是先找最小稳定边界：统一工具工厂、统一入口复用、统一审批策略。这样先把能力接进来，再决定后面要不要继续长成更重的扩展层。
+- 更新时间：2026-06-16
+
+### C051：MCP 同时兼容 JSON 行和 Content-Length 时，半包处理比“能不能解析 JSON”更关键
+- 场景：继续把 AutoCode 的 MCP 实现向 iceCoder 靠拢，需要支持共享 `MCPManager`、后台初始化，以及 `Content-Length` 分帧兼容。
+- 问题：表面上 `tools/list` / `tools/call` 已经打通，但一接入 `Content-Length` 响应，初始化就会卡死，CLI 看起来像“没有报错但也没准备好”。
+- 根因：如果 stdout 第一次只收到 `Content-Length` 半包，旧实现会误走 JSON 行解析，把头部裁掉；另外 Windows 文本流里直接写 `\r\n` 还会发生换行转换，测试假 server 会生成畸形分隔符。
+- 方案：把 MCP stdout 读取改成底层字节流读取，先判断 framed message，再决定是否回退到 JSON 行解析；同时让测试 server 在 `Content-Length` 分支走二进制写 stdout，真实覆盖协议边界。
+- 取舍：没有引入更重的异步 IO 或 supervisor，只在 `autocode/mcp.py` 内收敛读取和分帧状态机；复杂度仍然低，但已经把最容易卡死的兼容边界补上。
+- 验证：新增/修正 `tests/test_mcp.py`，覆盖普通 JSON 行响应和 `Content-Length` framed 响应；再联跑 `tests/test_mcp.py tests/test_mcp_policy.py tests/test_cli.py tests/test_remote.py tests/test_runtime.py` 共 `40 passed`。
+- 面试表达：我做协议兼容时不会只停在“能 parse 一个完整包”，而是会把半包、分帧和 Windows 流行为当成第一等边界，因为真正的线上卡死往往就出在这里。
+- 更新时间：2026-06-16
+

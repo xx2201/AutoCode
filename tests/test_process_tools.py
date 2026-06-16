@@ -180,6 +180,126 @@ def test_stop_process_kills_child_process_tree_on_windows(tmp_path):
             pass
 
 
+def test_cleanup_task_processes_stops_only_temporary_processes_for_task(tmp_path):
+    manager = BackgroundProcessManager(str(tmp_path))
+
+    class _Proc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        @staticmethod
+        def poll():
+            return 0
+
+    class _Log:
+        def close(self):
+            return None
+
+    manager._processes = {
+        "proc_temp": (
+            _Proc(101),
+            process_module.BackgroundProcess(
+                process_id="proc_temp",
+                command="temp",
+                cwd=str(tmp_path),
+                log_path=str(tmp_path / "temp.log"),
+                pid=101,
+                started_at="2026-06-13 00:00:00",
+                task_id="task_1",
+                keep_alive=False,
+            ),
+            _Log(),
+        ),
+        "proc_keep": (
+            _Proc(102),
+            process_module.BackgroundProcess(
+                process_id="proc_keep",
+                command="keep",
+                cwd=str(tmp_path),
+                log_path=str(tmp_path / "keep.log"),
+                pid=102,
+                started_at="2026-06-13 00:00:00",
+                task_id="task_1",
+                keep_alive=True,
+            ),
+            _Log(),
+        ),
+        "proc_other_task": (
+            _Proc(103),
+            process_module.BackgroundProcess(
+                process_id="proc_other_task",
+                command="other",
+                cwd=str(tmp_path),
+                log_path=str(tmp_path / "other.log"),
+                pid=103,
+                started_at="2026-06-13 00:00:00",
+                task_id="task_2",
+                keep_alive=False,
+            ),
+            _Log(),
+        ),
+    }
+
+    stopped = manager.cleanup_task_processes("task_1")
+
+    assert stopped == ["proc_temp"]
+    assert "proc_temp" not in manager._processes
+    assert "proc_keep" in manager._processes
+    assert "proc_other_task" in manager._processes
+
+
+def test_cleanup_all_stops_persistent_processes_on_manager_close(tmp_path):
+    manager = BackgroundProcessManager(str(tmp_path))
+
+    class _Proc:
+        def __init__(self, pid):
+            self.pid = pid
+
+        @staticmethod
+        def poll():
+            return 0
+
+    class _Log:
+        def close(self):
+            return None
+
+    manager._processes = {
+        "proc_temp": (
+            _Proc(201),
+            process_module.BackgroundProcess(
+                process_id="proc_temp",
+                command="temp",
+                cwd=str(tmp_path),
+                log_path=str(tmp_path / "temp.log"),
+                pid=201,
+                started_at="2026-06-13 00:00:00",
+                task_id="task_1",
+                keep_alive=False,
+            ),
+            _Log(),
+        ),
+        "proc_keep": (
+            _Proc(202),
+            process_module.BackgroundProcess(
+                process_id="proc_keep",
+                command="keep",
+                cwd=str(tmp_path),
+                log_path=str(tmp_path / "keep.log"),
+                pid=202,
+                started_at="2026-06-13 00:00:00",
+                task_id="task_1",
+                keep_alive=True,
+            ),
+            _Log(),
+        ),
+    }
+
+    stopped = manager.cleanup_all(include_persistent=True)
+
+    assert stopped == ["proc_temp", "proc_keep"]
+    assert manager._processes == {}
+
+
 def test_policy_allows_background_process(tmp_path):
     policy = Policy(workspace_root=str(tmp_path), auto_approve=False)
     decision = policy.evaluate_tool_call("start_process", {"command": "python receive.py"})

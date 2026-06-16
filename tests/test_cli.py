@@ -1,4 +1,8 @@
-from autocode.cli import _load_resumable_session, _prompt_approval, _resume_candidates
+import pytest
+from rich.console import Console
+
+from autocode.cli import _clear_terminal, _load_resumable_session, _prompt_approval, _resume_candidates, _show_help, _welcome_panel
+from autocode.config import Config
 
 
 class _Pending:
@@ -44,4 +48,59 @@ def test_load_resumable_session_rejects_other_workspace(monkeypatch):
 
     assert _load_resumable_session("session_elsewhere", "G:/repo/a") is None
     assert _load_resumable_session("session_here", "G:/repo/a") == ("loaded", "session_here")
+
+
+def test_clear_terminal_writes_clear_sequence_for_tty(monkeypatch):
+    calls = []
+    system_calls = []
+
+    monkeypatch.setattr("autocode.cli._terminal_is_interactive", lambda: True)
+    monkeypatch.setattr("autocode.cli.os.name", "nt")
+    monkeypatch.setattr("autocode.cli.os.system", lambda command: system_calls.append(command) or 0)
+    monkeypatch.setattr("autocode.cli._write_terminal_sequence", lambda text: calls.append(text))
+
+    _clear_terminal()
+
+    assert system_calls == ["cls"]
+    assert calls == ["\x1b[3J\x1b[2J\x1b[H"]
+
+
+def test_clear_terminal_skips_non_tty(monkeypatch):
+    calls = []
+    system_calls = []
+
+    monkeypatch.setattr("autocode.cli._terminal_is_interactive", lambda: False)
+    monkeypatch.setattr("autocode.cli.os.system", lambda command: system_calls.append(command) or 0)
+    monkeypatch.setattr("autocode.cli._write_terminal_sequence", lambda text: calls.append(text))
+
+    _clear_terminal()
+
+    assert system_calls == []
+    assert calls == []
+
+
+def test_welcome_panel_contains_workspace_and_cat():
+    panel = _welcome_panel(
+        Config(model="MiniMax-M3", workspace_root="G:/repo/demo", base_url="https://example.com/v1"),
+        "MiniMax-M3",
+    )
+
+    console = Console(record=True, width=120)
+    console.print(panel)
+    text = console.export_text(styles=False)
+
+    assert "Workspace" in text
+    assert "G:/repo/demo" in text
+    assert "( o.o )" in text
+    assert "Type /help for commands." in text
+
+
+def test_help_mentions_mcp_command(monkeypatch):
+    console = Console(record=True, width=120)
+    monkeypatch.setattr("autocode.cli.console", console)
+
+    _show_help()
+
+    text = console.export_text(styles=False)
+    assert "/mcp" in text
 

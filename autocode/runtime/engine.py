@@ -41,6 +41,8 @@ class Runtime:
                 step_index=task_state.step_index,
                 prompt_tokens=resp.prompt_tokens,
                 completion_tokens=resp.completion_tokens,
+                cache_read_tokens=resp.cache_read_tokens,
+                cache_miss_tokens=resp.cache_miss_tokens,
                 tool_calls=len(resp.tool_calls),
             ),
         )
@@ -85,6 +87,8 @@ class Runtime:
             self._payload(session_id, task_state, tool_name=tool_call.name, arguments=tool_call.arguments),
         )
         execute_kwargs = dict(tool_call.arguments)
+        if tool_call.name == "start_process":
+            execute_kwargs["_task_id"] = task_state.task_id
         if tool_call.name == "bash" and decision is not None and decision.requires_manual:
             execute_kwargs["_confirmed_sensitive"] = True
         try:
@@ -105,6 +109,24 @@ class Runtime:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(tool_calls))) as pool:
             futures = [pool.submit(self.execute_tool_call, task_state, tc, session_id, on_tool) for tc in tool_calls]
             return [f.result() for f in futures]
+
+    def invalid_tool_call_result(self, task_state: TaskState, tool_call, session_id: str) -> str:
+        tool_name = tool_call.name or "<unknown>"
+        raw_arguments = getattr(tool_call, "raw_arguments", "") or ""
+        parse_error = getattr(tool_call, "parse_error", "") or "tool-call arguments could not be parsed"
+        raw_preview = raw_arguments if len(raw_arguments) <= 300 else raw_arguments[:300] + "... (truncated)"
+        result = (
+            f"Error: invalid arguments for {tool_name}: {parse_error}\n"
+            f"Raw arguments: {raw_preview}\n"
+            f"Resend the same tool call with complete valid JSON arguments that match the tool schema."
+        )
+        if self.recovery is not None:
+            result = self.recovery.note_tool_result(task_state, tool_name, result)
+        self.hooks.emit(
+            "after_tool",
+            self._payload(session_id, task_state, tool_name=tool_name, result=result[:500]),
+        )
+        return result
 
     @staticmethod
     def blocked_result(tool_name: str, decision: PolicyDecision) -> str:

@@ -10,7 +10,9 @@ from typing import Hashable
 from ..agent import Agent
 from ..config import Config
 from ..llm import LLM, LiteLLM
+from ..mcp import get_shared_mcp_manager
 from ..state import format_trace, list_sessions, load_checkpoint, load_trace
+from ..tools.factory import build_agent_tools
 
 
 @dataclass
@@ -38,6 +40,7 @@ class RemoteManager:
     _HOOK_EVENTS = (
         "before_llm",
         "after_llm",
+        "context_compaction",
         "policy_decision",
         "before_tool",
         "after_tool",
@@ -47,10 +50,13 @@ class RemoteManager:
         "todo_updated",
     )
 
-    def __init__(self, config: Config, llm_factory=None, tools: list | None = None):
+    def __init__(self, config: Config, llm_factory=None, tools: list | None = None, tool_factory=None):
         self.config = config
         self._llm_factory = llm_factory
         self._tools = tools
+        self._tool_factory = tool_factory
+        self._mcp_manager = get_shared_mcp_manager(config.workspace_root, config.mcp_config_path)
+        self._mcp_manager.start_background()
         self._state_lock = threading.Lock()
         self._chats: dict[Hashable, _ChatRuntime] = {}
 
@@ -80,7 +86,10 @@ class RemoteManager:
 
     def reset_chat(self, chat_id: Hashable) -> None:
         with self._state_lock:
-            self._chats.pop(chat_id, None)
+            runtime = self._chats.pop(chat_id, None)
+        if runtime is not None:
+            with runtime.lock:
+                runtime.agent.close()
 
     def current_task_summary(self, chat_id: Hashable) -> str:
         runtime = self._require_runtime(chat_id)
@@ -140,12 +149,18 @@ class RemoteManager:
             )
 
     def _get_or_create_runtime(self, chat_id: Hashable, replace: bool = False) -> _ChatRuntime:
+        previous = None
         with self._state_lock:
             if not replace and chat_id in self._chats:
                 return self._chats[chat_id]
+            if replace:
+                previous = self._chats.pop(chat_id, None)
             runtime = _ChatRuntime(agent=self._build_agent(), lock=threading.RLock())
             self._chats[chat_id] = runtime
-            return runtime
+        if previous is not None:
+            with previous.lock:
+                previous.agent.close()
+        return runtime
 
     def _require_runtime(self, chat_id: Hashable) -> _ChatRuntime:
         with self._state_lock:
@@ -159,20 +174,23 @@ class RemoteManager:
         return Agent(
             llm=llm,
             tools=self._build_tools(),
+            tool_factory=self._build_tools,
+            mcp_manager=self._mcp_manager,
+            own_mcp_manager=False,
             max_context_tokens=self.config.max_context_tokens,
             workspace_root=self.config.workspace_root,
             auto_approve=self.config.auto_approve,
         )
 
     def _build_tools(self):
+        if self._tool_factory is not None:
+            return list(self._tool_factory())
         if self._tools is None:
-            return None
+            return build_agent_tools(self.config, mcp_manager=self._mcp_manager)
         built = []
         for tool in self._tools:
-            if hasattr(tool, "clone"):
-                built.append(tool.clone())
-            else:
-                built.append(type(tool)())
+            built.append(tool.clone())
+        built.extend(self._mcp_manager.snapshot_tools())
         return built
 
     def _build_llm(self):

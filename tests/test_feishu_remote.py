@@ -75,6 +75,14 @@ def test_build_live_status_card_shows_runtime_progress():
         tool_calls=1,
         prompt_tokens=120,
         completion_tokens=40,
+        cache_read_tokens=90,
+        cache_miss_tokens=30,
+        last_prompt_tokens=120,
+        last_completion_tokens=40,
+        last_cache_read_tokens=90,
+        last_cache_miss_tokens=30,
+        compactions=1,
+        cache_segments=2,
         last_tool="read_file",
         detail="Executing read_file.",
         auto_approve_for_task=False,
@@ -84,6 +92,10 @@ def test_build_live_status_card_shows_runtime_progress():
     assert "read_file" in content
     assert "session_123" in content
     assert "task_123" in content
+    assert "Prompt Tokens Total: `120`" in content
+    assert "Prompt Cache Read Total: `90`" in content
+    assert "Cache Segments: `2`" in content
+    assert "Last Prompt Tokens: `120`" in content
 
 
 def test_build_resume_card_embeds_resume_buttons():
@@ -224,7 +236,7 @@ def test_resolve_workspace_attachment_accepts_relative_file(tmp_path):
     target = workspace / "report.pdf"
     target.write_text("demo", encoding="utf-8")
 
-    resolved = _resolve_workspace_attachment(str(workspace), "report.pdf", image_only=False)
+    resolved = _resolve_workspace_attachment(str(workspace), "report.pdf")
 
     assert resolved == target.resolve()
 
@@ -236,23 +248,9 @@ def test_resolve_workspace_attachment_rejects_outside_workspace(tmp_path):
     outside.write_text("demo", encoding="utf-8")
 
     try:
-        _resolve_workspace_attachment(str(workspace), str(outside), image_only=False)
+        _resolve_workspace_attachment(str(workspace), str(outside))
     except ValueError as exc:
         assert "path must stay inside workspace" in str(exc)
-    else:
-        raise AssertionError("expected ValueError")
-
-
-def test_resolve_workspace_attachment_rejects_non_image_for_send_image(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    target = workspace / "report.pdf"
-    target.write_text("demo", encoding="utf-8")
-
-    try:
-        _resolve_workspace_attachment(str(workspace), "report.pdf", image_only=True)
-    except ValueError as exc:
-        assert "Image must be one of" in str(exc)
     else:
         raise AssertionError("expected ValueError")
 

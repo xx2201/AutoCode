@@ -1,0 +1,2 @@
+Path G:\mycode\CoreCoder\tmp\claude_arg_probe\workspace\A recent refactor introduced a regression in this mini issue-tracker project. The failing behavior is subtle: the default open-issue limit should come from .env.local, status filtering should be case-insensitive, and closing an issue should invalidate cached summaries. Find the hidden root causes, fix the project without modifying tests or seed data, and verify with python -m unittest discover -s tests -q. was not found.
+Error: Input must be provided either through stdin or as a prompt argument when using --print

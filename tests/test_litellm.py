@@ -27,9 +27,10 @@ class _Choice:
 
 
 class _Usage:
-    def __init__(self, prompt=10, completion=5):
+    def __init__(self, prompt=10, completion=5, cached=0):
         self.prompt_tokens = prompt
         self.completion_tokens = completion
+        self.prompt_tokens_details = builtin_types.SimpleNamespace(cached_tokens=cached)
 
 
 class _Chunk:
@@ -105,6 +106,8 @@ class TestLiteLLMClass:
         llm = LiteLLM(model="x")
         assert llm.total_prompt_tokens == 0
         assert llm.total_completion_tokens == 0
+        assert llm.total_cache_read_tokens == 0
+        assert llm.total_cache_miss_tokens == 0
 
 
 # ---------------------------------------------------------------------------
@@ -175,6 +178,17 @@ class TestChat:
         assert result.completion_tokens == 5
         assert llm.total_prompt_tokens == 10
         assert llm.total_completion_tokens == 5
+
+    def test_tracks_cached_token_usage(self):
+        _uninstall_fake_litellm()
+        self.fake = _install_fake_litellm(["part1", "part2"])
+        self.fake.completion.return_value = _make_stream(["part1", "part2"], usage=_Usage(prompt=10, completion=5, cached=7))
+        llm = LiteLLM(model="openai/gpt-4o")
+        result = llm.chat(messages=[{"role": "user", "content": "hi"}])
+        assert result.cache_read_tokens == 7
+        assert result.cache_miss_tokens == 3
+        assert llm.total_cache_read_tokens == 7
+        assert llm.total_cache_miss_tokens == 3
 
     def test_on_token_callback(self):
         llm = LiteLLM(model="openai/gpt-4o")

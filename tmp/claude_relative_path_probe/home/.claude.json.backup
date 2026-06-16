@@ -1,0 +1,18 @@
+{
+  "installMethod": "unknown",
+  "autoUpdates": true,
+  "cachedStatsigGates": {
+    "tengu_disable_bypass_permissions_mode": false,
+    "tengu_enable_versioned_plugins": false,
+    "tengu_web_tasks": false,
+    "tengu_tool_pear": false
+  },
+  "firstStartTime": "2026-06-15T06:51:24.153Z",
+  "sonnet45MigrationComplete": true,
+  "opus45MigrationComplete": true,
+  "githubRepoPaths": {
+    "xx2201/autocode": [
+      "G:\\mycode\\CoreCoder\\tmp\\claude_relative_path_probe\\workspace"
+    ]
+  }
+}

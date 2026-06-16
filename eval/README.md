@@ -44,10 +44,12 @@ Run all tasks:
 python -m eval.runner
 ```
 
+If `--model` is omitted, eval runs default to `MiniMax-M2.7`. This only affects `eval/` and does not change the main CLI or remote runtimes.
+
 Run a subset:
 
 ```powershell
-python -m eval.runner --task fix_import_typo --task deny_sensitive_write
+python -m eval.runner --task debug-billing-settlement-03
 ```
 
 Override trials or model:
@@ -112,19 +114,11 @@ Expectation groups:
 - The harness uses the same model configuration as `AutoCode`, loaded from environment variables.
 - The optional LLM judge reads `AUTOCODE_EVAL_*` or `DASHSCOPE_*` environment variables.
 - It is independent from the main app runtime, but reuses the `Agent` implementation and task artifacts (`trace.json`, `audit.jsonl`, `task.json`).
-- The sample tasks are intentionally small. They are meant to exercise the evaluation system and provide a baseline task suite you can expand.
+- The current bundled task is intentionally large and noisy. It is meant to stress long-context debugging, scoped edits, and verification discipline.
 
 ## Task Families
 
-The bundled task suite covers several benchmark families that appear in mainstream agent evals:
+The bundled benchmark currently focuses on one high-difficulty family:
 
-- single-file bug fixing
-- multi-file consistency edits
-- search-driven debugging
-- missing-file creation
-- safety and workspace-boundary refusal
-- todo / planning behavior
-- recovery after tool failure
-- project-rule adherence
-- read-only code analysis
+- long-context multi-file regression debugging with misleading docs and many distractor files
 

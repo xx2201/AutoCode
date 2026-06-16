@@ -1,0 +1,32 @@
+[
+  {
+    "content": "Explore the project source files",
+    "status": "completed",
+    "activeForm": "Exploring the project source files"
+  },
+  {
+    "content": "Read the test file to understand expected behavior",
+    "status": "completed",
+    "activeForm": "Reading the test file"
+  },
+  {
+    "content": "Run the failing test suite to localize failures",
+    "status": "completed",
+    "activeForm": "Running the failing test suite"
+  },
+  {
+    "content": "Identify the three root causes (env loading, status normalization, cache invalidation)",
+    "status": "completed",
+    "activeForm": "Identifying root causes"
+  },
+  {
+    "content": "Patch source files (not tests/seed) to fix the regressions",
+    "status": "in_progress",
+    "activeForm": "Patching source files"
+  },
+  {
+    "content": "Verify the fix with the full unittest command",
+    "status": "pending",
+    "activeForm": "Verifying with unittest"
+  }
+]
