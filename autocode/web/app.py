@@ -47,6 +47,7 @@ _SECURITY_HEADERS = {
 
 class ClientRequest(BaseModel):
     client_id: str = Field(min_length=8, max_length=64)
+    workspace_id: str = Field(min_length=20, max_length=20)
 
 
 class ChatRequest(ClientRequest):
@@ -149,6 +150,10 @@ def create_app(
     async def index():
         return FileResponse(_STATIC_DIR / "index.html")
 
+    @app.get("/favicon.ico", include_in_schema=False)
+    async def favicon():
+        return FileResponse(_STATIC_DIR / "favicon.svg", media_type="image/svg+xml")
+
     @app.get("/api/health")
     async def health():
         return {
@@ -171,7 +176,14 @@ def create_app(
         prompt = payload.prompt.strip()
         if not prompt:
             raise HTTPException(status_code=422, detail="Prompt cannot be empty.")
-        return await dispatch("chat", {"client_id": client_id, "prompt": prompt})
+        return await dispatch(
+            "chat",
+            {
+                "client_id": client_id,
+                "workspace_id": payload.workspace_id,
+                "prompt": prompt,
+            },
+        )
 
     @app.post("/api/approval", dependencies=browser_auth)
     async def approval(payload: ApprovalRequest):
@@ -188,14 +200,18 @@ def create_app(
             "approval",
             {
                 "client_id": client_id,
+                "workspace_id": payload.workspace_id,
                 "approved": approved,
                 "approve_all": approve_all,
             },
         )
 
     @app.get("/api/sessions", dependencies=browser_auth)
-    async def sessions():
-        return await dispatch("sessions", {"limit": 50})
+    async def sessions(workspace_id: str = Query(min_length=20, max_length=20)):
+        return await dispatch(
+            "sessions",
+            {"workspace_id": workspace_id, "limit": 50},
+        )
 
     @app.post("/api/resume", dependencies=browser_auth)
     async def resume(payload: ResumeRequest):
@@ -203,25 +219,59 @@ def create_app(
             "resume",
             {
                 "client_id": _validate_client_id(payload.client_id),
+                "workspace_id": payload.workspace_id,
                 "session_id": payload.session_id,
             },
         )
 
     @app.get("/api/task/{client_id}", dependencies=browser_auth)
-    async def task(client_id: str):
-        return await dispatch("task", {"client_id": _validate_client_id(client_id)})
+    async def task(
+        client_id: str,
+        workspace_id: str = Query(min_length=20, max_length=20),
+    ):
+        return await dispatch(
+            "task",
+            {
+                "client_id": _validate_client_id(client_id),
+                "workspace_id": workspace_id,
+            },
+        )
 
     @app.get("/api/trace/{client_id}", dependencies=browser_auth)
-    async def trace(client_id: str):
-        return await dispatch("trace", {"client_id": _validate_client_id(client_id)})
+    async def trace(
+        client_id: str,
+        workspace_id: str = Query(min_length=20, max_length=20),
+    ):
+        return await dispatch(
+            "trace",
+            {
+                "client_id": _validate_client_id(client_id),
+                "workspace_id": workspace_id,
+            },
+        )
 
     @app.get("/api/messages/{client_id}", dependencies=browser_auth)
-    async def messages(client_id: str):
-        return await dispatch("messages", {"client_id": _validate_client_id(client_id)})
+    async def messages(
+        client_id: str,
+        workspace_id: str = Query(min_length=20, max_length=20),
+    ):
+        return await dispatch(
+            "messages",
+            {
+                "client_id": _validate_client_id(client_id),
+                "workspace_id": workspace_id,
+            },
+        )
 
     @app.post("/api/reset", dependencies=browser_auth)
     async def reset(payload: ClientRequest):
-        return await dispatch("reset", {"client_id": _validate_client_id(payload.client_id)})
+        return await dispatch(
+            "reset",
+            {
+                "client_id": _validate_client_id(payload.client_id),
+                "workspace_id": payload.workspace_id,
+            },
+        )
 
     @app.get("/api/runner/next", dependencies=runner_auth)
     async def runner_next(wait: float = Query(default=25.0, ge=0.0, le=30.0)):

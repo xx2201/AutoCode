@@ -1,7 +1,9 @@
+from types import SimpleNamespace
+
 import pytest
 from rich.console import Console
 
-from autocode.cli import _clear_terminal, _load_resumable_session, _prompt_approval, _resume_candidates, _show_help, _welcome_panel
+from autocode.cli import _clear_terminal, _load_resumable_session, _prompt_approval, _resume_candidates, _show_help, _welcome_panel, main
 from autocode.config import Config
 
 
@@ -103,4 +105,53 @@ def test_help_mentions_mcp_command(monkeypatch):
 
     text = console.export_text(styles=False)
     assert "/mcp" in text
+
+
+def test_cli_registers_current_workspace_before_running_agent(monkeypatch, tmp_path):
+    registered = []
+    config = Config(
+        model="fake-model",
+        api_key="secret",
+        workspace_root=str(tmp_path),
+    )
+
+    class _Registry:
+        def register(self, workspace_path):
+            registered.append(workspace_path)
+
+    class _McpManager:
+        def start_background(self):
+            return None
+
+        def wait_until_ready(self):
+            return None
+
+    class _Agent:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+
+        def _sync_mcp_tools(self):
+            return None
+
+    monkeypatch.setattr(
+        "autocode.cli._parse_args",
+        lambda: SimpleNamespace(
+            model=None,
+            base_url=None,
+            api_key=None,
+            prompt="inspect",
+            resume=None,
+        ),
+    )
+    monkeypatch.setattr("autocode.cli.Config.from_env", lambda: config)
+    monkeypatch.setattr("autocode.cli.WorkspaceRegistry", _Registry)
+    monkeypatch.setattr("autocode.cli.LLM", lambda **kwargs: object())
+    monkeypatch.setattr("autocode.cli.get_shared_mcp_manager", lambda *args: _McpManager())
+    monkeypatch.setattr("autocode.cli.build_agent_tools", lambda *args, **kwargs: [])
+    monkeypatch.setattr("autocode.cli.Agent", _Agent)
+    monkeypatch.setattr("autocode.cli._run_once", lambda agent, prompt: None)
+
+    main()
+
+    assert registered == [str(tmp_path)]
 

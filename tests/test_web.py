@@ -13,6 +13,7 @@ from autocode.web.relay import RelayBroker
 BROWSER_TOKEN = "browser-token-that-is-long-enough"
 RUNNER_TOKEN = "runner-token-that-is-different"
 CLIENT_ID = "web_12345678"
+WORKSPACE_ID = "12345678901234567890"
 
 
 @pytest.fixture
@@ -74,10 +75,13 @@ def _round_trip(client, request, expected_action, result):
 def test_web_root_and_health_are_public(relay_client):
     client, _ = relay_client
     root = client.get("/")
+    favicon = client.get("/favicon.ico")
     health = client.get("/api/health")
 
     assert root.status_code == 200
     assert "AutoCode" in root.text
+    assert favicon.status_code == 200
+    assert favicon.headers["content-type"].startswith("image/svg+xml")
     assert root.headers["x-frame-options"] == "DENY"
     assert health.json()["runner_connected"] is False
 
@@ -118,7 +122,11 @@ def test_chat_is_relayed_to_runner(relay_client):
         lambda: client.post(
             "/api/chat",
             headers=_browser_headers(),
-            json={"client_id": CLIENT_ID, "prompt": "inspect project"},
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "prompt": "inspect project",
+            },
         ),
         "chat",
         {"text": "done", "status": "completed"},
@@ -128,6 +136,7 @@ def test_chat_is_relayed_to_runner(relay_client):
     assert response.json()["text"] == "done"
     assert job["payload"] == {
         "client_id": CLIENT_ID,
+        "workspace_id": WORKSPACE_ID,
         "prompt": "inspect project",
     }
 
@@ -140,7 +149,10 @@ def test_runner_error_is_returned_to_browser(relay_client):
     thread = threading.Thread(
         target=lambda: holder.setdefault(
             "response",
-            client.get(f"/api/trace/{CLIENT_ID}", headers=_browser_headers()),
+            client.get(
+                f"/api/trace/{CLIENT_ID}?workspace_id={WORKSPACE_ID}",
+                headers=_browser_headers(),
+            ),
         )
     )
     thread.start()
@@ -167,12 +179,20 @@ def test_web_rejects_invalid_client_id_and_blank_prompt(relay_client):
     invalid_id = client.post(
         "/api/chat",
         headers=_browser_headers(),
-        json={"client_id": "../bad-id", "prompt": "hello"},
+        json={
+            "client_id": "../bad-id",
+            "workspace_id": WORKSPACE_ID,
+            "prompt": "hello",
+        },
     )
     blank = client.post(
         "/api/chat",
         headers=_browser_headers(),
-        json={"client_id": CLIENT_ID, "prompt": "   "},
+        json={
+            "client_id": CLIENT_ID,
+            "workspace_id": WORKSPACE_ID,
+            "prompt": "   ",
+        },
     )
 
     assert invalid_id.status_code == 422

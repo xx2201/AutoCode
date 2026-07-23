@@ -7,6 +7,7 @@ pytest.importorskip("httpx")
 from autocode.config import Config
 from autocode.remote.manager import RemoteTurnResult
 from autocode.web.runner import LocalRunner, RunnerSettings
+from autocode.workspaces import WorkspaceRegistry
 
 
 class _FakeManager:
@@ -51,43 +52,64 @@ class _FakeManager:
     def reset_chat(self, client_id):
         self.calls.append(("reset", client_id))
 
+    def close(self):
+        return None
+
 
 def _runner(tmp_path):
-    manager = _FakeManager(tmp_path)
+    project = tmp_path / "project-a"
+    project.mkdir()
+    registry = WorkspaceRegistry(tmp_path / "workspaces.json")
+    workspace = registry.register(project)
+    managers = {}
+
+    def manager_factory(workspace_path):
+        manager = _FakeManager(workspace_path)
+        managers[str(workspace_path)] = manager
+        return manager
+
     settings = RunnerSettings(
         relay_url="https://relay.example",
         token="runner-token-that-is-long-enough",
         ca_cert=str(tmp_path / "unused.pem"),
-        workspace_root=str(tmp_path),
     )
-    return LocalRunner(settings, manager=manager, client=object()), manager
+    runner = LocalRunner(
+        settings,
+        config=Config(model="fake-model", api_key="secret"),
+        registry=registry,
+        manager_factory=manager_factory,
+        client=object(),
+    )
+    return runner, workspace, managers
 
 
-def test_runner_bootstrap_uses_local_workspace(tmp_path):
-    runner, _ = _runner(tmp_path)
+def test_runner_bootstrap_lists_only_cli_registered_workspaces(tmp_path):
+    runner, workspace, _ = _runner(tmp_path)
+    unregistered = tmp_path / "project-b"
+    unregistered.mkdir()
 
     result = runner.execute("bootstrap", {})
 
     assert result["model"] == "fake-model"
-    assert result["workspace"] == tmp_path.name
-    assert result["workspace_path"] == str(tmp_path.resolve())
+    assert [item["workspace_id"] for item in result["workspaces"]] == [
+        workspace.workspace_id
+    ]
+    assert all(item["path"] != str(unregistered) for item in result["workspaces"])
 
 
-def test_runner_executes_chat_and_approval_locally(tmp_path):
-    runner, manager = _runner(tmp_path)
+def test_runner_executes_chat_and_approval_in_selected_workspace(tmp_path):
+    runner, workspace, managers = _runner(tmp_path)
+    payload = {
+        "workspace_id": workspace.workspace_id,
+        "client_id": "web_12345678",
+    }
 
-    chat = runner.execute(
-        "chat",
-        {"client_id": "web_12345678", "prompt": "inspect project"},
-    )
+    chat = runner.execute("chat", {**payload, "prompt": "inspect project"})
     approval = runner.execute(
         "approval",
-        {
-            "client_id": "web_12345678",
-            "approved": True,
-            "approve_all": True,
-        },
+        {**payload, "approved": True, "approve_all": True},
     )
+    manager = managers[str((tmp_path / "project-a").resolve())]
 
     assert chat["status"] == "completed"
     assert approval["text"] == "approved"
@@ -95,11 +117,53 @@ def test_runner_executes_chat_and_approval_locally(tmp_path):
     assert ("approval", "web_12345678", True, True) in manager.calls
 
 
+def test_runner_rejects_unregistered_workspace(tmp_path):
+    runner, _, _ = _runner(tmp_path)
+
+    with pytest.raises(ValueError, match="not registered by the local CLI"):
+        runner.execute(
+            "chat",
+            {
+                "workspace_id": "00000000000000000000",
+                "client_id": "web_12345678",
+                "prompt": "inspect project",
+            },
+        )
+
+
+def test_runner_isolates_managers_between_registered_workspaces(tmp_path):
+    runner, first, managers = _runner(tmp_path)
+    second_path = tmp_path / "project-b"
+    second_path.mkdir()
+    second = runner.registry.register(second_path)
+
+    runner.execute(
+        "chat",
+        {
+            "workspace_id": first.workspace_id,
+            "client_id": "web_12345678",
+            "prompt": "first",
+        },
+    )
+    runner.execute(
+        "chat",
+        {
+            "workspace_id": second.workspace_id,
+            "client_id": "web_12345678",
+            "prompt": "second",
+        },
+    )
+
+    assert len(managers) == 2
+    assert managers[str((tmp_path / "project-a").resolve())].calls[0][-1] == "first"
+    assert managers[str(second_path.resolve())].calls[0][-1] == "second"
+
+
 def test_runner_rejects_unknown_action(tmp_path):
-    runner, _ = _runner(tmp_path)
+    runner, workspace, _ = _runner(tmp_path)
 
     with pytest.raises(ValueError, match="Unknown relay action"):
-        runner.execute("unknown", {})
+        runner.execute("unknown", {"workspace_id": workspace.workspace_id})
 
 
 def test_runner_drops_result_when_relay_job_expired(tmp_path):
@@ -117,7 +181,7 @@ def test_runner_drops_result_when_relay_job_expired(tmp_path):
             self.posts.append((path, json))
             return _ExpiredResponse()
 
-    runner, manager = _runner(tmp_path)
+    runner, workspace, managers = _runner(tmp_path)
     client = _ExpiredClient()
     runner.client = client
 
@@ -126,11 +190,13 @@ def test_runner_drops_result_when_relay_job_expired(tmp_path):
             "job_id": "expired-job",
             "action": "chat",
             "payload": {
+                "workspace_id": workspace.workspace_id,
                 "client_id": "web_12345678",
                 "prompt": "hello",
             },
         }
     )
 
+    manager = managers[str((tmp_path / "project-a").resolve())]
     assert len(client.posts) == 1
     assert manager.calls == [("chat", "web_12345678", "hello")]

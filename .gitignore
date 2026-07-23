@@ -15,6 +15,7 @@ venv/
 .DS_Store
 dist/
 .pytest_cache/
+node_modules/
 .tmp/
 eval/runs/
 

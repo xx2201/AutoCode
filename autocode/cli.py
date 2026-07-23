@@ -27,6 +27,7 @@ from .state import (
     load_checkpoint,
     load_trace,
 )
+from .workspaces import WorkspaceRegistry
 from . import __version__
 
 console = Console()
@@ -109,6 +110,9 @@ def main():
             "  export AUTOCODE_MODEL=qwen2.5-coder\n"
         )
         sys.exit(1)
+
+    # CLI 是 Workspace 的唯一注册入口；Web 只读取这份本机注册表。
+    WorkspaceRegistry().register(config.workspace_root)
 
     llm_cls = LiteLLM if config.provider == "litellm" else LLM
     llm = llm_cls(

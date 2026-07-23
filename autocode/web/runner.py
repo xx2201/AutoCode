@@ -18,6 +18,7 @@ from dotenv import dotenv_values
 from .. import __version__
 from ..config import Config
 from ..remote.manager import RemoteManager
+from ..workspaces import WorkspaceRegistry
 
 
 @dataclass(frozen=True)
@@ -25,7 +26,6 @@ class RunnerSettings:
     relay_url: str
     token: str
     ca_cert: str
-    workspace_root: str
     poll_wait: float = 25.0
 
 
@@ -43,7 +43,6 @@ def load_runner_settings(env_file: str | None = None) -> RunnerSettings:
     relay_url = _setting(values, "AUTOCODE_RELAY_URL").rstrip("/")
     token = _setting(values, "AUTOCODE_RUNNER_TOKEN")
     ca_cert = _setting(values, "AUTOCODE_RELAY_CA_CERT")
-    workspace_root = _setting(values, "AUTOCODE_WORKSPACE_ROOT", str(Path.cwd()))
     poll_wait = float(_setting(values, "AUTOCODE_RUNNER_POLL_WAIT", "25"))
 
     if not relay_url.startswith("https://"):
@@ -52,14 +51,10 @@ def load_runner_settings(env_file: str | None = None) -> RunnerSettings:
         raise RuntimeError("AUTOCODE_RUNNER_TOKEN must contain at least 24 characters.")
     if not ca_cert or not Path(ca_cert).expanduser().is_file():
         raise RuntimeError("AUTOCODE_RELAY_CA_CERT must point to the relay CA certificate.")
-    workspace = Path(workspace_root).expanduser().resolve()
-    if not workspace.is_dir():
-        raise RuntimeError(f"Workspace does not exist: {workspace}")
     return RunnerSettings(
         relay_url=relay_url,
         token=token,
         ca_cert=str(Path(ca_cert).expanduser().resolve()),
-        workspace_root=str(workspace),
         poll_wait=max(1.0, min(poll_wait, 30.0)),
     )
 
@@ -71,22 +66,20 @@ class LocalRunner:
         self,
         settings: RunnerSettings,
         *,
-        manager: RemoteManager | Any | None = None,
+        config: Config | None = None,
+        registry: WorkspaceRegistry | None = None,
+        manager_factory: Any | None = None,
         client: httpx.Client | Any | None = None,
     ):
         self.settings = settings
-        self._owns_manager = manager is None
-        if manager is None:
-            agent_config = replace(
-                Config.from_env(),
-                workspace_root=settings.workspace_root,
-            )
-            if not agent_config.model:
-                raise RuntimeError("AUTOCODE_MODEL is required in the local workspace .env.")
-            if not agent_config.api_key:
-                raise RuntimeError("AUTOCODE_API_KEY is required in the local workspace .env.")
-            manager = RemoteManager(agent_config)
-        self.manager = manager
+        self.registry = registry or WorkspaceRegistry()
+        self._base_config = config or Config.from_env()
+        if not self._base_config.model:
+            raise RuntimeError("AUTOCODE_MODEL is required in the Agent runtime .env.")
+        if not self._base_config.api_key:
+            raise RuntimeError("AUTOCODE_API_KEY is required in the Agent runtime .env.")
+        self._manager_factory = manager_factory or self._build_manager
+        self._managers: dict[str, RemoteManager | Any] = {}
         self._owns_client = client is None
         if client is None:
             ssl_context = ssl.create_default_context(cafile=settings.ca_cert)
@@ -109,15 +102,13 @@ class LocalRunner:
         self._stopping = False
 
     def execute(self, action: str, payload: dict[str, Any]) -> Any:
-        manager = self.manager
         if action == "bootstrap":
             return {
-                "model": manager.config.model,
-                "workspace": Path(manager.config.workspace_root).name,
-                "workspace_path": str(Path(manager.config.workspace_root).resolve()),
-                "sessions": manager.list_resume_candidates(20),
+                "model": self._base_config.model,
+                "workspaces": self.registry.list_workspaces(),
                 "version": __version__,
             }
+        manager = self._manager(str(payload["workspace_id"]))
         if action == "chat":
             return asdict(manager.submit(payload["client_id"], payload["prompt"]))
         if action == "approval":
@@ -193,8 +184,23 @@ class LocalRunner:
     def close(self) -> None:
         if self._owns_client:
             self.client.close()
-        if self._owns_manager:
-            self.manager.close()
+        for manager in self._managers.values():
+            manager.close()
+        self._managers.clear()
+
+    def _manager(self, workspace_id: str):
+        manager = self._managers.get(workspace_id)
+        if manager is not None:
+            return manager
+        workspace = self.registry.resolve(workspace_id)
+        manager = self._manager_factory(workspace)
+        self._managers[workspace_id] = manager
+        return manager
+
+    def _build_manager(self, workspace: Path) -> RemoteManager:
+        return RemoteManager(
+            replace(self._base_config, workspace_root=str(workspace))
+        )
 
     def _run_job(self, job: dict[str, Any]) -> None:
         job_id = str(job["job_id"])
@@ -248,7 +254,7 @@ def main() -> None:
     try:
         print(
             f"AutoCode local runner connected to {settings.relay_url}; "
-            f"workspace={settings.workspace_root}",
+            f"workspace_registry={runner.registry.path}",
             flush=True,
         )
         runner.run_forever()
