@@ -1,0 +1,179 @@
+import threading
+
+import pytest
+
+pytest.importorskip("fastapi")
+
+from fastapi.testclient import TestClient
+
+from autocode.web import create_app
+from autocode.web.relay import RelayBroker
+
+
+BROWSER_TOKEN = "browser-token-that-is-long-enough"
+RUNNER_TOKEN = "runner-token-that-is-different"
+CLIENT_ID = "web_12345678"
+
+
+@pytest.fixture
+def relay_client():
+    broker = RelayBroker(runner_ttl=5)
+    app = create_app(
+        broker=broker,
+        browser_token=BROWSER_TOKEN,
+        runner_token=RUNNER_TOKEN,
+    )
+    with TestClient(app) as client:
+        yield client, broker
+
+
+def _browser_headers():
+    return {"Authorization": f"Bearer {BROWSER_TOKEN}"}
+
+
+def _runner_headers():
+    return {"Authorization": f"Bearer {RUNNER_TOKEN}"}
+
+
+def _connect_runner(client):
+    response = client.get(
+        "/api/runner/next",
+        params={"wait": 0},
+        headers=_runner_headers(),
+    )
+    assert response.status_code == 204
+
+
+def _round_trip(client, request, expected_action, result):
+    holder = {}
+
+    def browser_request():
+        holder["response"] = request()
+
+    thread = threading.Thread(target=browser_request)
+    thread.start()
+    runner_job = client.get(
+        "/api/runner/next",
+        params={"wait": 1},
+        headers=_runner_headers(),
+    )
+    assert runner_job.status_code == 200
+    job = runner_job.json()
+    assert job["action"] == expected_action
+    completed = client.post(
+        f"/api/runner/result/{job['job_id']}",
+        headers=_runner_headers(),
+        json={"success": True, "result": result},
+    )
+    assert completed.status_code == 200
+    thread.join(timeout=2)
+    assert not thread.is_alive()
+    return holder["response"], job
+
+
+def test_web_root_and_health_are_public(relay_client):
+    client, _ = relay_client
+    root = client.get("/")
+    health = client.get("/api/health")
+
+    assert root.status_code == 200
+    assert "AutoCode" in root.text
+    assert root.headers["x-frame-options"] == "DENY"
+    assert health.json()["runner_connected"] is False
+
+
+def test_browser_and_runner_tokens_are_isolated(relay_client):
+    client, _ = relay_client
+
+    assert client.post("/api/auth/verify").status_code == 401
+    assert client.post("/api/auth/verify", headers=_runner_headers()).status_code == 401
+    assert client.post("/api/auth/verify", headers=_browser_headers()).status_code == 200
+    assert client.get("/api/runner/next", headers=_browser_headers()).status_code == 401
+
+
+def test_runner_heartbeat_marks_runner_connected(relay_client):
+    client, _ = relay_client
+
+    heartbeat = client.post("/api/runner/heartbeat", headers=_runner_headers())
+
+    assert heartbeat.status_code == 200
+    assert client.get("/api/health").json()["runner_connected"] is True
+
+
+def test_browser_request_reports_offline_runner(relay_client):
+    client, _ = relay_client
+
+    response = client.get("/api/bootstrap", headers=_browser_headers())
+
+    assert response.status_code == 503
+    assert "Runner" in response.json()["detail"]
+
+
+def test_chat_is_relayed_to_runner(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+
+    response, job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/chat",
+            headers=_browser_headers(),
+            json={"client_id": CLIENT_ID, "prompt": "inspect project"},
+        ),
+        "chat",
+        {"text": "done", "status": "completed"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["text"] == "done"
+    assert job["payload"] == {
+        "client_id": CLIENT_ID,
+        "prompt": "inspect project",
+    }
+
+
+def test_runner_error_is_returned_to_browser(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+    holder = {}
+
+    thread = threading.Thread(
+        target=lambda: holder.setdefault(
+            "response",
+            client.get(f"/api/trace/{CLIENT_ID}", headers=_browser_headers()),
+        )
+    )
+    thread.start()
+    job = client.get(
+        "/api/runner/next",
+        params={"wait": 1},
+        headers=_runner_headers(),
+    ).json()
+    client.post(
+        f"/api/runner/result/{job['job_id']}",
+        headers=_runner_headers(),
+        json={"success": False, "error": "No active session.", "status_code": 409},
+    )
+    thread.join(timeout=2)
+
+    assert holder["response"].status_code == 409
+    assert holder["response"].json()["detail"] == "No active session."
+
+
+def test_web_rejects_invalid_client_id_and_blank_prompt(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+
+    invalid_id = client.post(
+        "/api/chat",
+        headers=_browser_headers(),
+        json={"client_id": "../bad-id", "prompt": "hello"},
+    )
+    blank = client.post(
+        "/api/chat",
+        headers=_browser_headers(),
+        json={"client_id": CLIENT_ID, "prompt": "   "},
+    )
+
+    assert invalid_id.status_code == 422
+    assert blank.status_code == 422

@@ -91,6 +91,35 @@ class RemoteManager:
             with runtime.lock:
                 runtime.agent.close()
 
+    def close(self) -> None:
+        """Close every chat runtime and the shared MCP manager."""
+        with self._state_lock:
+            runtimes = list(self._chats.values())
+            self._chats.clear()
+        for runtime in runtimes:
+            with runtime.lock:
+                runtime.agent.close()
+        self._mcp_manager.close()
+
+    def conversation_messages(self, chat_id: Hashable, limit: int = 100) -> list[dict]:
+        """Return a presentation-safe snapshot of the current conversation."""
+        runtime = self._require_runtime(chat_id)
+        with runtime.lock:
+            messages = []
+            for message in runtime.agent.messages[-max(1, limit):]:
+                role = message.get("role", "")
+                content = message.get("content", "")
+                if role not in {"user", "assistant", "tool"} or not isinstance(content, str):
+                    continue
+                messages.append(
+                    {
+                        "role": role,
+                        "content": content[:20_000],
+                        "tool_call_id": str(message.get("tool_call_id", "")),
+                    }
+                )
+            return messages
+
     def current_task_summary(self, chat_id: Hashable) -> str:
         runtime = self._require_runtime(chat_id)
         with runtime.lock:
@@ -132,6 +161,12 @@ class RemoteManager:
         return list_sessions(workspace_root=self.config.workspace_root, limit=limit)
 
     def resume_session(self, chat_id: Hashable, session_id: str) -> RemoteTurnResult:
+        allowed_session_ids = {
+            item["session_id"]
+            for item in self.list_resume_candidates(limit=200)
+        }
+        if session_id not in allowed_session_ids:
+            raise ValueError(f"Session '{session_id}' is not available for this workspace.")
         loaded = load_checkpoint(session_id)
         if loaded is None:
             raise ValueError(f"Session '{session_id}' not found.")

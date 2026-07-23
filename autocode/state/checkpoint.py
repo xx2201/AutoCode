@@ -1,6 +1,7 @@
 """Checkpoint persistence for in-flight sessions."""
 
 import json
+import os
 import re
 import time
 import uuid
@@ -8,7 +9,9 @@ from pathlib import Path
 
 from .model import SessionState
 
-SESSIONS_DIR = Path.home() / ".autocode" / "sessions"
+SESSIONS_DIR = Path(
+    os.getenv("AUTOCODE_SESSIONS_DIR", str(Path.home() / ".autocode" / "sessions"))
+).expanduser()
 _SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_TASK_RE = re.compile(r"[^A-Za-z0-9._-]+")
 

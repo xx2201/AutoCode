@@ -89,6 +89,43 @@ def test_remote_manager_can_resume_checkpoint(tmp_path, monkeypatch):
     assert resumed.status == "completed"
 
 
+def test_remote_manager_refuses_checkpoint_from_other_workspace(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    checkpoint_module.save_checkpoint(
+        SessionState(
+            session_id="session_other",
+            current_task=TaskState(task_id="task_other", status="completed"),
+        ),
+        [],
+        "fake-model",
+        workspace_root=str(tmp_path / "other"),
+    )
+    manager = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: _FakeLLM([LLMResponse(content="finished")]),
+        tools=[],
+    )
+
+    try:
+        manager.resume_session(202, "session_other")
+    except ValueError as exc:
+        assert "not available for this workspace" in str(exc)
+    else:
+        raise AssertionError("expected cross-workspace resume to be rejected")
+
+
+def test_remote_manager_exposes_bounded_conversation_snapshot(tmp_path):
+    llm = _FakeLLM([LLMResponse(content="finished")])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
+    manager.submit(808, "hello")
+
+    messages = manager.conversation_messages(808)
+
+    assert [message["role"] for message in messages] == ["user", "assistant"]
+    assert messages[0]["content"] == "hello"
+    assert messages[1]["content"] == "finished"
+
+
 def test_remote_manager_lists_resume_candidates_for_current_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
     checkpoint_module.save_checkpoint(

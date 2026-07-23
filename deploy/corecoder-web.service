@@ -1,0 +1,24 @@
+[Unit]
+Description=AutoCode authenticated web relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dev
+Group=dev
+WorkingDirectory=/home/dev/corecoder-web
+EnvironmentFile=/home/dev/corecoder-web/shared/autocode-web.env
+ExecStart=/home/dev/corecoder-web/venv/bin/autocode-web
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/home/dev/corecoder-web
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,127 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#0b1020">
+  <title>AutoCode · Mobile Workspace</title>
+  <link rel="icon" href="/assets/favicon.svg" type="image/svg+xml">
+  <link rel="stylesheet" href="/assets/app.css">
+</head>
+<body>
+  <div class="ambient ambient-one"></div>
+  <div class="ambient ambient-two"></div>
+
+  <div id="login-view" class="login-view">
+    <section class="login-card">
+      <div class="brand-mark" aria-hidden="true"><span>&lt;</span><b>AC</b><span>/&gt;</span></div>
+      <p class="eyebrow">PRIVATE CODING RUNTIME</p>
+      <h1>你的代码工作台，<br><em>现在装进口袋。</em></h1>
+      <p class="login-copy">通过安全中继连接你电脑上的 AutoCode。本机工作区和模型密钥不会搬到服务器。</p>
+      <form id="login-form">
+        <label for="token-input">访问令牌</label>
+        <div class="token-row">
+          <input id="token-input" name="token" type="password" autocomplete="current-password" required
+                 placeholder="粘贴部署令牌">
+          <button class="primary-button" type="submit">进入工作台</button>
+        </div>
+        <p id="login-error" class="form-error" role="alert"></p>
+      </form>
+      <div class="security-note"><span class="pulse-dot"></span> HTTPS 加密 · 双令牌隔离 · 本机出站连接</div>
+    </section>
+  </div>
+
+  <div id="app-view" class="app-shell hidden">
+    <header class="topbar">
+      <button id="sessions-button" class="icon-button" type="button" aria-label="打开会话列表">
+        <span></span><span></span><span></span>
+      </button>
+      <div class="brand">
+        <div class="mini-mark">AC</div>
+        <div>
+          <strong>AutoCode</strong>
+          <small id="connection-label" class="offline"><i></i> 本机 Runner 离线</small>
+        </div>
+      </div>
+      <div class="top-actions">
+        <button id="trace-button" class="ghost-button" type="button">Trace</button>
+        <button id="more-button" class="icon-button dots-button" type="button" aria-label="查看任务与 Trace">•••</button>
+      </div>
+    </header>
+
+    <section class="workspace-strip">
+      <span id="workspace-badge">workspace</span>
+      <span id="model-badge">model</span>
+      <span id="status-badge" class="status-badge idle">空闲</span>
+    </section>
+
+    <main id="message-list" class="message-list" aria-live="polite">
+      <section id="welcome-card" class="welcome-card">
+        <div class="welcome-orbit"><span>⌁</span></div>
+        <p class="eyebrow">READY WHEN YOU ARE</p>
+        <h2>今天想一起<br>构建点什么？</h2>
+        <p>我可以阅读代码、修改文件、运行测试，并在危险操作前停下来等你确认。</p>
+        <div class="suggestions">
+          <button type="button" data-prompt="先阅读当前工作区，给我一个架构概览">阅读项目架构</button>
+          <button type="button" data-prompt="检查当前项目的测试状态和主要风险">检查测试与风险</button>
+          <button type="button" data-prompt="列出工作区最近的改动，并解释它们">解读最近改动</button>
+        </div>
+      </section>
+    </main>
+
+    <section id="approval-card" class="approval-card hidden">
+      <div class="approval-head">
+        <span class="warning-icon">!</span>
+        <div>
+          <strong>需要你的确认</strong>
+          <small id="approval-reason"></small>
+        </div>
+      </div>
+      <pre id="approval-command"></pre>
+      <div class="approval-actions">
+        <button id="reject-button" class="danger-button" type="button">拒绝</button>
+        <button id="approve-button" class="secondary-button" type="button">仅批准这次</button>
+        <button id="approve-all-button" class="primary-button" type="button">批准后续普通操作</button>
+      </div>
+    </section>
+
+    <footer class="composer-wrap">
+      <form id="composer-form" class="composer">
+        <textarea id="prompt-input" rows="1" maxlength="32000"
+                  placeholder="告诉 AutoCode 你想完成什么…"></textarea>
+        <button id="send-button" class="send-button" type="submit" aria-label="发送">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6"/></svg>
+        </button>
+      </form>
+      <p>Enter 发送 · Shift + Enter 换行</p>
+    </footer>
+  </div>
+
+  <div id="drawer-backdrop" class="backdrop hidden"></div>
+  <aside id="session-drawer" class="session-drawer" aria-label="会话列表">
+    <div class="drawer-head">
+      <div>
+        <p class="eyebrow">SESSION HISTORY</p>
+        <h2>最近会话</h2>
+      </div>
+      <button id="drawer-close" class="icon-button" type="button" aria-label="关闭">×</button>
+    </div>
+    <button id="new-session-button" class="new-session-button" type="button"><span>＋</span> 新建会话</button>
+    <div id="session-list" class="session-list"></div>
+    <button id="logout-button" class="logout-button" type="button">退出并清除令牌</button>
+  </aside>
+
+  <div id="modal-backdrop" class="modal-backdrop hidden">
+    <section class="modal-card" role="dialog" aria-modal="true" aria-labelledby="modal-title">
+      <div class="modal-head">
+        <h2 id="modal-title">运行信息</h2>
+        <button id="modal-close" class="icon-button" type="button" aria-label="关闭">×</button>
+      </div>
+      <pre id="modal-content"></pre>
+    </section>
+  </div>
+
+  <div id="toast" class="toast hidden" role="status"></div>
+  <script src="/assets/app.js" defer></script>
+</body>
+</html>
