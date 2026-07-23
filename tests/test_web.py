@@ -1,4 +1,6 @@
+import base64
 import threading
+import json
 
 import pytest
 
@@ -83,6 +85,7 @@ def test_web_root_and_health_are_public(relay_client):
     assert favicon.status_code == 200
     assert favicon.headers["content-type"].startswith("image/svg+xml")
     assert root.headers["x-frame-options"] == "DENY"
+    assert "img-src 'self' data: blob:" in root.headers["content-security-policy"]
     assert health.json()["runner_connected"] is False
 
 
@@ -139,6 +142,93 @@ def test_chat_is_relayed_to_runner(relay_client):
         "workspace_id": WORKSPACE_ID,
         "prompt": "inspect project",
     }
+
+
+def test_streaming_chat_relays_tokens_stages_and_final_result(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+    holder = {}
+
+    def browser_request():
+        with client.stream(
+            "POST",
+            "/api/chat/stream",
+            headers=_browser_headers(),
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "prompt": "stream this",
+            },
+        ) as response:
+            holder["status"] = response.status_code
+            holder["events"] = [
+                json.loads(line[6:])
+                for line in response.iter_lines()
+                if line.startswith("data: ")
+            ]
+
+    thread = threading.Thread(target=browser_request)
+    thread.start()
+    job_response = client.get(
+        "/api/runner/next",
+        params={"wait": 1},
+        headers=_runner_headers(),
+    )
+    assert job_response.status_code == 200
+    job = job_response.json()
+    assert job["stream"] is True
+    event_response = client.post(
+        f"/api/runner/event/{job['job_id']}",
+        headers=_runner_headers(),
+        json={"type": "token", "text": "hello", "elapsed_ms": 12.5},
+    )
+    assert event_response.status_code == 200
+    completed = client.post(
+        f"/api/runner/result/{job['job_id']}",
+        headers=_runner_headers(),
+        json={
+            "success": True,
+            "result": {"text": "hello", "status": "completed"},
+        },
+    )
+    assert completed.status_code == 200
+    thread.join(timeout=3)
+
+    assert not thread.is_alive()
+    assert holder["status"] == 200
+    assert any(event.get("stage") == "claimed" for event in holder["events"])
+    assert any(event.get("type") == "token" and event.get("text") == "hello" for event in holder["events"])
+    final = next(event for event in holder["events"] if event.get("type") == "result")
+    assert final["data"]["text"] == "hello"
+    assert final["timings"]["relay_total_ms"] >= 0
+
+
+def test_chat_accepts_attachment_without_text(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+    attachment = {
+        "name": "note.txt",
+        "media_type": "text/plain",
+        "data_base64": base64.b64encode(b"hello").decode("ascii"),
+    }
+    response, job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/chat",
+            headers=_browser_headers(),
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "prompt": "",
+                "attachments": [attachment],
+            },
+        ),
+        "chat",
+        {"text": "done", "status": "completed"},
+    )
+
+    assert response.status_code == 200
+    assert job["payload"]["attachments"] == [attachment]
 
 
 def test_runner_error_is_returned_to_browser(relay_client):

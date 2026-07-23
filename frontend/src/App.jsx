@@ -19,6 +19,7 @@ import {
   Menu,
   MessageSquareText,
   MoreHorizontal,
+  Paperclip,
   PanelLeftClose,
   Play,
   Plus,
@@ -28,6 +29,8 @@ import {
   ShieldCheck,
   Sparkles,
   TerminalSquare,
+  FileText,
+  Image as ImageIcon,
   X,
   Zap,
 } from "lucide-react";
@@ -82,6 +85,54 @@ async function request(token, path, options = {}) {
     throw error;
   }
   return data;
+}
+
+async function streamRequest(token, path, payload, onEvent) {
+  const response = await fetch(path, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+  if (!response.ok) {
+    const data = await response.json().catch(() => ({}));
+    const error = new Error(data.detail || `请求失败 (${response.status})`);
+    error.status = response.status;
+    throw error;
+  }
+  if (!response.body) throw new Error("浏览器不支持流式响应。");
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  while (true) {
+    const { value, done } = await reader.read();
+    buffer += decoder.decode(value || new Uint8Array(), { stream: !done });
+    const frames = buffer.split("\n\n");
+    buffer = frames.pop() || "";
+    for (const frame of frames) {
+      const dataLine = frame
+        .split("\n")
+        .find((line) => line.startsWith("data: "));
+      if (dataLine) onEvent(JSON.parse(dataLine.slice(6)));
+    }
+    if (done) break;
+  }
+}
+
+async function encodeAttachment(file) {
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  for (let index = 0; index < bytes.length; index += 0x8000) {
+    binary += String.fromCharCode(...bytes.subarray(index, index + 0x8000));
+  }
+  return {
+    name: file.name,
+    media_type: file.type || "application/octet-stream",
+    data_base64: window.btoa(binary),
+  };
 }
 
 function RichText({ content }) {
@@ -308,6 +359,20 @@ function Message({ message }) {
         </div>
         <div className="message-bubble">
           {tool ? <pre>{message.content}</pre> : <RichText content={message.content} />}
+          {message.attachments?.length > 0 && (
+            <div className="message-attachments">
+              {message.attachments.map((attachment) => (
+                <span key={`${attachment.name}-${attachment.size}`}>
+                  {attachment.media_type.startsWith("image/") ? (
+                    <ImageIcon size={14} />
+                  ) : (
+                    <FileText size={14} />
+                  )}
+                  {attachment.name}
+                </span>
+              ))}
+            </div>
+          )}
         </div>
       </div>
     </article>
@@ -374,12 +439,17 @@ export default function App() {
   const [sessions, setSessions] = useState([]);
   const [pending, setPending] = useState(null);
   const [prompt, setPrompt] = useState("");
+  const [attachments, setAttachments] = useState([]);
   const [busy, setBusy] = useState(false);
   const [status, setStatus] = useState("idle");
+  const [streamText, setStreamText] = useState("");
+  const [runStage, setRunStage] = useState("");
+  const [lastTimings, setLastTimings] = useState(null);
   const [toast, setToast] = useState("");
   const [panel, setPanel] = useState(null);
   const [panelContent, setPanelContent] = useState("");
   const messageEndRef = useRef(null);
+  const fileInputRef = useRef(null);
 
   const selectedWorkspace = useMemo(
     () => bootstrap.workspaces.find((item) => item.workspace_id === selectedId) || null,
@@ -524,24 +594,64 @@ export default function App() {
 
   async function submitPrompt(value = prompt) {
     const cleanPrompt = value.trim();
-    if (!cleanPrompt || busy || !selectedWorkspace) return;
+    if ((!cleanPrompt && attachments.length === 0) || busy || !selectedWorkspace) return;
     if (!runnerOnline) {
       showToast("本机 Runner 离线，暂时不能执行任务。");
       return;
     }
-    setMessages((items) => [...items, { role: "user", content: cleanPrompt }]);
+    const pendingAttachments = attachments;
+    const attachmentSummary = pendingAttachments.map(({ file }) => ({
+      name: file.name,
+      media_type: file.type || "application/octet-stream",
+      size: file.size,
+    }));
+    setMessages((items) => [
+      ...items,
+      {
+        role: "user",
+        content: cleanPrompt || "请分析我上传的文件。",
+        attachments: attachmentSummary,
+      },
+    ]);
     setPrompt("");
+    setAttachments([]);
     setBusy(true);
     setStatus("running");
+    setStreamText("");
+    setRunStage("queued");
+    setLastTimings(null);
     try {
-      const result = await request(token, "/api/chat", {
-        method: "POST",
-        body: JSON.stringify({
+      const encodedAttachments = await Promise.all(
+        pendingAttachments.map(({ file }) => encodeAttachment(file)),
+      );
+      let result = null;
+      let streamed = "";
+      await streamRequest(
+        token,
+        "/api/chat/stream",
+        {
           client_id: clientId,
           workspace_id: selectedWorkspace.workspace_id,
           prompt: cleanPrompt,
-        }),
-      });
+          attachments: encodedAttachments,
+        },
+        (event) => {
+          if (event.type === "token") {
+            streamed += event.text || "";
+            setStreamText(streamed);
+          } else if (event.type === "stage") {
+            setRunStage(event.stage || "");
+          } else if (event.type === "result") {
+            result = event.data;
+            setLastTimings(event.timings || null);
+          } else if (event.type === "error") {
+            const error = new Error(event.error || "本机 Runner 执行失败。");
+            error.status = event.status_code;
+            throw error;
+          }
+        },
+      );
+      if (!result) throw new Error("流式响应结束但没有最终结果。");
       if (result.text) {
         setMessages((items) => [...items, { role: "assistant", content: result.text }]);
       }
@@ -557,7 +667,44 @@ export default function App() {
       if (error.status === 401) logout("访问令牌已失效。");
     } finally {
       setBusy(false);
+      setStreamText("");
+      setRunStage("");
+      pendingAttachments.forEach(
+        (item) => item.preview && URL.revokeObjectURL(item.preview),
+      );
     }
+  }
+
+  function addAttachments(fileList) {
+    const selected = Array.from(fileList || []);
+    const valid = [];
+    for (const file of selected) {
+      if (file.size > 10 * 1024 * 1024) {
+        showToast(`${file.name} 超过 10 MB`);
+        continue;
+      }
+      valid.push({
+        file,
+        preview: file.type.startsWith("image/") ? URL.createObjectURL(file) : "",
+      });
+    }
+    setAttachments((current) => {
+      const slots = Math.max(0, 5 - current.length);
+      if (valid.length > slots) showToast("每次最多上传 5 个文件");
+      valid.slice(slots).forEach(
+        (item) => item.preview && URL.revokeObjectURL(item.preview),
+      );
+      return [...current, ...valid.slice(0, slots)];
+    });
+    if (fileInputRef.current) fileInputRef.current.value = "";
+  }
+
+  function removeAttachment(index) {
+    setAttachments((current) => {
+      const target = current[index];
+      if (target?.preview) URL.revokeObjectURL(target.preview);
+      return current.filter((_, itemIndex) => itemIndex !== index);
+    });
   }
 
   async function resolveApproval(action) {
@@ -633,8 +780,13 @@ export default function App() {
     if (!selectedWorkspace) return;
     try {
       const suffix = `workspace_id=${encodeURIComponent(selectedWorkspace.workspace_id)}`;
-      const data = await request(token, `/api/${kind}/${clientId}?${suffix}`);
-      setPanelContent(data.summary);
+      const path = kind === "diagnostics"
+        ? `/api/diagnostics?${suffix}`
+        : `/api/${kind}/${clientId}?${suffix}`;
+      const data = await request(token, path);
+      setPanelContent(
+        typeof data.summary === "string" ? data.summary : JSON.stringify(data.summary, null, 2),
+      );
       setPanel(kind);
     } catch (error) {
       showToast(error.message);
@@ -701,6 +853,9 @@ export default function App() {
           </button>
           <button type="button" onClick={() => openInfo("trace")}>
             <Activity size={18} /> 运行 Trace
+          </button>
+          <button type="button" onClick={() => openInfo("diagnostics")}>
+            <TerminalSquare size={18} /> 本地诊断
           </button>
           <button
             type="button"
@@ -788,7 +943,24 @@ export default function App() {
                     <div className="message-avatar"><Bot size={18} /></div>
                     <div className="message-column">
                       <div className="message-label">AutoCode</div>
-                      <div className="thinking"><i /><i /><i /><span>正在处理</span></div>
+                      {streamText ? (
+                        <div className="message-bubble streaming-response">
+                          <RichText content={streamText} />
+                          <span className="stream-caret" />
+                        </div>
+                      ) : (
+                        <div className="thinking">
+                          <i /><i /><i />
+                          <span>{{
+                            queued: "等待本机领取",
+                            claimed: "本机已领取",
+                            runner_started: "启动 Agent",
+                            model_started: "模型思考中",
+                            tool_started: "执行工具",
+                            persisted: "保存会话",
+                          }[runStage] || "正在处理"}</span>
+                        </div>
+                      )}
                     </div>
                   </article>
                 )}
@@ -827,6 +999,27 @@ export default function App() {
 
         <footer className="composer-area">
           <div className="composer">
+            {attachments.length > 0 && (
+              <div className="attachment-strip">
+                {attachments.map((item, index) => (
+                  <span className="attachment-chip" key={`${item.file.name}-${item.file.lastModified}`}>
+                    {item.preview ? (
+                      <img src={item.preview} alt="" />
+                    ) : (
+                      <FileText size={16} />
+                    )}
+                    <b>{item.file.name}</b>
+                    <button
+                      type="button"
+                      onClick={() => removeAttachment(index)}
+                      aria-label={`移除 ${item.file.name}`}
+                    >
+                      <X size={13} />
+                    </button>
+                  </span>
+                ))}
+              </div>
+            )}
             <textarea
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
@@ -848,16 +1041,44 @@ export default function App() {
             <div className="composer-bottom">
               <span>
                 <TerminalSquare size={15} />
-                {status === "running" ? "Agent 正在运行" : "本机安全执行"}
+                {status === "running"
+                  ? "Agent 正在运行"
+                  : lastTimings
+                    ? `本机完成 · ${Math.round(lastTimings.relay_total_ms || 0)} ms`
+                    : "本机安全执行"}
               </span>
-              <button
-                type="button"
-                onClick={() => submitPrompt()}
-                disabled={!prompt.trim() || busy || !runnerOnline || !selectedWorkspace}
-                aria-label="发送"
-              >
-                {busy ? <RefreshCw className="spin" size={18} /> : <Send size={18} />}
-              </button>
+              <div className="composer-actions">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  hidden
+                  onChange={(event) => addAttachments(event.target.files)}
+                />
+                <button
+                  className="attach-button"
+                  type="button"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={busy || !runnerOnline || !selectedWorkspace}
+                  aria-label="上传文件或图片"
+                  title="上传文件或图片"
+                >
+                  <Paperclip size={18} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => submitPrompt()}
+                  disabled={
+                    (!prompt.trim() && attachments.length === 0)
+                    || busy
+                    || !runnerOnline
+                    || !selectedWorkspace
+                  }
+                  aria-label="发送"
+                >
+                  {busy ? <RefreshCw className="spin" size={18} /> : <Send size={18} />}
+                </button>
+              </div>
             </div>
           </div>
           <p>Enter 发送 · Shift + Enter 换行 · 危险操作会等待确认</p>
@@ -879,10 +1100,20 @@ export default function App() {
             <header>
               <div>
                 <span className="overline">
-                  {panel === "sessions" ? "SESSION HISTORY" : "RUNTIME DETAILS"}
+                  {panel === "sessions"
+                    ? "SESSION HISTORY"
+                    : panel === "diagnostics"
+                      ? "LOCAL DIAGNOSTICS"
+                      : "RUNTIME DETAILS"}
                 </span>
                 <h2>
-                  {panel === "sessions" ? "历史会话" : panel === "trace" ? "运行 Trace" : "当前任务"}
+                  {panel === "sessions"
+                    ? "历史会话"
+                    : panel === "trace"
+                      ? "运行 Trace"
+                      : panel === "diagnostics"
+                        ? "本地诊断"
+                        : "当前任务"}
                 </h2>
               </div>
               <button className="icon-button" type="button" onClick={() => setPanel(null)}>

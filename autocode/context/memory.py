@@ -7,6 +7,8 @@ import hashlib
 import threading
 from pathlib import Path
 
+from ..message_content import content_text
+
 
 class MemoryManager:
     _EVIDENCE_IGNORED_DIRS = {
@@ -65,6 +67,7 @@ class MemoryManager:
     def __init__(self, workspace_root: str):
         self.workspace_root = Path(workspace_root).expanduser().resolve()
         self._last_project_memory_key = ""
+        self._last_project_memory_source_key = ""
         self._pending_project_memory_key = ""
         self._lock = threading.Lock()
         self._executor = concurrent.futures.ThreadPoolExecutor(max_workers=1, thread_name_prefix="autocode-memory")
@@ -94,6 +97,7 @@ class MemoryManager:
         source = self._flatten_messages(messages)
         if not source:
             return False
+        source_key = hashlib.sha1(source.encode("utf-8", errors="replace")).hexdigest()
         existing_memory = self._read_if_exists(self.memory_file_path()) or "(none)"
         inventory = self._project_file_inventory()
         inventory_key = self._project_file_inventory_key()
@@ -159,6 +163,7 @@ class MemoryManager:
         if not lines:
             with self._lock:
                 self._last_project_memory_key = key
+                self._last_project_memory_source_key = source_key
             return False
 
         path = self.memory_file_path()
@@ -168,15 +173,21 @@ class MemoryManager:
         path.write_text(body, encoding="utf-8")
         with self._lock:
             self._last_project_memory_key = key
+            self._last_project_memory_source_key = source_key
         return True
 
     def schedule_project_memory_refresh(self, messages: list[dict], llm, force: bool = False) -> bool:
         source = self._flatten_messages(messages)
         if not source or not hasattr(llm, "clone"):
             return False
-        key = self._memory_refresh_key(source, self._project_file_inventory_key())
+        # Repository inventory can be expensive on large workspaces. Keep it entirely
+        # inside the executor so scheduling never delays the user-visible response.
+        key = hashlib.sha1(source.encode("utf-8", errors="replace")).hexdigest()
         with self._lock:
-            if not force and (key == self._last_project_memory_key or key == self._pending_project_memory_key):
+            if not force and (
+                key == self._last_project_memory_source_key
+                or key == self._pending_project_memory_key
+            ):
                 return False
             self._pending_project_memory_key = key
 
@@ -189,6 +200,9 @@ class MemoryManager:
             with self._lock:
                 if self._pending_project_memory_key == key:
                     self._pending_project_memory_key = ""
+            tracer = getattr(llm_copy, "tracer", None)
+            if tracer is not None:
+                tracer.shutdown()
 
         future.add_done_callback(_clear_pending)
         return True
@@ -197,6 +211,10 @@ class MemoryManager:
         future = self._future
         if future is not None:
             future.result(timeout=timeout)
+
+    def close(self) -> None:
+        """Stop accepting background refreshes without blocking response shutdown."""
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     @staticmethod
     def _read_if_exists(path: Path) -> str:
@@ -239,7 +257,7 @@ class MemoryManager:
         parts = []
         for message in messages[-keep_recent:]:
             role = message.get("role", "?")
-            content = (message.get("content", "") or "").strip()
+            content = content_text(message.get("content", "")).strip()
             if content:
                 parts.append(f"[{role}] {content[:500]}")
         flat = "\n".join(parts)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 
 from ..state import PolicyDecision, TaskState
+from ..tools.base import ToolResult
 from .hooks import HookBus
 from .policy import Policy
 
@@ -69,7 +70,7 @@ class Runtime:
         session_id: str,
         on_tool=None,
         decision: PolicyDecision | None = None,
-    ) -> str:
+    ) -> str | ToolResult:
         tool = self.tool_registry.get(tool_call.name)
         if tool is None:
             result = f"Error: unknown tool '{tool_call.name}'"
@@ -99,13 +100,26 @@ class Runtime:
             result = f"Error executing {tool_call.name}: {e}"
         if self.recovery is not None:
             result = self.recovery.note_tool_result(task_state, tool_call.name, result)
+        result_text = result.text if isinstance(result, ToolResult) else result
         self.hooks.emit(
             "after_tool",
-            self._payload(session_id, task_state, tool_name=tool_call.name, result=result[:500]),
+            self._payload(
+                session_id,
+                task_state,
+                tool_name=tool_call.name,
+                result=result_text[:500],
+                multimodal=bool(isinstance(result, ToolResult) and result.model_content),
+            ),
         )
         return result
 
-    def execute_tool_calls_parallel(self, task_state: TaskState, tool_calls, session_id: str, on_tool=None) -> list[str]:
+    def execute_tool_calls_parallel(
+        self,
+        task_state: TaskState,
+        tool_calls,
+        session_id: str,
+        on_tool=None,
+    ) -> list[str | ToolResult]:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(tool_calls))) as pool:
             futures = [pool.submit(self.execute_tool_call, task_state, tc, session_id, on_tool) for tc in tool_calls]
             return [f.result() for f in futures]

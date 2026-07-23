@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import logging
+import queue
 import signal
 import ssl
 import sys
@@ -17,6 +19,7 @@ from dotenv import dotenv_values
 
 from .. import __version__
 from ..config import Config
+from ..diagnostics import diagnostic_log_dir, get_diagnostic_logger, log_event
 from ..remote.manager import RemoteManager
 from ..workspaces import WorkspaceRegistry
 
@@ -100,17 +103,82 @@ class LocalRunner:
             )
         self.client = client
         self._stopping = False
+        self._logger = get_diagnostic_logger("web-runner")
 
-    def execute(self, action: str, payload: dict[str, Any]) -> Any:
+    def execute(self, action: str, payload: dict[str, Any], event_handler=None) -> Any:
         if action == "bootstrap":
             return {
                 "model": self._base_config.model,
                 "workspaces": self.registry.list_workspaces(),
                 "version": __version__,
+                "capabilities": {
+                    "streaming": True,
+                    "file_upload": True,
+                    "image_input": True,
+                    "workspace_image_tool": True,
+                },
+                "diagnostics": {
+                    "log_dir": str(diagnostic_log_dir()),
+                    "langfuse_configured": bool(
+                        self._base_config.langfuse_public_key
+                        and self._base_config.langfuse_secret_key
+                    ),
+                },
             }
         manager = self._manager(str(payload["workspace_id"]))
+        if action == "diagnostics":
+            return {
+                "summary": {
+                    "log_dir": str(diagnostic_log_dir()),
+                    "observability": manager.observability_status(),
+                }
+            }
         if action == "chat":
-            return asdict(manager.submit(payload["client_id"], payload["prompt"]))
+            first_token_seen = False
+
+            def on_token(text: str) -> None:
+                nonlocal first_token_seen
+                if event_handler is None:
+                    return
+                if not first_token_seen:
+                    event_handler({"type": "stage", "stage": "first_token"})
+                    first_token_seen = True
+                event_handler({"type": "token", "text": text})
+
+            def on_hook(event: str, data: dict) -> None:
+                if event_handler is None:
+                    return
+                stage_map = {
+                    "before_llm": "model_started",
+                    "after_llm": "model_finished",
+                    "before_tool": "tool_started",
+                    "after_tool": "tool_finished",
+                    "context_compaction": "context_compacted",
+                }
+                stage = stage_map.get(event)
+                if stage:
+                    details = {
+                        key: data[key]
+                        for key in ("step_index", "tool_name", "prompt_tokens", "completion_tokens")
+                        if key in data
+                    }
+                    event_handler({"type": "stage", "stage": stage, "details": details})
+
+            submit_kwargs = {}
+            if event_handler is not None:
+                submit_kwargs.update(hook_handler=on_hook, on_token=on_token)
+            if payload.get("attachments"):
+                submit_kwargs["attachments"] = list(payload["attachments"])
+            result = manager.submit(
+                payload["client_id"],
+                payload.get("prompt", ""),
+                **submit_kwargs,
+            )
+            if event_handler is not None:
+                if first_token_seen:
+                    event_handler({"type": "stage", "stage": "last_token"})
+                event_handler({"type": "stage", "stage": "persisted"})
+            return asdict(result)
         if action == "approval":
             return asdict(
                 manager.resolve_approval(
@@ -204,8 +272,38 @@ class LocalRunner:
 
     def _run_job(self, job: dict[str, Any]) -> None:
         job_id = str(job["job_id"])
+        started_at = time.monotonic()
+        publisher = (
+            _RunnerEventPublisher(self.client, job_id, self._logger)
+            if bool(job.get("stream"))
+            else None
+        )
+
+        def emit(event: dict[str, Any]) -> None:
+            elapsed_ms = round((time.monotonic() - started_at) * 1000, 1)
+            enriched = {**event, "elapsed_ms": event.get("elapsed_ms", elapsed_ms)}
+            if publisher is not None:
+                publisher.emit(enriched)
+            if enriched.get("type") == "stage":
+                log_event(
+                    self._logger,
+                    logging.INFO,
+                    "Runner job stage",
+                    job_id=job_id,
+                    action=str(job.get("action", "")),
+                    stage=str(enriched.get("stage", "")),
+                    elapsed_ms=enriched["elapsed_ms"],
+                    details=enriched.get("details") or {},
+                )
+
         try:
-            result = self.execute(str(job["action"]), dict(job.get("payload") or {}))
+            emit({"type": "stage", "stage": "runner_started"})
+            result = self.execute(
+                str(job["action"]),
+                dict(job.get("payload") or {}),
+                event_handler=emit if publisher is not None else None,
+            )
+            emit({"type": "stage", "stage": "runner_completed"})
             body = {"success": True, "result": result}
         except ValueError as exc:
             body = {"success": False, "error": str(exc), "status_code": 409}
@@ -216,6 +314,18 @@ class LocalRunner:
                 "status_code": 500,
             }
 
+        if publisher is not None:
+            publisher.close()
+        log_event(
+            self._logger,
+            logging.INFO if body["success"] else logging.ERROR,
+            "Runner job completed",
+            job_id=job_id,
+            action=str(job.get("action", "")),
+            success=body["success"],
+            elapsed_ms=round((time.monotonic() - started_at) * 1000, 1),
+            error=body.get("error", ""),
+        )
         while not self._stopping:
             try:
                 response = self.client.post(f"/api/runner/result/{job_id}", json=body)
@@ -239,6 +349,81 @@ class LocalRunner:
                 if self._stopping:
                     return
                 time.sleep(1.0)
+
+
+class _RunnerEventPublisher:
+    """Send runner events off the model thread and coalesce adjacent token chunks."""
+
+    _STOP = object()
+
+    def __init__(self, client, job_id: str, logger):
+        self.client = client
+        self.job_id = job_id
+        self.logger = logger
+        self._queue: queue.Queue = queue.Queue()
+        self._thread = threading.Thread(
+            target=self._run,
+            name=f"autocode-event-{job_id[:8]}",
+            daemon=True,
+        )
+        self._thread.start()
+
+    def emit(self, event: dict[str, Any]) -> None:
+        self._queue.put(dict(event))
+
+    def close(self) -> None:
+        self._queue.put(self._STOP)
+        self._thread.join(timeout=10.0)
+        if self._thread.is_alive():
+            log_event(
+                self.logger,
+                logging.ERROR,
+                "Runner event publisher did not drain before timeout",
+                job_id=self.job_id,
+            )
+
+    def _run(self) -> None:
+        pending = None
+        while True:
+            item = pending if pending is not None else self._queue.get()
+            pending = None
+            if item is self._STOP:
+                return
+            event = dict(item)
+            if event.get("type") == "token":
+                text_parts = [str(event.get("text", ""))]
+                while sum(len(part) for part in text_parts) < 512:
+                    try:
+                        next_item = self._queue.get_nowait()
+                    except queue.Empty:
+                        break
+                    if next_item is self._STOP:
+                        pending = self._STOP
+                        break
+                    if isinstance(next_item, dict) and next_item.get("type") == "token":
+                        text_parts.append(str(next_item.get("text", "")))
+                        event["elapsed_ms"] = next_item.get("elapsed_ms", event.get("elapsed_ms"))
+                    else:
+                        pending = next_item
+                        break
+                event["text"] = "".join(text_parts)
+            try:
+                response = self.client.post(
+                    f"/api/runner/event/{self.job_id}",
+                    json=event,
+                )
+                if response.status_code == 404:
+                    return
+                response.raise_for_status()
+            except Exception as exc:
+                log_event(
+                    self.logger,
+                    logging.ERROR,
+                    "Runner event delivery failed",
+                    job_id=self.job_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
 
 
 def main() -> None:

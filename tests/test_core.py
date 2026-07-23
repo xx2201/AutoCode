@@ -18,25 +18,45 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    assert len(ALL_TOOLS) == 13
+    assert len(ALL_TOOLS) == 14
 
 
 def test_config_from_env(monkeypatch):
-    monkeypatch.setattr("autocode.config._load_dotenv", lambda: None)
+    monkeypatch.setattr("autocode.config._load_dotenv_values", lambda: {})
     os.environ["AUTOCODE_MODEL"] = "test-model"
     os.environ["AUTOCODE_TELEGRAM_ALLOWED_CHATS"] = "123,456"
+    os.environ["LANGFUSE_PUBLIC_KEY"] = "pk-test"
+    os.environ["LANGFUSE_SECRET_KEY"] = "sk-test"
+    os.environ["LANGFUSE_BASE_URL"] = "https://langfuse.example"
     c = Config.from_env()
     assert c.model == "test-model"
     assert c.telegram_allowed_chat_ids == (123, 456)
+    assert c.langfuse_public_key == "pk-test"
+    assert c.langfuse_secret_key == "sk-test"
+    assert c.langfuse_base_url == "https://langfuse.example"
     del os.environ["AUTOCODE_MODEL"]
     del os.environ["AUTOCODE_TELEGRAM_ALLOWED_CHATS"]
+    del os.environ["LANGFUSE_PUBLIC_KEY"]
+    del os.environ["LANGFUSE_SECRET_KEY"]
+    del os.environ["LANGFUSE_BASE_URL"]
 
 
 def test_config_defaults(monkeypatch):
-    monkeypatch.setattr("autocode.config._load_dotenv", lambda: None)
+    monkeypatch.setattr("autocode.config._load_dotenv_values", lambda: {})
     # temporarily clear relevant env vars
     saved = {}
-    for k in ["AUTOCODE_MODEL", "AUTOCODE_API_KEY", "AUTOCODE_BASE_URL", "AUTOCODE_MAX_TOKENS", "AUTOCODE_AUTO_APPROVE", "OPENAI_API_KEY", "OPENAI_BASE_URL"]:
+    for k in [
+        "AUTOCODE_MODEL",
+        "AUTOCODE_API_KEY",
+        "AUTOCODE_BASE_URL",
+        "AUTOCODE_MAX_TOKENS",
+        "AUTOCODE_AUTO_APPROVE",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "LANGFUSE_PUBLIC_KEY",
+        "LANGFUSE_SECRET_KEY",
+        "LANGFUSE_BASE_URL",
+    ]:
         if k in os.environ:
             saved[k] = os.environ.pop(k)
 
@@ -44,6 +64,9 @@ def test_config_defaults(monkeypatch):
     assert c.model == ""
     assert c.api_key == ""
     assert c.base_url is None
+    assert c.langfuse_public_key == ""
+    assert c.langfuse_secret_key == ""
+    assert c.langfuse_base_url is None
     assert c.max_tokens == 4096
     assert c.max_context_tokens == 1_000_000
     assert c.temperature == 0.0
@@ -53,7 +76,7 @@ def test_config_defaults(monkeypatch):
 
 
 def test_config_ignores_openai_fallback(monkeypatch):
-    monkeypatch.setattr("autocode.config._load_dotenv", lambda: None)
+    monkeypatch.setattr("autocode.config._load_dotenv_values", lambda: {})
     saved = {}
     for k in ["AUTOCODE_API_KEY", "AUTOCODE_BASE_URL", "OPENAI_API_KEY", "OPENAI_BASE_URL"]:
         if k in os.environ:
@@ -70,7 +93,7 @@ def test_config_ignores_openai_fallback(monkeypatch):
     os.environ.update(saved)
 
 
-def test_load_dotenv_reads_workspace_env_only(monkeypatch, tmp_path):
+def test_load_dotenv_values_reads_workspace_env_only(monkeypatch, tmp_path):
     import autocode.config as config_mod
 
     workspace = tmp_path / "workspace"
@@ -78,32 +101,14 @@ def test_load_dotenv_reads_workspace_env_only(monkeypatch, tmp_path):
     project.mkdir(parents=True)
     workspace_env = workspace / ".env"
     workspace_env.write_text("AUTOCODE_MODEL=workspace-model\n", encoding="utf-8")
-
-    loaded = []
-
-    def fake_load_dotenv(path, override=False):
-        loaded.append((pathlib.Path(path), override))
-        for line in pathlib.Path(path).read_text(encoding="utf-8").splitlines():
-            if "=" in line:
-                key, value = line.split("=", 1)
-                os.environ.setdefault(key, value)
-
-    class FakeDotenvModule:
-        @staticmethod
-        def load_dotenv(path, override=False):
-            fake_load_dotenv(path, override=override)
-
-    monkeypatch.setitem(__import__("sys").modules, "dotenv", FakeDotenvModule())
     monkeypatch.chdir(project)
-    monkeypatch.delenv("AUTOCODE_MODEL", raising=False)
-    config_mod._load_dotenv()
+    values = config_mod._load_dotenv_values()
 
-    assert os.environ["AUTOCODE_MODEL"] == "workspace-model"
-    assert loaded[-1][0] == workspace_env
+    assert values["AUTOCODE_MODEL"] == "workspace-model"
 
 
 def test_config_workspace_defaults_to_cwd(monkeypatch, tmp_path):
-    monkeypatch.setattr("autocode.config._load_dotenv", lambda: None)
+    monkeypatch.setattr("autocode.config._load_dotenv_values", lambda: {})
     workspace = tmp_path / "redis_work"
     workspace.mkdir()
     monkeypatch.chdir(workspace)
@@ -367,6 +372,40 @@ def test_memory_manager_can_schedule_async_refresh(tmp_path):
     messages = [{"role": "user", "content": "请记住项目真实 conda 环境"}]
 
     assert manager.schedule_project_memory_refresh(messages, llm, force=True) is True
+
+
+def test_memory_refresh_scheduling_does_not_scan_workspace_on_response_thread(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = MemoryManager(str(workspace))
+    submitted = []
+
+    class DeferredExecutor:
+        def submit(self, function, *args):
+            submitted.append((function, args))
+
+            class DeferredFuture:
+                def add_done_callback(self, callback):
+                    self.callback = callback
+
+            return DeferredFuture()
+
+    class FakeLLM:
+        def clone(self):
+            return self
+
+    manager._executor.shutdown(wait=False, cancel_futures=True)
+    manager._executor = DeferredExecutor()
+    manager._project_file_inventory_key = lambda: (_ for _ in ()).throw(
+        AssertionError("workspace scan must stay in the background refresh")
+    )
+
+    assert manager.schedule_project_memory_refresh(
+        [{"role": "user", "content": "hello"}],
+        FakeLLM(),
+        force=True,
+    )
+    assert len(submitted) == 1
 
 
 def test_agent_request_messages_keep_rules_in_system_and_runtime_state_in_tail(tmp_path):

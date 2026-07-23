@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hmac
+import json
 import os
 import re
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Annotated, Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
@@ -30,7 +31,7 @@ _SECURITY_HEADERS = {
         "default-src 'self'; "
         "script-src 'self'; "
         "style-src 'self'; "
-        "img-src 'self' data:; "
+        "img-src 'self' data: blob:; "
         "connect-src 'self'; "
         "font-src 'self'; "
         "object-src 'none'; "
@@ -51,7 +52,14 @@ class ClientRequest(BaseModel):
 
 
 class ChatRequest(ClientRequest):
-    prompt: str = Field(min_length=1, max_length=32_000)
+    prompt: str = Field(default="", max_length=32_000)
+    attachments: list["AttachmentRequest"] = Field(default_factory=list, max_length=5)
+
+
+class AttachmentRequest(BaseModel):
+    name: str = Field(min_length=1, max_length=255)
+    media_type: str = Field(min_length=1, max_length=120)
+    data_base64: str = Field(min_length=1, max_length=14_000_000)
 
 
 class ApprovalRequest(ClientRequest):
@@ -67,6 +75,14 @@ class RunnerResultRequest(BaseModel):
     result: Any = None
     error: str = Field(default="", max_length=20_000)
     status_code: int = Field(default=500, ge=400, le=599)
+
+
+class RunnerEventRequest(BaseModel):
+    type: str = Field(min_length=1, max_length=40)
+    stage: str = Field(default="", max_length=80)
+    text: str = Field(default="", max_length=50_000)
+    elapsed_ms: float | None = Field(default=None, ge=0)
+    details: dict[str, Any] = Field(default_factory=dict)
 
 
 def _validate_client_id(client_id: str) -> str:
@@ -174,14 +190,47 @@ def create_app(
     async def chat(payload: ChatRequest):
         client_id = _validate_client_id(payload.client_id)
         prompt = payload.prompt.strip()
-        if not prompt:
-            raise HTTPException(status_code=422, detail="Prompt cannot be empty.")
-        return await dispatch(
-            "chat",
-            {
+        if not prompt and not payload.attachments:
+            raise HTTPException(status_code=422, detail="Prompt or attachment is required.")
+        chat_payload = {
+            "client_id": client_id,
+            "workspace_id": payload.workspace_id,
+            "prompt": prompt,
+        }
+        if payload.attachments:
+            chat_payload["attachments"] = [item.model_dump() for item in payload.attachments]
+        return await dispatch("chat", chat_payload)
+
+    @app.post("/api/chat/stream", dependencies=browser_auth)
+    async def chat_stream(payload: ChatRequest):
+        client_id = _validate_client_id(payload.client_id)
+        prompt = payload.prompt.strip()
+        if not prompt and not payload.attachments:
+            raise HTTPException(status_code=422, detail="Prompt or attachment is required.")
+        try:
+            chat_payload = {
                 "client_id": client_id,
                 "workspace_id": payload.workspace_id,
                 "prompt": prompt,
+            }
+            if payload.attachments:
+                chat_payload["attachments"] = [
+                    item.model_dump() for item in payload.attachments
+                ]
+            job_id = relay.start_stream("chat", chat_payload)
+        except RunnerOfflineError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        def event_stream():
+            for event in relay.iter_stream(job_id, timeout=request_timeout):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
             },
         )
 
@@ -250,6 +299,10 @@ def create_app(
             },
         )
 
+    @app.get("/api/diagnostics", dependencies=browser_auth)
+    async def diagnostics(workspace_id: str = Query(min_length=20, max_length=20)):
+        return await dispatch("diagnostics", {"workspace_id": workspace_id})
+
     @app.get("/api/messages/{client_id}", dependencies=browser_auth)
     async def messages(
         client_id: str,
@@ -296,6 +349,13 @@ def create_app(
         )
         if not accepted:
             raise HTTPException(status_code=404, detail="Relay job not found or expired.")
+        return {"accepted": True}
+
+    @app.post("/api/runner/event/{job_id}", dependencies=runner_auth)
+    async def runner_event(job_id: str, payload: RunnerEventRequest):
+        accepted = relay.publish(job_id, payload.model_dump())
+        if not accepted:
+            raise HTTPException(status_code=404, detail="Relay stream not found or expired.")
         return {"accepted": True}
 
     app.mount("/assets", StaticFiles(directory=_STATIC_DIR), name="assets")

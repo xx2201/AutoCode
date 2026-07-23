@@ -119,6 +119,9 @@ def main():
         model=config.model,
         api_key=config.api_key,
         base_url=config.base_url,
+        langfuse_public_key=config.langfuse_public_key,
+        langfuse_secret_key=config.langfuse_secret_key,
+        langfuse_base_url=config.langfuse_base_url,
         temperature=config.temperature,
         max_tokens=config.max_tokens,
     )

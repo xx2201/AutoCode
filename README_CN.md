@@ -159,6 +159,9 @@ autocode-feishu
 
 ## 架构
 
+Web Relay、本地 Workspace、多模态输入、Langfuse 观测以及本地状态文件的完整边界，
+见 [架构说明](docs/architecture.md)。
+
 现在的仓库依然不大，但已经不是最初那种单文件教学内核：
 
 ```

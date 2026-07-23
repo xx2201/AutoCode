@@ -16,6 +16,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from ..message_content import content_text
+
 if TYPE_CHECKING:
     from ..llm import LLM
 
@@ -29,7 +31,7 @@ def estimate_tokens(messages: list[dict]) -> int:
     total = 0
     for m in messages:
         if m.get("content"):
-            total += _approx_tokens(m["content"])
+            total += _approx_tokens(content_text(m["content"]))
         if m.get("tool_calls"):
             total += _approx_tokens(str(m["tool_calls"]))
     return total
@@ -129,7 +131,7 @@ class ContextManager:
     def _is_real_user_turn_start(message: dict) -> bool:
         if message.get("role") != "user":
             return False
-        content = (message.get("content", "") or "").strip()
+        content = content_text(message.get("content", "")).strip()
         return not content.startswith(("[Context compressed - conversation summary]", "[Hard context reset]"))
 
     def _split_by_recent_turns(
@@ -222,7 +224,7 @@ class ContextManager:
         parts = []
         for m in messages:
             role = m.get("role", "?")
-            text = m.get("content", "") or ""
+            text = content_text(m.get("content", ""))
             if text:
                 parts.append(f"[{role}] {text[:400]}")
         return "\n".join(parts)
@@ -236,7 +238,7 @@ class ContextManager:
         decisions = []
 
         for m in messages:
-            text = m.get("content", "") or ""
+            text = content_text(m.get("content", ""))
             # extract file paths
             for match in re.finditer(r'[\w./\-]+\.\w{1,5}', text):
                 files_seen.add(match.group())

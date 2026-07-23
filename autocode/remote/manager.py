@@ -8,8 +8,10 @@ from dataclasses import dataclass
 from typing import Hashable
 
 from ..agent import Agent
+from ..attachments import prepare_attachments
 from ..config import Config
 from ..llm import LLM, LiteLLM
+from ..message_content import content_text
 from ..mcp import get_shared_mcp_manager
 from ..state import format_trace, list_sessions, load_checkpoint, load_trace
 from ..tools.factory import build_agent_tools
@@ -60,11 +62,31 @@ class RemoteManager:
         self._state_lock = threading.Lock()
         self._chats: dict[Hashable, _ChatRuntime] = {}
 
-    def submit(self, chat_id: Hashable, prompt: str, hook_handler=None) -> RemoteTurnResult:
+    def submit(
+        self,
+        chat_id: Hashable,
+        prompt: str,
+        hook_handler=None,
+        attachments: list[dict] | None = None,
+        on_token=None,
+        on_tool=None,
+    ) -> RemoteTurnResult:
         runtime = self._get_or_create_runtime(chat_id)
         with runtime.lock:
+            prepared = prepare_attachments(
+                self.config.workspace_root,
+                str(chat_id),
+                prompt,
+                attachments,
+            )
             with self._temporary_hook(runtime.agent, hook_handler):
-                reply = runtime.agent.chat(prompt, approval_handler=None)
+                reply = runtime.agent.chat(
+                    prepared.prompt,
+                    approval_handler=None,
+                    on_token=on_token,
+                    on_tool=on_tool,
+                    image_parts=prepared.image_parts,
+                )
             return self._result_from_agent(runtime.agent, reply)
 
     def resolve_approval(
@@ -108,9 +130,10 @@ class RemoteManager:
             messages = []
             for message in runtime.agent.messages[-max(1, limit):]:
                 role = message.get("role", "")
-                content = message.get("content", "")
-                if role not in {"user", "assistant", "tool"} or not isinstance(content, str):
+                raw_content = message.get("content", "")
+                if role not in {"user", "assistant", "tool"}:
                     continue
+                content = content_text(raw_content)
                 messages.append(
                     {
                         "role": role,
@@ -119,6 +142,26 @@ class RemoteManager:
                     }
                 )
             return messages
+
+    def observability_status(self) -> dict:
+        with self._state_lock:
+            runtimes = list(self._chats.values())
+        if not runtimes:
+            return {
+                "provider": "langfuse",
+                "configured": bool(
+                    self.config.langfuse_public_key and self.config.langfuse_secret_key
+                ),
+                "enabled": False,
+                "status": "not-initialized",
+            }
+        tracer = getattr(runtimes[0].agent.llm, "tracer", None)
+        return tracer.status if tracer is not None else {
+            "provider": "langfuse",
+            "configured": False,
+            "enabled": False,
+            "status": "unavailable",
+        }
 
     def current_task_summary(self, chat_id: Hashable) -> str:
         runtime = self._require_runtime(chat_id)
@@ -234,6 +277,9 @@ class RemoteManager:
             model=self.config.model,
             api_key=self.config.api_key,
             base_url=self.config.base_url,
+            langfuse_public_key=self.config.langfuse_public_key,
+            langfuse_secret_key=self.config.langfuse_secret_key,
+            langfuse_base_url=self.config.langfuse_base_url,
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
         )

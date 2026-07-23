@@ -1,8 +1,11 @@
 """Core agent loop."""
 
+from contextlib import contextmanager
+
 from ..context import ContextManager, MemoryManager, estimate_tokens, render_todos, runtime_state_block, static_system_prompt
 from ..infra import BackgroundProcessManager, Sandbox, WorkspaceFS
 from ..llm import LLM, ToolCall
+from ..message_content import user_content
 from ..runtime import HookBus, Policy, RecoveryManager, Runtime
 from ..state import (
     AuditLogger,
@@ -20,7 +23,7 @@ from ..state import (
 )
 from ..tools import ALL_TOOLS, build_tool_registry
 from ..tools.agent import AgentTool
-from ..tools.base import Tool
+from ..tools.base import Tool, ToolResult
 from ..tools.todo_write import TodoWriteTool
 
 
@@ -60,6 +63,7 @@ class Agent:
         self.tools: list[Tool] = []
         self.tool_registry: dict[str, Tool] = {}
         self.messages: list[dict] = []
+        self._deferred_model_content: list[tuple[str, list[dict]]] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
         self._last_prompt_tokens = 0
         self.max_rounds = max_rounds
@@ -248,6 +252,36 @@ class Agent:
         if self.session_state is not None:
             self.transcript.append_message(self.session_state.session_id, message)
 
+    def _append_tool_result(self, tool_call: ToolCall, result: str | ToolResult) -> str:
+        text = result.text if isinstance(result, ToolResult) else result
+        self._append_message({"role": "tool", "tool_call_id": tool_call.id, "content": text})
+        if isinstance(result, ToolResult) and result.model_content:
+            self._deferred_model_content.append(
+                (tool_call.name, list(result.model_content))
+            )
+        return text
+
+    def _flush_deferred_model_content(self) -> None:
+        """Append media only after every tool result from the assistant turn."""
+        if not self._deferred_model_content:
+            return
+        labels = ", ".join(name for name, _ in self._deferred_model_content)
+        media = [
+            item
+            for _, model_content in self._deferred_model_content
+            for item in model_content
+        ]
+        self._deferred_model_content.clear()
+        self._append_message(
+            {
+                "role": "user",
+                "content": user_content(
+                    f"Visual content loaded by tools: {labels}.",
+                    media,
+                ),
+            }
+        )
+
     def _maybe_compress_messages(self):
         effective_used = self.context.effective_used(
             self.messages,
@@ -296,7 +330,72 @@ class Agent:
             self.persist_session()
         return result
 
-    def chat(self, user_input: str, on_token=None, on_tool=None, approval_handler=None) -> str:
+    @contextmanager
+    def _turn_trace(self, *, name: str, input_payload: dict, tags: list[str]):
+        tracer = getattr(self.llm, "tracer", None)
+        if tracer is None or not tracer.enabled or self.session_state is None:
+            yield None
+            return
+
+        metadata = self._event_payload(
+            workspace_root=str(self.fs.workspace_root),
+            llm_backend=type(self.llm).__name__,
+            auto_approve=self.policy.auto_approve,
+            task_status=self.task_state.status if self.task_state else None,
+            step_index=self.task_state.step_index if self.task_state else None,
+        )
+        with tracer.start_agent_turn(
+            name=name,
+            input_payload=input_payload,
+            session_id=self.session_state.session_id,
+            trace_name="autocode-agent-turn",
+            metadata=metadata,
+            tags=tags,
+        ) as observation:
+            yield observation
+
+    def _finalize_turn_trace(self, observation, response_text: str):
+        if observation is None:
+            return
+        pending = self.task_state.pending_approval if self.task_state else None
+        observation.update(
+            output={
+                "text": response_text,
+                "status": self.task_state.status if self.task_state else None,
+                "pending_tool": pending.tool_name if pending else None,
+                "pending_reason": pending.reason if pending else None,
+            },
+            metadata=self._event_payload(
+                workspace_root=str(self.fs.workspace_root),
+                llm_backend=type(self.llm).__name__,
+                auto_approve=self.policy.auto_approve,
+                task_status=self.task_state.status if self.task_state else None,
+                step_index=self.task_state.step_index if self.task_state else None,
+            ),
+        )
+
+    def _record_turn_error(self, observation, exc: Exception):
+        if observation is None:
+            return
+        observation.update(
+            output={"error": str(exc)},
+            metadata=self._event_payload(
+                workspace_root=str(self.fs.workspace_root),
+                llm_backend=type(self.llm).__name__,
+                error_type=type(exc).__name__,
+                task_status=self.task_state.status if self.task_state else None,
+            ),
+            status_message=str(exc),
+        )
+
+    def chat(
+        self,
+        user_input: str,
+        on_token=None,
+        on_tool=None,
+        approval_handler=None,
+        image_parts: list[dict] | None = None,
+    ) -> str:
         if self.task_state and self.task_state.pending_approval:
             pending = self.task_state.pending_approval
             return (
@@ -305,11 +404,23 @@ class Agent:
             )
 
         self._ensure_task(user_input)
-        self._append_message({"role": "user", "content": user_input})
-        self.hooks.emit("user_message", self._event_payload(content_preview=user_input[:200]))
-        self._maybe_compress_messages()
-        self.persist_session()
-        return self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
+        message_content = user_content(user_input, image_parts)
+        with self._turn_trace(
+            name="agent.chat",
+            input_payload={"user_message": message_content},
+            tags=["autocode", "chat", *(["multimodal"] if image_parts else [])],
+        ) as observation:
+            try:
+                self._append_message({"role": "user", "content": message_content})
+                self.hooks.emit("user_message", self._event_payload(content_preview=user_input[:200]))
+                self._maybe_compress_messages()
+                self.persist_session()
+                response = self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
+            except Exception as exc:
+                self._record_turn_error(observation, exc)
+                raise
+            self._finalize_turn_trace(observation, response)
+            return response
 
     def approve_pending(
         self,
@@ -322,41 +433,59 @@ class Agent:
         if self.task_state is None or self.task_state.pending_approval is None:
             return "No pending approval."
 
-        pending = self.task_state.pending_approval
-        remaining_tool_calls = self._deserialize_tool_calls(pending.remaining_tool_calls)
-        self.task_state.clear_pending()
-        if enable_auto_approve and approved:
-            self.task_state.set_auto_approve(True)
+        with self._turn_trace(
+            name="agent.approve_pending",
+            input_payload={
+                "approved": approved,
+                "enable_auto_approve": enable_auto_approve,
+                "pending_tool": self.task_state.pending_approval.tool_name,
+            },
+            tags=["autocode", "approval"],
+        ) as observation:
+            try:
+                pending = self.task_state.pending_approval
+                remaining_tool_calls = self._deserialize_tool_calls(pending.remaining_tool_calls)
+                self.task_state.clear_pending()
+                if enable_auto_approve and approved:
+                    self.task_state.set_auto_approve(True)
 
-        tool_call = ToolCall(
-            id=pending.tool_call_id,
-            name=pending.tool_name,
-            arguments=pending.arguments,
-        )
+                tool_call = ToolCall(
+                    id=pending.tool_call_id,
+                    name=pending.tool_name,
+                    arguments=pending.arguments,
+                )
 
-        if approved:
-            result = self._execute_tool_call(
-                tool_call,
-                on_tool=on_tool,
-                decision=PolicyDecision("confirm", pending.reason, requires_manual=pending.requires_manual),
-            )
-        else:
-            result = self.runtime.blocked_result(tool_call.name, PolicyDecision("deny", "approval denied by user"))
-        self.task_state.note_tool_result(tool_call.name, result)
-        self.hooks.emit("approval_resolved", self._event_payload(tool_name=tool_call.name, approved=approved))
+                if approved:
+                    result = self._execute_tool_call(
+                        tool_call,
+                        on_tool=on_tool,
+                        decision=PolicyDecision("confirm", pending.reason, requires_manual=pending.requires_manual),
+                    )
+                else:
+                    result = self.runtime.blocked_result(tool_call.name, PolicyDecision("deny", "approval denied by user"))
+                result_text = result.text if isinstance(result, ToolResult) else result
+                self.task_state.note_tool_result(tool_call.name, result_text)
+                self.hooks.emit("approval_resolved", self._event_payload(tool_name=tool_call.name, approved=approved))
 
-        self._append_message({"role": "tool", "tool_call_id": tool_call.id, "content": result})
-        self._maybe_compress_messages()
-        self.persist_session()
+                self._append_tool_result(tool_call, result)
+                self._maybe_compress_messages()
+                self.persist_session()
 
-        if remaining_tool_calls:
-            wait = self._handle_tool_calls(remaining_tool_calls, on_tool=on_tool, approval_handler=approval_handler)
-            self._maybe_compress_messages()
-            self.persist_session()
-            if wait is not None:
-                return wait
-
-        return self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
+                if remaining_tool_calls:
+                    wait = self._handle_tool_calls(remaining_tool_calls, on_tool=on_tool, approval_handler=approval_handler)
+                    self._maybe_compress_messages()
+                    self.persist_session()
+                    if wait is not None:
+                        response = wait
+                    else:
+                        response = self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
+                else:
+                    response = self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
+            except Exception as exc:
+                self._record_turn_error(observation, exc)
+                raise
+            self._finalize_turn_trace(observation, response)
+            return response
 
     def restore_session(self, session_state: SessionState, messages: list[dict], model: str | None = None):
         self.session_state = session_state
@@ -369,6 +498,7 @@ class Agent:
             self._ensure_task()
 
         for _ in range(self.max_rounds):
+            self._flush_deferred_model_content()
             full_messages = self._request_messages()
             tool_schemas = self._tool_schemas()
             resp = self.runtime.call_llm(
@@ -453,7 +583,7 @@ class Agent:
             except KeyboardInterrupt:
                 results = [self._interrupted_tool_result(tool_call) for tool_call in tool_calls]
             for tool_call, result in zip(tool_calls, results):
-                self._append_message({"role": "tool", "tool_call_id": tool_call.id, "content": result})
+                self._append_tool_result(tool_call, result)
             return None
 
         for index, (tool_call, decision) in enumerate(zip(tool_calls, decisions)):
@@ -504,12 +634,18 @@ class Agent:
                     self._event_payload(tool_name=tool_call.name, approved=approved),
                 )
 
-            self.task_state.note_tool_result(tool_call.name, result)
-            self._append_message({"role": "tool", "tool_call_id": tool_call.id, "content": result})
+            result_text = result.text if isinstance(result, ToolResult) else result
+            self.task_state.note_tool_result(tool_call.name, result_text)
+            self._append_tool_result(tool_call, result)
 
         return None
 
-    def _execute_tool_call(self, tool_call: ToolCall, on_tool=None, decision: PolicyDecision | None = None) -> str:
+    def _execute_tool_call(
+        self,
+        tool_call: ToolCall,
+        on_tool=None,
+        decision: PolicyDecision | None = None,
+    ) -> str | ToolResult:
         self._sync_mcp_tools()
         try:
             return self.runtime.execute_tool_call(
@@ -566,11 +702,12 @@ class Agent:
             return "已完成\n- 已达到本轮最大工具调用次数。\n\n当前卡点\n- 运行时在收尾总结阶段失败。\n\n建议下一步\n- 如需继续，请回复“继续”。"
 
     def reset(self):
-        self.close()
+        self.close(shutdown_observability=False)
         self.messages.clear()
+        self._deferred_model_content.clear()
         self.session_state = None
 
-    def close(self):
+    def close(self, *, shutdown_observability: bool = True):
         try:
             self.processes.cleanup_all(include_persistent=True)
         except Exception:
@@ -586,3 +723,8 @@ class Agent:
                     tool.close()
                 except Exception:
                     continue
+            if shutdown_observability:
+                self.memory.close()
+                tracer = getattr(self.llm, "tracer", None)
+                if tracer is not None:
+                    tracer.shutdown()

@@ -12,8 +12,11 @@ single unified interface. Set AUTOCODE_PROVIDER=litellm.
 import json
 import time
 from dataclasses import dataclass, field
+from datetime import datetime, timezone
 
 from openai import OpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError
+
+from .observability import LangfuseTracer
 
 
 @dataclass
@@ -136,23 +139,37 @@ class LLM:
         model: str,
         api_key: str,
         base_url: str | None = None,
+        langfuse_public_key: str = "",
+        langfuse_secret_key: str = "",
+        langfuse_base_url: str | None = None,
         **kwargs,
     ):
         self.model = model
         self.api_key = api_key
         self.base_url = base_url
+        self.langfuse_public_key = langfuse_public_key
+        self.langfuse_secret_key = langfuse_secret_key
+        self.langfuse_base_url = langfuse_base_url
         self.client = OpenAI(api_key=api_key, base_url=base_url)
         self.extra = kwargs  # temperature, max_tokens, etc.
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.total_cache_read_tokens = 0
         self.total_cache_miss_tokens = 0
+        self.tracer = LangfuseTracer(
+            public_key=langfuse_public_key,
+            secret_key=langfuse_secret_key,
+            base_url=langfuse_base_url,
+        )
 
     def clone(self) -> "LLM":
         return type(self)(
             model=self.model,
             api_key=self.api_key,
             base_url=self.base_url,
+            langfuse_public_key=self.langfuse_public_key,
+            langfuse_secret_key=self.langfuse_secret_key,
+            langfuse_base_url=self.langfuse_base_url,
             **self.extra,
         )
 
@@ -184,80 +201,125 @@ class LLM:
         if tools:
             params["tools"] = tools
 
-        # stream_options is an OpenAI extension; not all providers support it
-        try:
-            params["stream_options"] = {"include_usage": True}
-            stream = self._call_with_retry(params)
-        except Exception:
-            params.pop("stream_options", None)
-            stream = self._call_with_retry(params)
+        with self.tracer.start_generation(
+            name="llm.chat",
+            input_payload={"messages": messages, "tools": tools or []},
+            model=self.model,
+            model_parameters=self.extra,
+            metadata={
+                "backend": type(self).__name__,
+                "tool_schema_count": len(tools or []),
+            },
+        ) as generation:
+            try:
+                # stream_options is an OpenAI extension; not all providers support it
+                try:
+                    params["stream_options"] = {"include_usage": True}
+                    stream = self._call_with_retry(params)
+                except Exception:
+                    params.pop("stream_options", None)
+                    stream = self._call_with_retry(params)
 
-        content_parts: list[str] = []
-        tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
-        prompt_tok = 0
-        completion_tok = 0
-        cache_read_tok = 0
-        cache_miss_tok = 0
+                content_parts: list[str] = []
+                tc_map: dict[int, dict] = {}  # index -> {id, name, arguments_str}
+                prompt_tok = 0
+                completion_tok = 0
+                cache_read_tok = 0
+                cache_miss_tok = 0
+                completion_started = False
 
-        for chunk in stream:
-            # usage info comes in the final chunk
-            if chunk.usage:
-                prompt_tok = _usage_int(chunk.usage, "prompt_tokens")
-                completion_tok = _usage_int(chunk.usage, "completion_tokens")
-                cache_read_tok, cache_miss_tok = _extract_cache_usage(chunk.usage)
+                for chunk in stream:
+                    # usage info comes in the final chunk
+                    if chunk.usage:
+                        prompt_tok = _usage_int(chunk.usage, "prompt_tokens")
+                        completion_tok = _usage_int(chunk.usage, "completion_tokens")
+                        cache_read_tok, cache_miss_tok = _extract_cache_usage(chunk.usage)
 
-            if not chunk.choices:
-                continue
-            delta = chunk.choices[0].delta
+                    if not chunk.choices:
+                        continue
+                    delta = chunk.choices[0].delta
+                    if not completion_started and (delta.content or delta.tool_calls):
+                        generation.update(completion_start_time=datetime.now(timezone.utc))
+                        completion_started = True
 
-            # accumulate text
-            if delta.content:
-                content_parts.append(delta.content)
-                if on_token:
-                    on_token(delta.content)
+                    # accumulate text
+                    if delta.content:
+                        content_parts.append(delta.content)
+                        if on_token:
+                            on_token(delta.content)
 
-            # accumulate tool calls across chunks
-            if delta.tool_calls:
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in tc_map:
-                        tc_map[idx] = {"id": "", "name": "", "args": ""}
-                    if tc_delta.id:
-                        tc_map[idx]["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            tc_map[idx]["name"] = tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            tc_map[idx]["args"] += tc_delta.function.arguments
+                    # accumulate tool calls across chunks
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tc_map:
+                                tc_map[idx] = {"id": "", "name": "", "args": ""}
+                            if tc_delta.id:
+                                tc_map[idx]["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    tc_map[idx]["name"] = tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    tc_map[idx]["args"] += tc_delta.function.arguments
 
-        # parse accumulated tool calls
-        parsed: list[ToolCall] = []
-        for idx in sorted(tc_map):
-            raw = tc_map[idx]
-            args, parse_error = _parse_tool_arguments(raw.get("args", ""))
-            parsed.append(
-                ToolCall(
-                    id=raw["id"],
-                    name=raw["name"],
-                    arguments=args,
-                    raw_arguments=raw.get("args", ""),
-                    parse_error=parse_error,
+                # parse accumulated tool calls
+                parsed: list[ToolCall] = []
+                for idx in sorted(tc_map):
+                    raw = tc_map[idx]
+                    args, parse_error = _parse_tool_arguments(raw.get("args", ""))
+                    parsed.append(
+                        ToolCall(
+                            id=raw["id"],
+                            name=raw["name"],
+                            arguments=args,
+                            raw_arguments=raw.get("args", ""),
+                            parse_error=parse_error,
+                        )
+                    )
+
+                self.total_prompt_tokens += prompt_tok
+                self.total_completion_tokens += completion_tok
+                self.total_cache_read_tokens += cache_read_tok
+                self.total_cache_miss_tokens += cache_miss_tok
+
+                response = LLMResponse(
+                    content="".join(content_parts),
+                    tool_calls=parsed,
+                    prompt_tokens=prompt_tok,
+                    completion_tokens=completion_tok,
+                    cache_read_tokens=cache_read_tok,
+                    cache_miss_tokens=cache_miss_tok,
                 )
+            except Exception as exc:
+                generation.update(
+                    output={"error": str(exc)},
+                    metadata={
+                        "backend": type(self).__name__,
+                        "error_type": type(exc).__name__,
+                    },
+                    status_message=str(exc),
+                )
+                raise
+
+            generation.update(
+                output={
+                    "content": response.content,
+                    "tool_calls": [_tool_call_payload(tool_call) for tool_call in response.tool_calls],
+                },
+                model=self.model,
+                model_parameters=self.extra or None,
+                usage_details={
+                    "prompt_tokens": response.prompt_tokens,
+                    "completion_tokens": response.completion_tokens,
+                    "cache_read_tokens": response.cache_read_tokens,
+                    "cache_miss_tokens": response.cache_miss_tokens,
+                },
+                metadata={
+                    "backend": type(self).__name__,
+                    "tool_call_count": len(response.tool_calls),
+                },
             )
-
-        self.total_prompt_tokens += prompt_tok
-        self.total_completion_tokens += completion_tok
-        self.total_cache_read_tokens += cache_read_tok
-        self.total_cache_miss_tokens += cache_miss_tok
-
-        return LLMResponse(
-            content="".join(content_parts),
-            tool_calls=parsed,
-            prompt_tokens=prompt_tok,
-            completion_tokens=completion_tok,
-            cache_read_tokens=cache_read_tok,
-            cache_miss_tokens=cache_miss_tok,
-        )
+            return response
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):
         """Retry on transient errors with exponential backoff."""
@@ -295,23 +357,37 @@ class LiteLLM(LLM):
         model: str,
         api_key: str | None = None,
         base_url: str | None = None,
+        langfuse_public_key: str = "",
+        langfuse_secret_key: str = "",
+        langfuse_base_url: str | None = None,
         **kwargs,
     ):
         # skip LLM.__init__ which creates an OpenAI client
         self.model = model
         self.api_key = api_key
         self.base_url = base_url
+        self.langfuse_public_key = langfuse_public_key
+        self.langfuse_secret_key = langfuse_secret_key
+        self.langfuse_base_url = langfuse_base_url
         self.extra = kwargs
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self.total_cache_read_tokens = 0
         self.total_cache_miss_tokens = 0
+        self.tracer = LangfuseTracer(
+            public_key=langfuse_public_key,
+            secret_key=langfuse_secret_key,
+            base_url=langfuse_base_url,
+        )
 
     def clone(self) -> "LiteLLM":
         return type(self)(
             model=self.model,
             api_key=self.api_key,
             base_url=self.base_url,
+            langfuse_public_key=self.langfuse_public_key,
+            langfuse_secret_key=self.langfuse_secret_key,
+            langfuse_base_url=self.langfuse_base_url,
             **self.extra,
         )
 
@@ -331,71 +407,118 @@ class LiteLLM(LLM):
         if tools:
             params["tools"] = tools
 
-        stream = self._call_with_retry(params)
+        with self.tracer.start_generation(
+            name="llm.chat",
+            input_payload={"messages": messages, "tools": tools or []},
+            model=self.model,
+            model_parameters=self.extra,
+            metadata={
+                "backend": type(self).__name__,
+                "tool_schema_count": len(tools or []),
+            },
+        ) as generation:
+            try:
+                stream = self._call_with_retry(params)
 
-        content_parts: list[str] = []
-        tc_map: dict[int, dict] = {}
-        prompt_tok = 0
-        completion_tok = 0
-        cache_read_tok = 0
-        cache_miss_tok = 0
+                content_parts: list[str] = []
+                tc_map: dict[int, dict] = {}
+                prompt_tok = 0
+                completion_tok = 0
+                cache_read_tok = 0
+                cache_miss_tok = 0
+                completion_started = False
 
-        for chunk in stream:
-            usage = getattr(chunk, "usage", None)
-            if usage:
-                prompt_tok = _usage_int(usage, "prompt_tokens")
-                completion_tok = _usage_int(usage, "completion_tokens")
-                cache_read_tok, cache_miss_tok = _extract_cache_usage(usage)
+                for chunk in stream:
+                    usage = getattr(chunk, "usage", None)
+                    if usage:
+                        prompt_tok = _usage_int(usage, "prompt_tokens")
+                        completion_tok = _usage_int(usage, "completion_tokens")
+                        cache_read_tok, cache_miss_tok = _extract_cache_usage(usage)
 
-            if not getattr(chunk, "choices", None):
-                continue
-            delta = chunk.choices[0].delta
+                    if not getattr(chunk, "choices", None):
+                        continue
+                    delta = chunk.choices[0].delta
+                    if not completion_started and (
+                        getattr(delta, "content", None) or getattr(delta, "tool_calls", None)
+                    ):
+                        generation.update(completion_start_time=datetime.now(timezone.utc))
+                        completion_started = True
 
-            if getattr(delta, "content", None):
-                content_parts.append(delta.content)
-                if on_token:
-                    on_token(delta.content)
+                    if getattr(delta, "content", None):
+                        content_parts.append(delta.content)
+                        if on_token:
+                            on_token(delta.content)
 
-            if getattr(delta, "tool_calls", None):
-                for tc_delta in delta.tool_calls:
-                    idx = tc_delta.index
-                    if idx not in tc_map:
-                        tc_map[idx] = {"id": "", "name": "", "args": ""}
-                    if tc_delta.id:
-                        tc_map[idx]["id"] = tc_delta.id
-                    if tc_delta.function:
-                        if tc_delta.function.name:
-                            tc_map[idx]["name"] = tc_delta.function.name
-                        if tc_delta.function.arguments:
-                            tc_map[idx]["args"] += tc_delta.function.arguments
+                    if getattr(delta, "tool_calls", None):
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in tc_map:
+                                tc_map[idx] = {"id": "", "name": "", "args": ""}
+                            if tc_delta.id:
+                                tc_map[idx]["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    tc_map[idx]["name"] = tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    tc_map[idx]["args"] += tc_delta.function.arguments
 
-        parsed: list[ToolCall] = []
-        for idx in sorted(tc_map):
-            raw = tc_map[idx]
-            args, parse_error = _parse_tool_arguments(raw.get("args", ""))
-            parsed.append(
-                ToolCall(
-                    id=raw["id"],
-                    name=raw["name"],
-                    arguments=args,
-                    raw_arguments=raw.get("args", ""),
-                    parse_error=parse_error,
+                parsed: list[ToolCall] = []
+                for idx in sorted(tc_map):
+                    raw = tc_map[idx]
+                    args, parse_error = _parse_tool_arguments(raw.get("args", ""))
+                    parsed.append(
+                        ToolCall(
+                            id=raw["id"],
+                            name=raw["name"],
+                            arguments=args,
+                            raw_arguments=raw.get("args", ""),
+                            parse_error=parse_error,
+                        )
+                    )
+
+                self.total_prompt_tokens += prompt_tok
+                self.total_completion_tokens += completion_tok
+                self.total_cache_read_tokens += cache_read_tok
+                self.total_cache_miss_tokens += cache_miss_tok
+
+                response = LLMResponse(
+                    content="".join(content_parts),
+                    tool_calls=parsed,
+                    prompt_tokens=prompt_tok,
+                    completion_tokens=completion_tok,
+                    cache_read_tokens=cache_read_tok,
+                    cache_miss_tokens=cache_miss_tok,
                 )
+            except Exception as exc:
+                generation.update(
+                    output={"error": str(exc)},
+                    metadata={
+                        "backend": type(self).__name__,
+                        "error_type": type(exc).__name__,
+                    },
+                    status_message=str(exc),
+                )
+                raise
+
+            generation.update(
+                output={
+                    "content": response.content,
+                    "tool_calls": [_tool_call_payload(tool_call) for tool_call in response.tool_calls],
+                },
+                model=self.model,
+                model_parameters=self.extra or None,
+                usage_details={
+                    "prompt_tokens": response.prompt_tokens,
+                    "completion_tokens": response.completion_tokens,
+                    "cache_read_tokens": response.cache_read_tokens,
+                    "cache_miss_tokens": response.cache_miss_tokens,
+                },
+                metadata={
+                    "backend": type(self).__name__,
+                    "tool_call_count": len(response.tool_calls),
+                },
             )
-
-        self.total_prompt_tokens += prompt_tok
-        self.total_completion_tokens += completion_tok
-        self.total_cache_read_tokens += cache_read_tok
-        self.total_cache_miss_tokens += cache_miss_tok
-
-        return LLMResponse(
-            content="".join(content_parts),
-            tool_calls=parsed,
-            prompt_tokens=prompt_tok,
-            completion_tokens=completion_tok,
-            cache_read_tokens=cache_read_tok,
-            cache_miss_tokens=cache_miss_tok,
-        )
+            return response
 
     def _call_with_retry(self, params: dict, max_retries: int = 3):
         """Retry on transient errors with exponential backoff via litellm."""
@@ -421,4 +544,17 @@ class LiteLLM(LLM):
                     time.sleep(2 ** attempt)
                 else:
                     raise
+
+
+def _tool_call_payload(tool_call: ToolCall) -> dict:
+    payload = {
+        "id": tool_call.id,
+        "name": tool_call.name,
+        "arguments": dict(tool_call.arguments),
+    }
+    if tool_call.raw_arguments is not None:
+        payload["raw_arguments"] = tool_call.raw_arguments
+    if tool_call.parse_error is not None:
+        payload["parse_error"] = tool_call.parse_error
+    return payload
 

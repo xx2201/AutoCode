@@ -364,6 +364,22 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   box-shadow: 0 5px 17px rgba(66, 69, 100, 0.04);
 }
 .message-row.user .message-bubble { border-color: #e1e1fb; background: #f4f4ff; }
+.message-attachments { display: flex; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
+.message-attachments span {
+  display: inline-flex;
+  max-width: 260px;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 9px;
+  overflow: hidden;
+  border: 1px solid #d9daf5;
+  border-radius: 9px;
+  color: #666bc2;
+  background: rgba(255, 255, 255, 0.72);
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 .rich-text p { margin: 0 0 10px; font-size: 13px; line-height: 1.72; white-space: normal; overflow-wrap: anywhere; }
 .rich-text p:last-child { margin-bottom: 0; }
 .rich-text pre, .message-bubble > pre {
@@ -381,7 +397,18 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .thinking i:nth-child(2) { animation-delay: 0.15s; }
 .thinking i:nth-child(3) { animation-delay: 0.3s; }
 .thinking span { margin-left: 5px; color: #9297aa; font-size: 10px; }
+.streaming-response { position: relative; min-width: 48px; }
+.stream-caret {
+  display: inline-block;
+  width: 2px;
+  height: 14px;
+  margin-left: 3px;
+  vertical-align: -2px;
+  background: var(--primary);
+  animation: blink 0.8s steps(2, start) infinite;
+}
 @keyframes pulse { 0%, 70%, 100% { opacity: 0.25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
+@keyframes blink { 50% { opacity: 0; } }
 
 .select-project-empty { min-height: 100%; display: grid; place-content: center; justify-items: center; color: #9aa0b3; text-align: center; }
 .select-project-empty h1 { margin: 18px 0 8px; color: var(--text); font-size: 28px; }
@@ -410,12 +437,61 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .composer-area { padding: 0 24px calc(13px + env(safe-area-inset-bottom)); background: white; }
 .composer { width: min(900px, 100%); margin: 0 auto; padding: 11px 12px 8px 15px; border: 1px solid #dfe1ec; border-radius: 17px; background: white; box-shadow: 0 9px 30px rgba(53, 57, 91, 0.1); }
 .composer:focus-within { border-color: #bfc1ef; box-shadow: 0 9px 30px rgba(53, 57, 91, 0.12), 0 0 0 4px rgba(91, 92, 226, 0.06); }
+.attachment-strip {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 9px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.attachment-chip {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(60px, 140px) 22px;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 6px;
+  border: 1px solid #e2e3ef;
+  border-radius: 11px;
+  color: #747a90;
+  background: #f8f9fd;
+}
+.attachment-chip img {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  object-fit: cover;
+}
+.attachment-chip > svg { margin: 7px; color: var(--primary); }
+.attachment-chip b {
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-chip button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  color: #9ba0b2;
+  background: transparent;
+  cursor: pointer;
+}
+.attachment-chip button:hover { color: var(--danger); background: #fff0f3; }
 .composer textarea { width: 100%; min-height: 39px; max-height: 130px; resize: none; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 13px; line-height: 1.55; }
 .composer textarea::placeholder { color: #a8adbd; }
 .composer-bottom { display: flex; align-items: center; justify-content: space-between; }
 .composer-bottom span { display: inline-flex; align-items: center; gap: 6px; color: #9ba0b2; font-size: 9px; }
 .composer-bottom button { display: grid; width: 36px; height: 36px; place-items: center; border: 0; border-radius: 11px; color: white; background: var(--primary); cursor: pointer; }
 .composer-bottom button:disabled { color: #b3b7c7; background: #eceef3; cursor: not-allowed; }
+.composer-actions { display: flex; align-items: center; gap: 5px; }
+.composer-bottom .attach-button { color: #777d93; background: transparent; }
+.composer-bottom .attach-button:hover:not(:disabled) { color: var(--primary); background: var(--primary-soft); }
 .composer-area > p { margin: 7px 0 0; color: #adb1bf; text-align: center; font-size: 8px; }
 
 /* Modals */

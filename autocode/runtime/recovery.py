@@ -3,14 +3,24 @@
 from __future__ import annotations
 
 from ..state import TaskState
+from ..tools.base import ToolResult
 
 
 class RecoveryManager:
-    def note_tool_result(self, task_state: TaskState, tool_name: str, result: str) -> str:
-        if self._is_failure(result):
-            task_state.note_failure(f"{tool_name}: {result.splitlines()[0][:200]}")
-            hint = self._hint_for_result(result)
-            return result + f"\n\n[recovery]\n{hint}"
+    def note_tool_result(
+        self,
+        task_state: TaskState,
+        tool_name: str,
+        result: str | ToolResult,
+    ) -> str | ToolResult:
+        text = result.text if isinstance(result, ToolResult) else result
+        if self._is_failure(text):
+            task_state.note_failure(f"{tool_name}: {text.splitlines()[0][:200]}")
+            hint = self._hint_for_result(text)
+            recovered = text + f"\n\n[recovery]\n{hint}"
+            if isinstance(result, ToolResult):
+                return ToolResult(text=recovered, model_content=result.model_content)
+            return recovered
 
         task_state.clear_failures()
         return result

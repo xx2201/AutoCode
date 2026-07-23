@@ -2,6 +2,7 @@
 
 from .bash import BashTool
 from .read import ReadFileTool
+from .image import ReadImageTool
 from .write import WriteFileTool
 from .edit import EditFileTool
 from .delete import DeletePathTool
@@ -14,6 +15,7 @@ from .process import StartProcessTool, ReadProcessOutputTool, WaitForProcessOutp
 ALL_TOOLS = [
     BashTool(),
     ReadFileTool(),
+    ReadImageTool(),
     WriteFileTool(),
     EditFileTool(),
     DeletePathTool(),
