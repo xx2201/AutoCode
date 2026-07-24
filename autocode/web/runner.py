@@ -10,6 +10,7 @@ import ssl
 import sys
 import threading
 import time
+from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from typing import Any
@@ -20,8 +21,11 @@ from dotenv import dotenv_values
 from .. import __version__
 from ..config import Config
 from ..diagnostics import diagnostic_log_dir, get_diagnostic_logger, log_event
+from ..mcp import get_shared_mcp_manager
 from ..remote.manager import RemoteManager
+from ..tools.factory import build_agent_tools
 from ..workspaces import WorkspaceRegistry
+from .files import WebFileStore, WebSendTool
 
 
 @dataclass(frozen=True)
@@ -104,6 +108,8 @@ class LocalRunner:
         self.client = client
         self._stopping = False
         self._logger = get_diagnostic_logger("web-runner")
+        self._file_context = threading.local()
+        self._web_files = WebFileStore()
 
     def execute(self, action: str, payload: dict[str, Any], event_handler=None) -> Any:
         if action == "bootstrap":
@@ -114,6 +120,7 @@ class LocalRunner:
                 "capabilities": {
                     "streaming": True,
                     "file_upload": True,
+                    "file_download": True,
                     "image_input": True,
                     "workspace_image_tool": True,
                 },
@@ -169,23 +176,33 @@ class LocalRunner:
                 submit_kwargs.update(hook_handler=on_hook, on_token=on_token)
             if payload.get("attachments"):
                 submit_kwargs["attachments"] = list(payload["attachments"])
-            result = manager.submit(
-                payload["client_id"],
-                payload.get("prompt", ""),
-                **submit_kwargs,
-            )
+            with self._capture_output_files(str(payload["workspace_id"])) as output_files:
+                result = manager.submit(
+                    payload["client_id"],
+                    payload.get("prompt", ""),
+                    **submit_kwargs,
+                )
             if event_handler is not None:
                 if first_token_seen:
                     event_handler({"type": "stage", "stage": "last_token"})
                 event_handler({"type": "stage", "stage": "persisted"})
-            return asdict(result)
+            response = asdict(result)
+            response["files"] = output_files
+            return response
         if action == "approval":
-            return asdict(
-                manager.resolve_approval(
+            with self._capture_output_files(str(payload["workspace_id"])) as output_files:
+                result = manager.resolve_approval(
                     payload["client_id"],
                     payload["approved"],
                     payload["approve_all"],
                 )
+            response = asdict(result)
+            response["files"] = output_files
+            return response
+        if action == "download":
+            return self._web_files.read(
+                str(payload["workspace_id"]),
+                str(payload["file_id"]),
             )
         if action == "sessions":
             return {"sessions": manager.list_resume_candidates(payload.get("limit", 50))}
@@ -266,9 +283,45 @@ class LocalRunner:
         return manager
 
     def _build_manager(self, workspace: Path) -> RemoteManager:
-        return RemoteManager(
-            replace(self._base_config, workspace_root=str(workspace))
+        config = replace(self._base_config, workspace_root=str(workspace))
+        mcp_manager = get_shared_mcp_manager(
+            config.workspace_root,
+            config.mcp_config_path,
         )
+        return RemoteManager(
+            config,
+            tool_factory=lambda: build_agent_tools(
+                config,
+                extra_tools=[
+                    WebSendTool(
+                        lambda file_path: self._offer_web_file(workspace, file_path)
+                    )
+                ],
+                mcp_manager=mcp_manager,
+            ),
+        )
+
+    @contextmanager
+    def _capture_output_files(self, workspace_id: str):
+        previous_workspace_id = getattr(self._file_context, "workspace_id", None)
+        previous_files = getattr(self._file_context, "files", None)
+        files: list[dict] = []
+        self._file_context.workspace_id = workspace_id
+        self._file_context.files = files
+        try:
+            yield files
+        finally:
+            self._file_context.workspace_id = previous_workspace_id
+            self._file_context.files = previous_files
+
+    def _offer_web_file(self, workspace: Path, file_path: str) -> str:
+        workspace_id = getattr(self._file_context, "workspace_id", None)
+        files = getattr(self._file_context, "files", None)
+        if not workspace_id or files is None:
+            raise RuntimeError("web_send is only available during an active Web turn.")
+        metadata = self._web_files.offer(workspace_id, workspace, file_path)
+        files.append(metadata)
+        return f"Attached {metadata['name']} to the current Web response."
 
     def _run_job(self, job: dict[str, Any]) -> None:
         job_id = str(job["job_id"])

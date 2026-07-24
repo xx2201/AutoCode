@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 import hmac
 import json
 import os
 import re
 from pathlib import Path
 from typing import Annotated, Any
+from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
 from fastapi.concurrency import run_in_threadpool
@@ -16,6 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .. import __version__
+from .files import MAX_WEB_FILE_BYTES
 from .relay import (
     RelayBroker,
     RelayTimeoutError,
@@ -68,6 +72,10 @@ class ApprovalRequest(ClientRequest):
 
 class ResumeRequest(ClientRequest):
     session_id: str = Field(min_length=1, max_length=128)
+
+
+class DownloadRequest(ClientRequest):
+    file_id: str = Field(min_length=20, max_length=80)
 
 
 class RunnerResultRequest(BaseModel):
@@ -261,6 +269,44 @@ def create_app(
                 "workspace_id": payload.workspace_id,
                 "approved": approved,
                 "approve_all": approve_all,
+            },
+        )
+
+    @app.post("/api/download", dependencies=browser_auth)
+    async def download(payload: DownloadRequest):
+        result = await dispatch(
+            "download",
+            {
+                "client_id": _validate_client_id(payload.client_id),
+                "workspace_id": payload.workspace_id,
+                "file_id": payload.file_id,
+            },
+            timeout=control_request_timeout,
+        )
+        try:
+            content = base64.b64decode(result["data_base64"], validate=True)
+        except (KeyError, TypeError, ValueError, binascii.Error) as exc:
+            raise HTTPException(
+                status_code=502,
+                detail="Runner returned invalid file content.",
+            ) from exc
+        if len(content) > MAX_WEB_FILE_BYTES:
+            raise HTTPException(status_code=413, detail="File exceeds the 25 MB limit.")
+
+        name = Path(str(result.get("name", "download"))).name
+        media_type = str(result.get("media_type", "application/octet-stream"))
+        valid_media_type = re.fullmatch(
+            r"[A-Za-z0-9][A-Za-z0-9.+-]*/[A-Za-z0-9][A-Za-z0-9.+-]*",
+            media_type,
+        )
+        if not valid_media_type:
+            media_type = "application/octet-stream"
+        return Response(
+            content=content,
+            media_type=media_type,
+            headers={
+                "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
+                "Content-Length": str(len(content)),
             },
         )
 

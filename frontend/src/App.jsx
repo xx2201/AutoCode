@@ -7,6 +7,8 @@ import {
   CircleStop,
   Clock3,
   Code2,
+  Download,
+  ExternalLink,
   FileCode2,
   Folder,
   FolderGit2,
@@ -45,6 +47,12 @@ function createClientId() {
     return `web_${window.crypto.randomUUID().replaceAll("-", "")}`;
   }
   return `web_${Date.now()}_${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function formatFileSize(size) {
+  if (size < 1024) return `${size} B`;
+  if (size < 1024 * 1024) return `${(size / 1024).toFixed(1)} KB`;
+  return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function clientIdFor(workspaceId) {
@@ -365,7 +373,7 @@ function LoginView({ onLogin, error, busy }) {
   );
 }
 
-function Message({ message }) {
+function Message({ message, onFileAction, downloadingFileId }) {
   const assistant = message.role === "assistant";
   const tool = message.role === "tool";
   return (
@@ -390,6 +398,51 @@ function Message({ message }) {
                   )}
                   {attachment.name}
                 </span>
+              ))}
+            </div>
+          )}
+          {message.files?.length > 0 && (
+            <div className="output-files">
+              {message.files.map((file) => (
+                <div className="output-file" key={file.file_id}>
+                  <span className="output-file-icon">
+                    {file.media_type.startsWith("image/") ? (
+                      <ImageIcon size={18} />
+                    ) : (
+                      <FileText size={18} />
+                    )}
+                  </span>
+                  <span className="output-file-copy">
+                    <strong title={file.name}>{file.name}</strong>
+                    <small>{formatFileSize(file.size)}</small>
+                  </span>
+                  <span className="output-file-actions">
+                    {file.can_preview && (
+                      <button
+                        type="button"
+                        title="在新页面查看"
+                        onClick={() => onFileAction(file, true)}
+                        disabled={downloadingFileId === file.file_id}
+                      >
+                        <ExternalLink size={15} />
+                        查看
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      title="下载到当前设备"
+                      onClick={() => onFileAction(file, false)}
+                      disabled={downloadingFileId === file.file_id}
+                    >
+                      {downloadingFileId === file.file_id ? (
+                        <RefreshCw className="spin" size={15} />
+                      ) : (
+                        <Download size={15} />
+                      )}
+                      下载
+                    </button>
+                  </span>
+                </div>
               ))}
             </div>
           )}
@@ -466,6 +519,7 @@ export default function App() {
   const [streamText, setStreamText] = useState("");
   const [runStage, setRunStage] = useState("");
   const [lastTimings, setLastTimings] = useState(null);
+  const [downloadingFileId, setDownloadingFileId] = useState("");
   const [toast, setToast] = useState("");
   const [panel, setPanel] = useState(null);
   const [panelContent, setPanelContent] = useState("");
@@ -673,12 +727,26 @@ export default function App() {
         },
       );
       if (!result) throw new Error("流式响应结束但没有最终结果。");
-      if (result.text) {
-        setMessages((items) => [...items, { role: "assistant", content: result.text }]);
+      if (result.text || result.files?.length) {
+        setMessages((items) => [
+          ...items,
+          {
+            role: "assistant",
+            content: result.text || "文件已准备好。",
+            files: result.files || [],
+          },
+        ]);
       }
       setPending(result.pending_tool ? result : null);
       setStatus(result.status || "completed");
-      await refreshSessions();
+      setStreamText("");
+      setRunStage("");
+      setBusy(false);
+      try {
+        await refreshSessions();
+      } catch (error) {
+        showToast(`会话列表刷新失败：${error.message}`);
+      }
     } catch (error) {
       setMessages((items) => [
         ...items,
@@ -693,6 +761,54 @@ export default function App() {
       pendingAttachments.forEach(
         (item) => item.preview && URL.revokeObjectURL(item.preview),
       );
+    }
+  }
+
+  async function handleOutputFile(file, openInBrowser) {
+    if (!selectedWorkspace || downloadingFileId) return;
+    const previewWindow = openInBrowser ? window.open("", "_blank") : null;
+    if (openInBrowser && !previewWindow) {
+      showToast("浏览器阻止了新页面，请允许弹窗后重试。");
+      return;
+    }
+    setDownloadingFileId(file.file_id);
+    try {
+      const response = await fetch("/api/download", {
+        method: "POST",
+        headers: {
+          Authorization: `Bearer ${token}`,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          client_id: clientId,
+          workspace_id: selectedWorkspace.workspace_id,
+          file_id: file.file_id,
+        }),
+      });
+      if (!response.ok) {
+        const data = await response.json().catch(() => ({}));
+        const error = new Error(data.detail || `文件获取失败 (${response.status})`);
+        error.status = response.status;
+        throw error;
+      }
+      const url = URL.createObjectURL(await response.blob());
+      if (previewWindow) {
+        previewWindow.location.href = url;
+      } else {
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = file.name;
+        document.body.appendChild(link);
+        link.click();
+        link.remove();
+      }
+      window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    } catch (error) {
+      previewWindow?.close();
+      showToast(error.message);
+      if (error.status === 401) logout("访问令牌已失效。");
+    } finally {
+      setDownloadingFileId("");
     }
   }
 
@@ -740,8 +856,15 @@ export default function App() {
           action,
         }),
       });
-      if (result.text) {
-        setMessages((items) => [...items, { role: "assistant", content: result.text }]);
+      if (result.text || result.files?.length) {
+        setMessages((items) => [
+          ...items,
+          {
+            role: "assistant",
+            content: result.text || "文件已准备好。",
+            files: result.files || [],
+          },
+        ]);
       }
       setPending(result.pending_tool ? result : null);
       setStatus(result.status || "completed");
@@ -961,7 +1084,12 @@ export default function App() {
             ) : (
               <div className="message-list">
                 {messages.map((message, index) => (
-                  <Message key={`${message.role}-${index}`} message={message} />
+                  <Message
+                    key={`${message.role}-${index}`}
+                    message={message}
+                    onFileAction={handleOutputFile}
+                    downloadingFileId={downloadingFileId}
+                  />
                 ))}
                 {busy && (
                   <article className="message-row assistant">

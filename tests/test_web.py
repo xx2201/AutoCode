@@ -144,6 +144,37 @@ def test_chat_is_relayed_to_runner(relay_client):
     }
 
 
+def test_authenticated_download_is_relayed_and_returns_file(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+    content = b"%PDF-download"
+
+    response, job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/download",
+            headers=_browser_headers(),
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "file_id": "opaque-file-id-that-is-long-enough",
+            },
+        ),
+        "download",
+        {
+            "name": "简历.pdf",
+            "media_type": "application/pdf",
+            "data_base64": base64.b64encode(content).decode("ascii"),
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.content == content
+    assert response.headers["content-type"] == "application/pdf"
+    assert "filename*=UTF-8''" in response.headers["content-disposition"]
+    assert job["payload"]["file_id"] == "opaque-file-id-that-is-long-enough"
+
+
 def test_streaming_chat_relays_tokens_stages_and_final_result(relay_client):
     client, _ = relay_client
     _connect_runner(client)

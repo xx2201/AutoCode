@@ -380,6 +380,61 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+.output-files {
+  display: grid;
+  gap: 9px;
+  min-width: min(520px, 72vw);
+  margin-top: 12px;
+}
+.output-file {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px;
+  border: 1px solid #e1e3f2;
+  border-radius: 13px;
+  background: linear-gradient(135deg, #fafaff, #f3f4ff);
+}
+.output-file-icon {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 10px;
+  color: #595bd8;
+  background: white;
+  box-shadow: 0 4px 12px rgba(68, 70, 150, 0.08);
+}
+.output-file-copy {
+  display: grid;
+  min-width: 0;
+  flex: 1;
+  gap: 3px;
+}
+.output-file-copy strong {
+  overflow: hidden;
+  color: #292c3b;
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.output-file-copy small { color: #9095a8; font-size: 9px; }
+.output-file-actions { display: flex; gap: 6px; }
+.output-file-actions button {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 7px 9px;
+  border: 1px solid #d8daf0;
+  border-radius: 9px;
+  color: #5559c7;
+  background: white;
+  font-size: 9px;
+  font-weight: 750;
+}
+.output-file-actions button:hover { border-color: #b8baf0; background: #f9f9ff; }
+.output-file-actions button:disabled { cursor: wait; opacity: 0.6; }
 .rich-text p { margin: 0 0 10px; font-size: 13px; line-height: 1.72; white-space: normal; overflow-wrap: anywhere; }
 .rich-text p:last-child { margin-bottom: 0; }
 .rich-text pre, .message-bubble > pre {
@@ -633,6 +688,10 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   .message-row { grid-template-columns: 31px minmax(0, 1fr); gap: 9px; }
   .message-avatar { width: 30px; height: 30px; border-radius: 9px; }
   .message-bubble { padding: 12px 14px; }
+  .output-files { min-width: min(100%, 320px); }
+  .output-file { align-items: flex-start; flex-wrap: wrap; }
+  .output-file-copy { min-width: 150px; }
+  .output-file-actions { width: 100%; padding-left: 46px; }
   .approval-banner { margin: 0 11px 8px; padding: 12px; }
   .approval-icon { display: none; }
   .approval-banner { grid-template-columns: 1fr; }

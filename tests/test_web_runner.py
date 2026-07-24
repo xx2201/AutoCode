@@ -1,3 +1,4 @@
+import base64
 from dataclasses import replace
 
 import pytest
@@ -91,6 +92,7 @@ def test_runner_bootstrap_lists_only_cli_registered_workspaces(tmp_path):
     result = runner.execute("bootstrap", {})
 
     assert result["model"] == "fake-model"
+    assert result["capabilities"]["file_download"] is True
     assert [item["workspace_id"] for item in result["workspaces"]] == [
         workspace.workspace_id
     ]
@@ -112,6 +114,7 @@ def test_runner_executes_chat_and_approval_in_selected_workspace(tmp_path):
     manager = managers[str((tmp_path / "project-a").resolve())]
 
     assert chat["status"] == "completed"
+    assert chat["files"] == []
     assert approval["text"] == "approved"
     assert ("chat", "web_12345678", "inspect project") in manager.calls
     assert ("approval", "web_12345678", True, True) in manager.calls
@@ -164,6 +167,41 @@ def test_runner_rejects_unknown_action(tmp_path):
 
     with pytest.raises(ValueError, match="Unknown relay action"):
         runner.execute("unknown", {"workspace_id": workspace.workspace_id})
+
+
+def test_runner_downloads_only_an_offered_workspace_file(tmp_path):
+    runner, workspace, _ = _runner(tmp_path)
+    artifact = tmp_path / "project-a" / "report.pdf"
+    artifact.write_bytes(b"%PDF-runner")
+    offered = runner._web_files.offer(
+        workspace.workspace_id,
+        artifact.parent,
+        str(artifact),
+    )
+
+    result = runner.execute(
+        "download",
+        {
+            "workspace_id": workspace.workspace_id,
+            "file_id": offered["file_id"],
+        },
+    )
+
+    assert result["name"] == "report.pdf"
+    assert base64.b64decode(result["data_base64"]) == b"%PDF-runner"
+
+
+def test_runner_collects_files_offered_during_active_web_turn(tmp_path):
+    runner, workspace, _ = _runner(tmp_path)
+    artifact = tmp_path / "project-a" / "result.txt"
+    artifact.write_text("complete", encoding="utf-8")
+
+    with runner._capture_output_files(workspace.workspace_id) as files:
+        message = runner._offer_web_file(artifact.parent, "result.txt")
+
+    assert message == "Attached result.txt to the current Web response."
+    assert files[0]["name"] == "result.txt"
+    assert files[0]["can_preview"] is False
 
 
 def test_runner_drops_result_when_relay_job_expired(tmp_path):
