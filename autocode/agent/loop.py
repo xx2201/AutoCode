@@ -98,7 +98,13 @@ class Agent:
         self.hooks.on("task_error", self._handle_lifecycle_event)
         self.policy = Policy(workspace_root=self.workspace_root, auto_approve=auto_approve)
         self._sync_mcp_tools()
-        self.runtime = Runtime(self.tool_registry, policy=self.policy, hooks=self.hooks, recovery=self.recovery)
+        self.runtime = Runtime(
+            self.tool_registry,
+            policy=self.policy,
+            hooks=self.hooks,
+            recovery=self.recovery,
+            tracer=getattr(self.llm, "tracer", None),
+        )
         self.session_state: SessionState | None = None
 
     @property
@@ -385,6 +391,7 @@ class Agent:
                 error_type=type(exc).__name__,
                 task_status=self.task_state.status if self.task_state else None,
             ),
+            level="ERROR",
             status_message=str(exc),
         )
 

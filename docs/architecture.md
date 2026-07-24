@@ -39,8 +39,10 @@ flowchart LR
    PNG、JPEG、WEBP 或 GIF 作为视觉内容送回下一轮模型。
 8. 首 Token、后续 Token、工具开始/结束和持久化等事件从 Runner 回传 Relay，
    再由 SSE 实时推送到手机。
-9. Agent turn 和每次 LLM generation 由官方 Langfuse Python SDK 在后台批量上报；
-   用户响应不等待 `flush()`。
+9. 官方 Langfuse Python SDK 按 `agent → (generation / tool / generation …)` 层级记录一次
+   Agent turn、每次模型调用和每次实际工具执行；SDK 在后台批量上报，用户响应不等待
+   `flush()`。并行工具执行会复制当前 OTel/contextvars 上下文，确保 tool observation
+   仍挂在对应的 agent turn 下。
 
 ## 3. Agent 多模态与 Langfuse 多模态
 
@@ -49,9 +51,9 @@ flowchart LR
 - Agent 多模态决定模型能否看到图片。入口有两条：
   Web 上传图片直接进入当前用户消息；`read_image` 工具读取工作区中的已有图片，
   再把视觉内容加入下一轮模型消息。
-- Langfuse 多模态只负责观测。它记录 Agent turn、LLM generation、输入、输出、
-  Token 用量、首 Token 时间和 session。Base64 Data URL 由 Langfuse SDK 在后台
-  提取为媒体对象。
+- Langfuse 多模态只负责观测。它以 `agent`、`generation` 和 `tool` observation
+  记录 Agent turn、模型调用、工具调用、输入、输出、Token 用量、首 Token 时间和
+  session。Base64 Data URL 由 Langfuse SDK 在后台提取为媒体对象。
 
 未配置 Langfuse 时，Agent 多模态仍可使用；模型本身不支持视觉时，Langfuse 也不会
 让模型获得视觉能力。当前配置不做输入、输出或图片脱敏，完整内容会发送给 Langfuse。

@@ -2,7 +2,23 @@ import sys
 import types as builtin_types
 
 from autocode.agent import Agent
-from autocode.llm import LLM
+from autocode.llm import LLM, ToolCall
+from autocode.runtime import Runtime
+from autocode.state import TaskState
+from autocode.tools.base import Tool
+
+
+class _EchoTool(Tool):
+    name = "echo"
+    description = "Echo text."
+    parameters = {
+        "type": "object",
+        "properties": {"text": {"type": "string"}},
+        "required": ["text"],
+    }
+
+    def execute(self, text: str):
+        return f"echo:{text}"
 
 
 def _install_fake_langfuse(monkeypatch):
@@ -62,8 +78,13 @@ def _content_chunk(content: str):
     return builtin_types.SimpleNamespace(choices=[choice], usage=None)
 
 
-def _usage_chunk(prompt: int = 7, completion: int = 3):
-    usage = builtin_types.SimpleNamespace(prompt_tokens=prompt, completion_tokens=completion)
+def _usage_chunk(prompt: int = 7, completion: int = 3, cached: int = 0):
+    details = builtin_types.SimpleNamespace(cached_tokens=cached) if cached else None
+    usage = builtin_types.SimpleNamespace(
+        prompt_tokens=prompt,
+        completion_tokens=completion,
+        prompt_tokens_details=details,
+    )
     return builtin_types.SimpleNamespace(choices=[], usage=usage)
 
 
@@ -76,7 +97,9 @@ def test_llm_chat_emits_langfuse_generation(monkeypatch):
         langfuse_secret_key="sk-lf-test",
         langfuse_base_url="https://langfuse.example",
     )
-    llm._call_with_retry = lambda params: iter([_content_chunk("hello"), _usage_chunk(prompt=11, completion=4)])
+    llm._call_with_retry = lambda params: iter(
+        [_content_chunk("hello"), _usage_chunk(prompt=11, completion=4, cached=3)]
+    )
 
     response = llm.chat(messages=[{"role": "user", "content": "hi"}])
 
@@ -85,8 +108,9 @@ def test_llm_chat_emits_langfuse_generation(monkeypatch):
     enter = next(item for item in events if item["event"] == "enter" and item["kwargs"].get("as_type") == "generation")
     assert enter["kwargs"]["model"] == "fake-model"
     update = next(item for item in events if item["event"] == "update" and "usage_details" in item["kwargs"])
-    assert update["kwargs"]["usage_details"]["prompt_tokens"] == 11
-    assert update["kwargs"]["usage_details"]["completion_tokens"] == 4
+    assert update["kwargs"]["usage_details"]["input"] == 8
+    assert update["kwargs"]["usage_details"]["output"] == 4
+    assert update["kwargs"]["usage_details"]["cache_read_input_tokens"] == 3
     assert update["kwargs"]["output"]["content"] == "hello"
 
 
@@ -107,6 +131,12 @@ def test_agent_chat_batches_turn_trace_until_shutdown(monkeypatch, tmp_path):
     propagate = next(item for item in events if item["event"] == "propagate_enter")
     assert propagate["kwargs"]["trace_name"] == "autocode-agent-turn"
     assert propagate["kwargs"]["session_id"]
+    agent_enter = next(
+        item
+        for item in events
+        if item["event"] == "enter" and item["kwargs"].get("name") == "agent.chat"
+    )
+    assert agent_enter["kwargs"]["as_type"] == "agent"
     turn_update = next(
         item
         for item in events
@@ -138,3 +168,52 @@ def test_llm_clone_reuses_tracer_without_shutting_it_down(monkeypatch, tmp_path)
     llm.tracer.shutdown()
     llm.tracer.shutdown()
     assert [item["event"] for item in events].count("shutdown") == 1
+
+
+def test_runtime_emits_nested_tool_observations_for_parallel_calls(monkeypatch):
+    events = _install_fake_langfuse(monkeypatch)
+    llm = LLM(
+        model="fake-model",
+        api_key="sk-test",
+        langfuse_public_key="pk-test",
+        langfuse_secret_key="sk-lf-test",
+    )
+    runtime = Runtime({"echo": _EchoTool()}, tracer=llm.tracer)
+    state = TaskState(task_id="task-observation", status="running")
+    tool_calls = [
+        ToolCall(id="call-1", name="echo", arguments={"text": "one"}),
+        ToolCall(id="call-2", name="echo", arguments={"text": "two"}),
+    ]
+
+    with llm.tracer.start_agent_turn(
+        name="agent.chat",
+        input_payload={"user_message": "run tools"},
+        session_id="session-observation",
+        trace_name="autocode-agent-turn",
+    ):
+        results = runtime.execute_tool_calls_parallel(
+            state,
+            tool_calls,
+            "session-observation",
+        )
+
+    assert results == ["echo:one", "echo:two"]
+    tool_enters = [
+        item
+        for item in events
+        if item["event"] == "enter" and item["kwargs"].get("as_type") == "tool"
+    ]
+    assert {item["kwargs"]["name"] for item in tool_enters} == {
+        "tool.echo",
+    }
+    tool_updates = [
+        item
+        for item in events
+        if item["event"] == "update"
+        and item["name"] == "tool.echo"
+        and "output" in item["kwargs"]
+    ]
+    assert {item["kwargs"]["output"]["result"] for item in tool_updates} == {
+        "echo:one",
+        "echo:two",
+    }

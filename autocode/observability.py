@@ -134,7 +134,11 @@ class LangfuseTracer:
         nested = _ACTIVE_OBSERVATION_DEPTH.get() > 0
         if nested:
             with self._observation_scope():
-                with self._client.start_as_current_observation(name=name, input=input_payload) as observation:
+                with self._client.start_as_current_observation(
+                    name=name,
+                    as_type="agent",
+                    input=input_payload,
+                ) as observation:
                     if metadata:
                         observation.update(metadata=metadata)
                     yield observation
@@ -157,7 +161,11 @@ class LangfuseTracer:
         )
         if propagation is None:
             with self._observation_scope():
-                with self._client.start_as_current_observation(name=name, input=input_payload) as observation:
+                with self._client.start_as_current_observation(
+                    name=name,
+                    as_type="agent",
+                    input=input_payload,
+                ) as observation:
                     if metadata:
                         observation.update(metadata=metadata)
                     yield observation
@@ -165,7 +173,11 @@ class LangfuseTracer:
 
         with propagation:
             with self._observation_scope():
-                with self._client.start_as_current_observation(name=name, input=input_payload) as observation:
+                with self._client.start_as_current_observation(
+                    name=name,
+                    as_type="agent",
+                    input=input_payload,
+                ) as observation:
                     if metadata:
                         observation.update(metadata=metadata)
                     yield observation
@@ -191,6 +203,29 @@ class LangfuseTracer:
                 input=input_payload,
                 model=model,
                 model_parameters=model_parameters or None,
+            ) as observation:
+                metadata = _clean_mapping(metadata)
+                if metadata:
+                    observation.update(metadata=metadata)
+                yield observation
+
+    @contextmanager
+    def start_tool(
+        self,
+        *,
+        name: str,
+        input_payload: Any,
+        metadata: dict[str, Any] | None = None,
+    ):
+        if not self.enabled:
+            yield _NoopObservation()
+            return
+
+        with self._observation_scope():
+            with self._client.start_as_current_observation(
+                name=name,
+                as_type="tool",
+                input=input_payload,
             ) as observation:
                 metadata = _clean_mapping(metadata)
                 if metadata:

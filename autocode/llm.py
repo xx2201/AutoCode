@@ -102,6 +102,22 @@ def _extract_cache_usage(usage) -> tuple[int, int]:
     return hit, miss
 
 
+def _langfuse_usage(response: LLMResponse) -> dict[str, int]:
+    """Return mutually exclusive Langfuse usage buckets."""
+    has_cache_breakdown = bool(response.cache_read_tokens or response.cache_miss_tokens)
+    usage = {
+        "input": (
+            response.cache_miss_tokens
+            if has_cache_breakdown
+            else response.prompt_tokens
+        ),
+        "output": response.completion_tokens,
+    }
+    if response.cache_read_tokens:
+        usage["cache_read_input_tokens"] = response.cache_read_tokens
+    return usage
+
+
 # pricing per million tokens: (input, output)
 # sources: openai.com/api/pricing, api-docs.deepseek.com, platform.claude.com,
 #          platform.moonshot.ai, alibabacloud.com/help/en/model-studio
@@ -299,6 +315,7 @@ class LLM:
                         "backend": type(self).__name__,
                         "error_type": type(exc).__name__,
                     },
+                    level="ERROR",
                     status_message=str(exc),
                 )
                 raise
@@ -310,12 +327,7 @@ class LLM:
                 },
                 model=self.model,
                 model_parameters=self.extra or None,
-                usage_details={
-                    "prompt_tokens": response.prompt_tokens,
-                    "completion_tokens": response.completion_tokens,
-                    "cache_read_tokens": response.cache_read_tokens,
-                    "cache_miss_tokens": response.cache_miss_tokens,
-                },
+                usage_details=_langfuse_usage(response),
                 metadata={
                     "backend": type(self).__name__,
                     "tool_call_count": len(response.tool_calls),
@@ -500,6 +512,7 @@ class LiteLLM(LLM):
                         "backend": type(self).__name__,
                         "error_type": type(exc).__name__,
                     },
+                    level="ERROR",
                     status_message=str(exc),
                 )
                 raise
@@ -511,12 +524,7 @@ class LiteLLM(LLM):
                 },
                 model=self.model,
                 model_parameters=self.extra or None,
-                usage_details={
-                    "prompt_tokens": response.prompt_tokens,
-                    "completion_tokens": response.completion_tokens,
-                    "cache_read_tokens": response.cache_read_tokens,
-                    "cache_miss_tokens": response.cache_miss_tokens,
-                },
+                usage_details=_langfuse_usage(response),
                 metadata={
                     "backend": type(self).__name__,
                     "tool_call_count": len(response.tool_calls),

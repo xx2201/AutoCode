@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import concurrent.futures
+import contextvars
 
 from ..state import PolicyDecision, TaskState
 from ..tools.base import ToolResult
@@ -11,11 +12,19 @@ from .policy import Policy
 
 
 class Runtime:
-    def __init__(self, tool_registry: dict, policy: Policy | None = None, hooks: HookBus | None = None, recovery=None):
+    def __init__(
+        self,
+        tool_registry: dict,
+        policy: Policy | None = None,
+        hooks: HookBus | None = None,
+        recovery=None,
+        tracer=None,
+    ):
         self.tool_registry = tool_registry
         self.policy = policy or Policy()
         self.hooks = hooks or HookBus()
         self.recovery = recovery
+        self.tracer = tracer
 
     @staticmethod
     def _payload(session_id: str, task_state: TaskState, **extra) -> dict:
@@ -64,6 +73,56 @@ class Runtime:
         return decision
 
     def execute_tool_call(
+        self,
+        task_state: TaskState,
+        tool_call,
+        session_id: str,
+        on_tool=None,
+        decision: PolicyDecision | None = None,
+    ) -> str | ToolResult:
+        tracer = self.tracer
+        if tracer is None or not tracer.enabled:
+            return self._execute_tool_call(
+                task_state,
+                tool_call,
+                session_id,
+                on_tool=on_tool,
+                decision=decision,
+            )
+
+        metadata = {
+            "task_id": task_state.task_id,
+            "tool_call_id": tool_call.id,
+            "policy_action": decision.action if decision else "allow",
+        }
+        with tracer.start_tool(
+            name=f"tool.{tool_call.name or 'unknown'}",
+            input_payload={"arguments": tool_call.arguments},
+            metadata=metadata,
+        ) as observation:
+            result = self._execute_tool_call(
+                task_state,
+                tool_call,
+                session_id,
+                on_tool=on_tool,
+                decision=decision,
+            )
+            result_text = result.text if isinstance(result, ToolResult) else result
+            is_error = result_text.startswith("Error:")
+            observation.update(
+                output={
+                    "result": result_text,
+                    "multimodal": bool(
+                        isinstance(result, ToolResult) and result.model_content
+                    ),
+                },
+                metadata={**metadata, "success": not is_error},
+                level="ERROR" if is_error else "DEFAULT",
+                status_message=result_text if is_error else None,
+            )
+            return result
+
+    def _execute_tool_call(
         self,
         task_state: TaskState,
         tool_call,
@@ -121,7 +180,18 @@ class Runtime:
         on_tool=None,
     ) -> list[str | ToolResult]:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(tool_calls))) as pool:
-            futures = [pool.submit(self.execute_tool_call, task_state, tc, session_id, on_tool) for tc in tool_calls]
+            # 每个线程复制当前 OTel 上下文，确保并行 tool span 仍归属于当前 agent。
+            futures = [
+                pool.submit(
+                    contextvars.copy_context().run,
+                    self.execute_tool_call,
+                    task_state,
+                    tool_call,
+                    session_id,
+                    on_tool,
+                )
+                for tool_call in tool_calls
+            ]
             return [f.result() for f in futures]
 
     def invalid_tool_call_result(self, task_state: TaskState, tool_call, session_id: str) -> str:
