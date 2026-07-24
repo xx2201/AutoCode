@@ -14,7 +14,7 @@ from ..llm import LLM, LiteLLM
 from ..message_content import content_text
 from ..mcp import get_shared_mcp_manager
 from ..observability import LangfuseTracer
-from ..state import format_trace, list_sessions, load_checkpoint, load_trace
+from ..state import delete_session, format_trace, list_sessions, load_checkpoint, load_trace
 from ..tools.factory import build_agent_tools
 
 
@@ -237,6 +237,27 @@ class RemoteManager:
                 runtime.agent,
                 f"Resumed session {session_state.session_id} ({status}).",
             )
+
+    def delete_session(self, session_id: str) -> None:
+        allowed_session_ids = {
+            item["session_id"]
+            for item in self.list_resume_candidates(limit=200)
+        }
+        if session_id not in allowed_session_ids:
+            raise ValueError(f"Session '{session_id}' is not available for this workspace.")
+        with self._state_lock:
+            matching = [
+                (chat_id, runtime)
+                for chat_id, runtime in self._chats.items()
+                if runtime.agent.session_state is not None
+                and runtime.agent.session_state.session_id == session_id
+            ]
+            for chat_id, _ in matching:
+                self._chats.pop(chat_id, None)
+        for _, runtime in matching:
+            with runtime.lock:
+                self._close_agent(runtime.agent)
+        delete_session(session_id, self.config.workspace_root)
 
     def _get_or_create_runtime(self, chat_id: Hashable, replace: bool = False) -> _ChatRuntime:
         previous = None

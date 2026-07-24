@@ -176,6 +176,7 @@ class TaskState:
 @dataclass
 class SessionState:
     session_id: str
+    title: str = ""
     started_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     current_task: TaskState | None = None
@@ -194,6 +195,7 @@ class SessionState:
     def to_dict(self) -> dict:
         return {
             "session_id": self.session_id,
+            "title": self.title,
             "started_at": self.started_at,
             "updated_at": self.updated_at,
             "current_task": self.current_task.to_dict() if self.current_task else None,
@@ -204,6 +206,7 @@ class SessionState:
         task = data.get("current_task")
         return cls(
             session_id=data.get("session_id", ""),
+            title=data.get("title", ""),
             started_at=data.get("started_at", _now()),
             updated_at=data.get("updated_at", _now()),
             current_task=TaskState.from_dict(task) if task else None,

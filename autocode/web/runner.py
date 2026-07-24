@@ -233,6 +233,9 @@ class LocalRunner:
                 "result": asdict(result),
                 "messages": manager.conversation_messages(payload["client_id"]),
             }
+        if action == "delete_session":
+            manager.delete_session(payload["session_id"])
+            return {"deleted": True, "session_id": payload["session_id"]}
         if action == "task":
             try:
                 summary = manager.current_task_summary(payload["client_id"])

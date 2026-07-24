@@ -35,6 +35,7 @@ import {
   ShieldCheck,
   Sparkles,
   TerminalSquare,
+  Trash2,
   FileText,
   Image as ImageIcon,
   X,
@@ -46,6 +47,7 @@ import GitPanel from "./GitPanel";
 const TOKEN_KEY = "autocode_web_token";
 const WORKSPACE_KEY = "autocode_workspace_id";
 const CLIENT_MAP_KEY = "autocode_workspace_clients";
+const SESSION_MAP_KEY = "autocode_workspace_sessions";
 
 function createClientId() {
   if (window.crypto?.randomUUID) {
@@ -84,6 +86,30 @@ function renewClientId(workspaceId) {
   clients[workspaceId] = createClientId();
   localStorage.setItem(CLIENT_MAP_KEY, JSON.stringify(clients));
   return clients[workspaceId];
+}
+
+function storedSessionId(workspaceId) {
+  try {
+    const sessions = JSON.parse(localStorage.getItem(SESSION_MAP_KEY) || "{}");
+    return sessions[workspaceId] || "";
+  } catch {
+    return "";
+  }
+}
+
+function storeSessionId(workspaceId, sessionId) {
+  let sessions = {};
+  try {
+    sessions = JSON.parse(localStorage.getItem(SESSION_MAP_KEY) || "{}");
+  } catch {
+    sessions = {};
+  }
+  if (sessionId) {
+    sessions[workspaceId] = sessionId;
+  } else {
+    delete sessions[workspaceId];
+  }
+  localStorage.setItem(SESSION_MAP_KEY, JSON.stringify(sessions));
 }
 
 async function request(token, path, options = {}) {
@@ -520,6 +546,9 @@ export default function App() {
   const [attachments, setAttachments] = useState([]);
   const [busy, setBusy] = useState(false);
   const [resumingSessionId, setResumingSessionId] = useState("");
+  const [activeSessionId, setActiveSessionId] = useState("");
+  const [deleteTarget, setDeleteTarget] = useState(null);
+  const [deletingSessionId, setDeletingSessionId] = useState("");
   const [status, setStatus] = useState("idle");
   const [streamText, setStreamText] = useState("");
   const [runStage, setRunStage] = useState("");
@@ -626,11 +655,48 @@ export default function App() {
 
   useEffect(() => {
     if (!selectedWorkspace) return;
-    setMessages([]);
-    setPending(null);
-    setStatus("idle");
-    refreshSessions().catch((error) => showToast(error.message));
-    refreshGit().catch((error) => showToast(error.message));
+    let ignore = false;
+    async function restoreWorkspace() {
+      setMessages([]);
+      setPending(null);
+      setStatus("idle");
+      const savedSessionId = storedSessionId(selectedWorkspace.workspace_id);
+      setActiveSessionId(savedSessionId);
+      try {
+        await Promise.all([refreshSessions(), refreshGit()]);
+        if (!savedSessionId || !runnerOnline || ignore) return;
+        setBusy(true);
+        setResumingSessionId(savedSessionId);
+        const data = await request(token, "/api/resume", {
+          method: "POST",
+          timeoutMs: 20_000,
+          body: JSON.stringify({
+            client_id: clientId,
+            workspace_id: selectedWorkspace.workspace_id,
+            session_id: savedSessionId,
+          }),
+        });
+        if (ignore) return;
+        setMessages(data.messages || []);
+        setPending(data.result?.pending_tool ? data.result : null);
+        setStatus(data.result?.status || "idle");
+      } catch (error) {
+        if (!ignore) {
+          storeSessionId(selectedWorkspace.workspace_id, "");
+          setActiveSessionId("");
+          showToast(error.message);
+        }
+      } finally {
+        if (!ignore) {
+          setBusy(false);
+          setResumingSessionId("");
+        }
+      }
+    }
+    restoreWorkspace();
+    return () => {
+      ignore = true;
+    };
   }, [refreshGit, refreshSessions, selectedWorkspace, showToast]);
 
   useEffect(() => {
@@ -767,6 +833,10 @@ export default function App() {
       }
       setPending(result.pending_tool ? result : null);
       setStatus(result.status || "completed");
+      if (result.session_id) {
+        storeSessionId(selectedWorkspace.workspace_id, result.session_id);
+        setActiveSessionId(result.session_id);
+      }
       setStreamText("");
       setRunStage("");
       setBusy(false);
@@ -922,6 +992,8 @@ export default function App() {
       setMessages(data.messages || []);
       setPending(data.result?.pending_tool ? data.result : null);
       setStatus(data.result?.status || "idle");
+      storeSessionId(selectedWorkspace.workspace_id, sessionId);
+      setActiveSessionId(sessionId);
       setPanel(null);
       showToast("会话已恢复");
     } catch (error) {
@@ -946,11 +1018,44 @@ export default function App() {
       if (error.status !== 503) showToast(error.message);
     }
     renewClientId(selectedWorkspace.workspace_id);
+    storeSessionId(selectedWorkspace.workspace_id, "");
+    setActiveSessionId("");
     setMessages([]);
     setPending(null);
     setStatus("idle");
     setPanel(null);
     showToast("已新建会话");
+  }
+
+  async function deleteSession() {
+    if (!deleteTarget || busy || !selectedWorkspace) return;
+    const sessionId = deleteTarget.session_id;
+    setDeletingSessionId(sessionId);
+    try {
+      await request(token, "/api/sessions/delete", {
+        method: "POST",
+        body: JSON.stringify({
+          client_id: clientId,
+          workspace_id: selectedWorkspace.workspace_id,
+          session_id: sessionId,
+        }),
+      });
+      if (activeSessionId === sessionId) {
+        renewClientId(selectedWorkspace.workspace_id);
+        storeSessionId(selectedWorkspace.workspace_id, "");
+        setActiveSessionId("");
+        setMessages([]);
+        setPending(null);
+        setStatus("idle");
+      }
+      setDeleteTarget(null);
+      await refreshSessions();
+      showToast("历史会话已删除");
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      setDeletingSessionId("");
+    }
   }
 
   async function openInfo(kind) {
@@ -1490,25 +1595,42 @@ export default function App() {
                 </button>
                 <div className="session-list">
                   {sessions.map((session) => (
-                    <button
-                      type="button"
+                    <div
                       key={session.session_id}
-                      className={resumingSessionId === session.session_id ? "is-resuming" : ""}
-                      disabled={busy}
-                      onClick={() => resumeSession(session.session_id)}
+                      className={`session-row ${
+                        activeSessionId === session.session_id ? "is-active" : ""
+                      }`}
                     >
-                      <span className="session-icon"><MessageSquareText size={18} /></span>
-                      <span>
-                        <strong>{session.title || session.session_id}</strong>
-                        <small>
-                          <Clock3 size={13} />
-                          {session.saved_at} · step {session.step_index}
-                        </small>
-                      </span>
-                      {resumingSessionId === session.session_id
-                        ? <RefreshCw className="spin" size={16} />
-                        : <ArrowRight size={16} />}
-                    </button>
+                      <button
+                        type="button"
+                        className={resumingSessionId === session.session_id ? "session-open is-resuming" : "session-open"}
+                        disabled={busy || deletingSessionId === session.session_id}
+                        onClick={() => resumeSession(session.session_id)}
+                      >
+                        <span className="session-icon"><MessageSquareText size={18} /></span>
+                        <span>
+                          <strong>{session.title || session.session_id}</strong>
+                          <small>
+                            <Clock3 size={13} />
+                            {session.saved_at} · step {session.step_index}
+                          </small>
+                        </span>
+                        {resumingSessionId === session.session_id
+                          ? <RefreshCw className="spin" size={16} />
+                          : <ArrowRight size={16} />}
+                      </button>
+                      <button
+                        type="button"
+                        className="session-delete"
+                        aria-label={`删除会话 ${session.title || session.session_id}`}
+                        disabled={busy || Boolean(deletingSessionId)}
+                        onClick={() => setDeleteTarget(session)}
+                      >
+                        {deletingSessionId === session.session_id
+                          ? <RefreshCw className="spin" size={15} />
+                          : <Trash2 size={15} />}
+                      </button>
+                    </div>
                   ))}
                   {!sessions.length && <div className="panel-empty">这个项目还没有可恢复的会话。</div>}
                 </div>
@@ -1516,6 +1638,27 @@ export default function App() {
             ) : (
               <pre className="runtime-content">{panelContent}</pre>
             )}
+          </section>
+        </div>
+      )}
+
+      {deleteTarget && (
+        <div className="modal-layer confirm-layer" role="dialog" aria-modal="true" aria-labelledby="delete-session-title">
+          <section className="confirm-dialog">
+            <span className="confirm-icon"><Trash2 size={21} /></span>
+            <h2 id="delete-session-title">删除这段历史会话？</h2>
+            <p>
+              “{deleteTarget.title || deleteTarget.session_id}” 的聊天记录将从本机永久删除，
+              此操作无法撤销。
+            </p>
+            <div className="confirm-actions">
+              <button type="button" disabled={Boolean(deletingSessionId)} onClick={() => setDeleteTarget(null)}>
+                取消
+              </button>
+              <button className="danger-button" type="button" disabled={Boolean(deletingSessionId)} onClick={deleteSession}>
+                {deletingSessionId ? "正在删除…" : "确认删除"}
+              </button>
+            </div>
           </section>
         </div>
       )}

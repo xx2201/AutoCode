@@ -1,4 +1,11 @@
-from autocode.state import SessionState, TaskState, list_sessions, load_checkpoint, save_checkpoint
+from autocode.state import (
+    SessionState,
+    TaskState,
+    delete_session,
+    list_sessions,
+    load_checkpoint,
+    save_checkpoint,
+)
 from autocode.state import checkpoint as checkpoint_module
 from autocode.state import PendingApproval
 
@@ -63,6 +70,51 @@ def test_list_sessions(tmp_path, monkeypatch):
     assert entries[0]["task_id"] == "task_one"
     assert entries[0]["title"] == "fix import"
     assert entries[0]["status"] == "waiting_approval"
+
+
+def test_session_title_comes_from_first_user_message_not_latest_task(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
+    save_checkpoint(
+        SessionState(
+            session_id="session_named",
+            current_task=TaskState(task_id="task_latest", title="latest task"),
+        ),
+        [
+            {"role": "user", "content": "首次问题\n更多内容"},
+            {"role": "assistant", "content": "回答"},
+            {"role": "user", "content": "后续问题"},
+        ],
+        "m1",
+        workspace_root="G:/repo/a",
+    )
+
+    entry = list_sessions(workspace_root="G:/repo/a")[0]
+    loaded_state, _, _ = load_checkpoint("session_named")
+
+    assert entry["title"] == "首次问题"
+    assert loaded_state.title == "首次问题"
+
+
+def test_delete_session_enforces_workspace_and_removes_all_records(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    save_checkpoint(
+        SessionState(session_id="session_delete", title="delete me"),
+        [{"role": "user", "content": "delete me"}],
+        "m1",
+        workspace_root="G:/repo/a",
+    )
+
+    try:
+        delete_session("session_delete", "G:/repo/b")
+    except ValueError as exc:
+        assert "not available for this workspace" in str(exc)
+    else:
+        raise AssertionError("expected cross-workspace delete to be rejected")
+
+    delete_session("session_delete", "G:/repo/a")
+
+    assert not (tmp_path / "sessions" / "session_delete").exists()
+    assert list_sessions(workspace_root="G:/repo/a") == []
 
 
 def test_list_sessions_reuses_unchanged_checkpoint_metadata(tmp_path, monkeypatch):

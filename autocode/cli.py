@@ -19,6 +19,7 @@ from .agent import Agent
 from .config import Config
 from .context import render_todos
 from .llm import LLM, LiteLLM
+from .message_content import content_text
 from .mcp import get_shared_mcp_manager
 from .tools.factory import build_agent_tools
 from .state import (
@@ -152,6 +153,7 @@ def main():
                 f"[green]Resumed session: {session_state.session_id} "
                 f"(status: {status}, model: {agent.llm.model})[/green]"
             )
+            _render_conversation_history(messages)
         else:
             console.print(f"[red]Session '{args.resume}' not found.[/red]")
             sys.exit(1)
@@ -418,14 +420,17 @@ def _repl(agent: Agent, config: Config):
                     f"[green]Resumed session: {session_state.session_id} "
                     f"(status: {status}, model: {agent.llm.model})[/green]"
                 )
+                _render_conversation_history(messages)
                 continue
             sessions = _resume_candidates(config.workspace_root, limit=10)
             if not sessions:
                 console.print("[dim]No resumable sessions for the current project.[/dim]")
             else:
                 for session in sessions:
+                    title = session["title"] or session["session_id"]
                     console.print(
-                        f"  [cyan]{session['session_id']}[/cyan] ({session['status']}, step {session['step_index']}, "
+                        f"  [bold]{title}[/bold]\n"
+                        f"    [cyan]{session['session_id']}[/cyan] ({session['status']}, step {session['step_index']}, "
                         f"{session['model']}, {session['saved_at']})"
                     )
             continue
@@ -545,6 +550,29 @@ def _load_resumable_session(session_id: str, workspace_root: str):
     if session_id not in allowed:
         return None
     return load_checkpoint(session_id)
+
+
+def _render_conversation_history(messages: list[dict]) -> None:
+    visible = [
+        message for message in messages
+        if message.get("role") in {"user", "assistant"}
+        and content_text(message.get("content", "")).strip()
+    ]
+    if not visible:
+        console.print("[dim]This session has no saved conversation messages.[/dim]")
+        return
+    console.print(f"[dim]Conversation history ({len(visible)} messages)[/dim]")
+    for message in visible:
+        role = "You" if message["role"] == "user" else "AutoCode"
+        color = "bright_blue" if message["role"] == "user" else "green"
+        console.print(
+            Panel(
+                Markdown(content_text(message.get("content", ""))),
+                title=role,
+                title_align="left",
+                border_style=color,
+            )
+        )
 
 
 def _prompt_approval(pending) -> str | bool | None:

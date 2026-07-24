@@ -74,6 +74,10 @@ class ResumeRequest(ClientRequest):
     session_id: str = Field(min_length=1, max_length=128)
 
 
+class DeleteSessionRequest(ResumeRequest):
+    pass
+
+
 class DownloadRequest(ClientRequest):
     file_id: str = Field(min_length=20, max_length=80)
 
@@ -369,6 +373,18 @@ def create_app(
     async def resume(payload: ResumeRequest):
         return await dispatch(
             "resume",
+            {
+                "client_id": _validate_client_id(payload.client_id),
+                "workspace_id": payload.workspace_id,
+                "session_id": payload.session_id,
+            },
+            timeout=control_request_timeout,
+        )
+
+    @app.post("/api/sessions/delete", dependencies=browser_auth)
+    async def delete_saved_session(payload: DeleteSessionRequest):
+        return await dispatch(
+            "delete_session",
             {
                 "client_id": _validate_client_id(payload.client_id),
                 "workspace_id": payload.workspace_id,

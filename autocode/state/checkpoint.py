@@ -3,12 +3,14 @@
 import json
 import os
 import re
+import shutil
 import threading
 import time
 import uuid
 from pathlib import Path
 
 from .model import SessionState
+from ..message_content import content_text
 
 SESSIONS_DIR = Path(
     os.getenv("AUTOCODE_SESSIONS_DIR", str(Path.home() / ".autocode" / "sessions"))
@@ -82,7 +84,11 @@ def load_checkpoint(session_id: str) -> tuple[SessionState, list[dict], str] | N
         data = _read_json(path)
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
-    return SessionState.from_dict(data["session"]), data["messages"], data["model"]
+    state = SessionState.from_dict(data["session"])
+    messages = data["messages"]
+    if not state.title:
+        state.title = _first_user_title(messages)
+    return state, messages, data["model"]
 
 
 def list_sessions(workspace_root: str | None = None, limit: int = 20) -> list[dict]:
@@ -107,7 +113,11 @@ def list_sessions(workspace_root: str | None = None, limit: int = 20) -> list[di
             entries.append({
                 "session_id": session.get("session_id", directory.name),
                 "task_id": current_task.get("task_id", ""),
-                "title": current_task.get("title", ""),
+                "title": (
+                    session.get("title")
+                    or _first_user_title(data.get("messages", []))
+                    or current_task.get("title", "")
+                ),
                 "status": current_task.get("status", "idle"),
                 "step_index": current_task.get("step_index", 0),
                 "saved_at": data.get("saved_at", "?"),
@@ -117,6 +127,34 @@ def list_sessions(workspace_root: str | None = None, limit: int = 20) -> list[di
         except (UnicodeDecodeError, json.JSONDecodeError, KeyError):
             continue
     return entries[:limit]
+
+
+def delete_session(session_id: str, workspace_root: str) -> None:
+    """Delete one checkpoint only when it belongs to the requested workspace."""
+    directory = session_dir(session_id)
+    path = directory / "checkpoint.json"
+    if not path.exists():
+        raise ValueError(f"Session '{session_id}' not found.")
+    data = _read_cached_json(path)
+    expected_workspace = _normalize_workspace_root(workspace_root)
+    actual_workspace = _normalize_workspace_root(data.get("workspace_root", ""))
+    if not expected_workspace or actual_workspace != expected_workspace:
+        raise ValueError(f"Session '{session_id}' is not available for this workspace.")
+    shutil.rmtree(directory)
+    with _CHECKPOINT_CACHE_LOCK:
+        stale_paths = [cached_path for cached_path in _CHECKPOINT_CACHE if directory in cached_path.parents]
+        for cached_path in stale_paths:
+            _CHECKPOINT_CACHE.pop(cached_path, None)
+
+
+def _first_user_title(messages: list[dict], max_length: int = 120) -> str:
+    for message in messages:
+        if message.get("role") != "user":
+            continue
+        title = content_text(message.get("content", "")).strip().splitlines()[0]
+        if title:
+            return title[:max_length]
+    return ""
 
 
 def _read_json(path: Path) -> dict:

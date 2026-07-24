@@ -89,6 +89,26 @@ def test_remote_manager_can_resume_checkpoint(tmp_path, monkeypatch):
     assert resumed.status == "completed"
 
 
+def test_remote_manager_deletes_saved_and_active_session(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    manager = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: _FakeLLM([LLMResponse(content="finished")]),
+        tools=[],
+    )
+    result = manager.submit(202, "first message names the session")
+
+    manager.delete_session(result.session_id)
+
+    assert manager.list_resume_candidates() == []
+    try:
+        manager.conversation_messages(202)
+    except ValueError as exc:
+        assert "No chat session yet" in str(exc)
+    else:
+        raise AssertionError("expected active runtime to be removed")
+
+
 def test_remote_manager_refuses_checkpoint_from_other_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
     checkpoint_module.save_checkpoint(

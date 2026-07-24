@@ -41,6 +41,9 @@ class _FakeManager:
         self.calls.append(("resume", client_id, session_id))
         return replace(self.result, text="resumed")
 
+    def delete_session(self, session_id):
+        self.calls.append(("delete_session", session_id))
+
     def conversation_messages(self, client_id):
         return [{"role": "user", "content": "hello", "tool_call_id": ""}]
 
@@ -119,6 +122,23 @@ def test_runner_executes_chat_and_approval_in_selected_workspace(tmp_path):
     assert approval["text"] == "approved"
     assert ("chat", "web_12345678", "inspect project") in manager.calls
     assert ("approval", "web_12345678", True, True) in manager.calls
+
+
+def test_runner_routes_session_delete_to_workspace_manager(tmp_path):
+    runner, workspace, managers = _runner(tmp_path)
+
+    result = runner.execute(
+        "delete_session",
+        {
+            "workspace_id": workspace.workspace_id,
+            "client_id": "web_12345678",
+            "session_id": "session_1",
+        },
+    )
+    manager = managers[str((tmp_path / "project-a").resolve())]
+
+    assert result == {"deleted": True, "session_id": "session_1"}
+    assert manager.calls == [("delete_session", "session_1")]
 
 
 def test_runner_rejects_unregistered_workspace(tmp_path):

@@ -410,6 +410,9 @@ class Agent:
                 f"{pending.tool_name} - use /approve or /reject first)"
             )
 
+        session = self._ensure_session()
+        if not session.title:
+            session.title = (user_input.strip().splitlines() or ["上传文件会话"])[0][:120]
         self._ensure_task(user_input)
         message_content = user_content(user_input, image_parts)
         with self._turn_trace(

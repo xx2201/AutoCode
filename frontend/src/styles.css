@@ -1016,15 +1016,29 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .session-content { padding: 18px; }
 .new-session { width: 100%; display: flex; align-items: center; justify-content: center; gap: 7px; min-height: 42px; border: 1px dashed #cfd1f2; border-radius: 12px; color: var(--primary); background: #f8f8ff; cursor: pointer; font-size: 11px; font-weight: 750; }
 .session-list { max-height: 470px; margin-top: 12px; overflow-y: auto; }
-.session-list > button { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 11px; border: 0; border-bottom: 1px solid #eff0f5; background: white; cursor: pointer; text-align: left; }
-.session-list > button:hover { background: #fafaff; }
-.session-list > button:disabled { cursor: wait; opacity: 0.58; }
-.session-list > button.is-resuming { opacity: 1; color: var(--primary); background: var(--primary-soft); }
+.session-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-bottom: 1px solid #eff0f5; background: white; }
+.session-row:hover, .session-row.is-active { background: #fafaff; }
+.session-row.is-active { box-shadow: inset 3px 0 var(--primary); }
+.session-open { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 11px; border: 0; color: inherit; background: transparent; cursor: pointer; text-align: left; }
+.session-open:disabled { cursor: wait; opacity: 0.58; }
+.session-open.is-resuming { opacity: 1; color: var(--primary); background: var(--primary-soft); }
+.session-delete { display: grid; width: 34px; height: 34px; margin-right: 8px; place-items: center; border: 0; border-radius: 9px; color: #a6a9b6; background: transparent; cursor: pointer; }
+.session-delete:hover { color: #c74255; background: #fff0f2; }
+.session-delete:disabled { cursor: wait; opacity: 0.45; }
 .session-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 11px; color: var(--primary); background: var(--primary-soft); }
 .session-list strong, .session-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-list strong { font-size: 11px; }
 .session-list small { display: flex; align-items: center; gap: 5px; margin-top: 5px; color: #999eaf; font-size: 8px; }
 .panel-empty { padding: 55px 20px; color: #999eaf; text-align: center; font-size: 11px; }
+.confirm-layer { z-index: 80; }
+.confirm-dialog { width: min(420px, 100%); padding: 28px; border: 1px solid #ece4e6; border-radius: 22px; background: white; box-shadow: var(--shadow); text-align: center; }
+.confirm-icon { display: grid; width: 48px; height: 48px; margin: 0 auto 15px; place-items: center; border-radius: 15px; color: #c74255; background: #fff0f2; }
+.confirm-dialog h2 { margin: 0; font-size: 20px; }
+.confirm-dialog p { margin: 11px 0 23px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+.confirm-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 9px; }
+.confirm-actions button { min-height: 42px; border: 1px solid var(--line); border-radius: 11px; color: #65697a; background: white; cursor: pointer; font-weight: 750; }
+.confirm-actions .danger-button { border-color: #c74255; color: white; background: #c74255; }
+.confirm-actions button:disabled { cursor: wait; opacity: 0.55; }
 .toast { position: fixed; z-index: 100; left: 50%; bottom: 24px; display: flex; align-items: center; gap: 7px; padding: 11px 15px; transform: translateX(-50%); border: 1px solid #dfe1ea; border-radius: 12px; color: #4e5367; background: rgba(255, 255, 255, 0.96); box-shadow: 0 12px 35px rgba(50, 53, 82, 0.16); font-size: 10px; font-weight: 700; }
 .toast svg { color: var(--mint); }
 .splash-screen { min-height: 100dvh; display: grid; place-content: center; justify-items: center; gap: 14px; color: #858a9d; background: #f8f9fd; }

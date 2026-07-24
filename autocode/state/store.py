@@ -17,8 +17,9 @@ class SessionStore:
         current_task = session_state.current_task
         session_payload = {
             "session_id": session_state.session_id,
+            "title": session_state.title or (current_task.title if current_task else ""),
             "task_id": current_task.task_id if current_task else "",
-            "title": current_task.title if current_task else "",
+            "task_title": current_task.title if current_task else "",
             "status": current_task.status if current_task else "idle",
             "step_index": current_task.step_index if current_task else 0,
             "transcript_file": "transcript.jsonl",

@@ -1,6 +1,6 @@
 """Session and current-task persistence package."""
 
-from .checkpoint import list_sessions, load_checkpoint, new_session_id, new_task_id, save_checkpoint, session_dir
+from .checkpoint import delete_session, list_sessions, load_checkpoint, new_session_id, new_task_id, save_checkpoint, session_dir
 from .journal import AuditLogger, load_events
 from .llm_rounds import LLMRoundRecorder, load_llm_round_entries, render_llm_rounds_markdown
 from .model import PendingApproval, PolicyDecision, SessionState, TaskState
@@ -19,6 +19,7 @@ __all__ = [
     "TranscriptLogger",
     "TraceRecorder",
     "format_trace",
+    "delete_session",
     "list_sessions",
     "load_llm_round_entries",
     "load_checkpoint",
