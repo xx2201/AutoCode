@@ -23,8 +23,6 @@ class SessionStore:
             "status": current_task.status if current_task else "idle",
             "step_index": current_task.step_index if current_task else 0,
             "transcript_file": "transcript.jsonl",
-            "llm_rounds_file": "llm_rounds.md",
-            "llm_rounds_raw_file": "llm_rounds.jsonl",
             "current_task_file": "current_task.json",
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "model": model,

@@ -68,12 +68,13 @@ flowchart LR
 | `transcript.jsonl` | 追加原始消息和压缩事件，保留不可变历史 | 保留，是 checkpoint 损坏后的恢复与审计依据 |
 | `audit.jsonl` | 记录工具、审批、阻止和错误等运行事件 | 保留，负责安全与行为审计 |
 | `trace.json` | 从运行事件聚合任务状态、工具数、Token 和耗时，供 `/trace` 直接读取 | 暂时保留；它是可派生缓存，未来可由 audit 动态生成 |
-| `llm_rounds.jsonl` | 保存每轮模型请求、响应与用量 | 保留但应配置保留周期，便于离线复现模型问题 |
-| `llm_rounds.md` | 从 JSONL 生成的人类可读版本 | 可删除并按需生成，不应作为事实来源 |
 
 进程级诊断日志写入 `~/.autocode/logs/*.jsonl`，采用 5 MB、5 个备份的轮转策略。
 它记录 Relay/Runner/Langfuse 初始化、网络故障和分段耗时，不替代会话级
 transcript、audit 或 trace。
+
+模型每轮的精确输入、输出、Token 与耗时统一由 Langfuse Generation 保存。
+未配置 Langfuse 时，本地仍能恢复完整会话，但不再额外持久化模型请求载荷。
 
 当前不需要数据库：JSON/JSONL 已满足单机执行、恢复和顺序追加。只有在需要跨机器
 统一检索、大量会话分页、多人并发或长期统计时，才值得增加 SQLite/PostgreSQL；

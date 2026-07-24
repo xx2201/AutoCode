@@ -186,8 +186,7 @@ autocode/
 ├── state/
 │   ├── checkpoint.py   会话/任务持久化
 │   ├── trace.py        trace 聚合
-│   ├── transcript.py   原始消息日志
-│   └── llm_rounds.py   每轮请求/响应日志
+│   └── transcript.py   原始消息日志
 ├── tools/
 │   ├── read.py / write.py / edit.py / grep.py / glob_tool.py
 │   ├── bash.py         shell 工具

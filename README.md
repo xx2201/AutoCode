@@ -34,8 +34,8 @@ harness.
 - **Model provider is replaceable.** AutoCode works with OpenAI-compatible
   endpoints and optionally LiteLLM providers.
 - **Runtime evidence remains inspectable.** Checkpoints, transcripts, audit
-  events, traces, model rounds, and diagnostics are stored in readable local
-  files.
+  events, traces, and diagnostics are stored in readable local files; exact
+  model generations are observed in Langfuse when configured.
 
 ## Current Capabilities
 
@@ -126,7 +126,7 @@ autocode/
 ├── infra/          # Workspace filesystem, processes, command runner
 ├── remote/         # Channel-neutral manager, Feishu, Telegram
 ├── runtime/        # Tool execution, policy, hooks, recovery
-├── state/          # Checkpoint, transcript, audit, trace, model rounds
+├── state/          # Checkpoint, transcript, audit, and trace
 ├── tools/          # Built-in Agent tools
 ├── web/            # FastAPI Relay, local Runner, files, Git integration
 ├── attachments.py  # Web upload validation and local persistence
@@ -437,7 +437,8 @@ batches delivery in the background; normal Web responses do not wait for
 `flush()`.
 
 Langfuse is optional. Without credentials, local checkpoints, transcripts,
-audit events, traces, model rounds, and diagnostic logs continue to work.
+audit events, traces, and diagnostic logs continue to work. Exact per-generation
+model request/response payloads are only retained when Langfuse is configured.
 
 Local process diagnostics default to:
 
@@ -459,9 +460,7 @@ AutoCode currently uses files and does **not** require a database:
 ├── current_task.json
 ├── transcript.jsonl
 ├── audit.jsonl
-├── trace.json
-├── llm_rounds.jsonl
-└── llm_rounds.md
+└── trace.json
 ```
 
 | File | Role |
@@ -472,8 +471,6 @@ AutoCode currently uses files and does **not** require a database:
 | `transcript.jsonl` | Append-only raw messages and compaction events |
 | `audit.jsonl` | Append-only lifecycle, policy, tool, approval, and error events |
 | `trace.json` | Derived per-session counters, token totals, tools, files, duration |
-| `llm_rounds.jsonl` | Raw model request/response rounds and usage |
-| `llm_rounds.md` | Human-readable rendering of model rounds |
 
 ### Why files are the better fit today
 
@@ -499,7 +496,8 @@ public Relay would violate the local-workspace architecture and is not the
 current design.
 
 Langfuse storage is separate: it belongs to the observability service and does
-not replace local recovery or audit files.
+not replace local recovery or audit files. It is the sole store for exact
+per-generation model input, output, token usage, and latency.
 
 ## Safety Model
 

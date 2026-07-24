@@ -62,8 +62,6 @@ def save_checkpoint(session_state: SessionState, messages: list[dict], model: st
         "model": model,
         "workspace_root": _normalize_workspace_root(workspace_root),
         "transcript_file": "transcript.jsonl",
-        "llm_rounds_file": "llm_rounds.md",
-        "llm_rounds_raw_file": "llm_rounds.jsonl",
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
     path = directory / "checkpoint.json"

@@ -101,12 +101,25 @@ def test_llm_chat_emits_langfuse_generation(monkeypatch):
         [_content_chunk("hello"), _usage_chunk(prompt=11, completion=4, cached=3)]
     )
 
-    response = llm.chat(messages=[{"role": "user", "content": "hi"}])
+    messages = [{"role": "user", "content": "hi"}]
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "echo",
+                "description": "Echo text.",
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+    ]
+    response = llm.chat(messages=messages, tools=tools)
 
     assert response.content == "hello"
     assert events[0]["event"] == "client_init"
     enter = next(item for item in events if item["event"] == "enter" and item["kwargs"].get("as_type") == "generation")
     assert enter["kwargs"]["model"] == "fake-model"
+    assert enter["kwargs"]["input"]["messages"] == messages
+    assert enter["kwargs"]["input"]["tools"] == tools
     update = next(item for item in events if item["event"] == "update" and "usage_details" in item["kwargs"])
     assert update["kwargs"]["usage_details"]["input"] == 8
     assert update["kwargs"]["usage_details"]["output"] == 4

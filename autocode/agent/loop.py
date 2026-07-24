@@ -9,7 +9,6 @@ from ..message_content import user_content
 from ..runtime import HookBus, Policy, RecoveryManager, Runtime
 from ..state import (
     AuditLogger,
-    LLMRoundRecorder,
     PendingApproval,
     PolicyDecision,
     SessionState,
@@ -76,7 +75,6 @@ class Agent:
         self.recovery = RecoveryManager()
         self.hooks = HookBus()
         self.audit = AuditLogger()
-        self.llm_rounds = LLMRoundRecorder()
         self.trace = TraceRecorder()
         self.transcript = TranscriptLogger()
         for event in (
@@ -520,20 +518,6 @@ class Agent:
                 on_token=on_token,
             )
             self._last_prompt_tokens = resp.prompt_tokens
-            self.llm_rounds.append_round(
-                self.session_state.session_id,
-                task_id=self.task_state.task_id,
-                step_index=self.task_state.step_index,
-                model=self.llm.model,
-                messages=full_messages,
-                tools=tool_schemas,
-                response_content=resp.content,
-                response_tool_calls=[self._serialize_tool_call(tool_call) for tool_call in resp.tool_calls],
-                prompt_tokens=resp.prompt_tokens,
-                completion_tokens=resp.completion_tokens,
-                cache_read_tokens=resp.cache_read_tokens,
-                cache_miss_tokens=resp.cache_miss_tokens,
-            )
 
             if not resp.tool_calls:
                 self._append_message(resp.message)
@@ -692,20 +676,6 @@ class Agent:
                 task_state=self.task_state,
                 session_id=self.session_state.session_id,
                 on_token=on_token,
-            )
-            self.llm_rounds.append_round(
-                self.session_state.session_id,
-                task_id=self.task_state.task_id,
-                step_index=self.task_state.step_index,
-                model=self.llm.model,
-                messages=messages,
-                tools=[],
-                response_content=resp.content,
-                response_tool_calls=[],
-                prompt_tokens=resp.prompt_tokens,
-                completion_tokens=resp.completion_tokens,
-                cache_read_tokens=resp.cache_read_tokens,
-                cache_miss_tokens=resp.cache_miss_tokens,
             )
             return resp.content or "已完成\n- 已达到本轮最大工具调用次数。\n\n当前卡点\n- 未能生成有效总结。\n\n建议下一步\n- 如需继续，请回复“继续”。"
         except Exception:

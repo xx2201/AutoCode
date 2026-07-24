@@ -85,9 +85,16 @@ def test_checkpoint_and_task_record_publish_transcript_file(tmp_path, monkeypatc
 
     checkpoint = tmp_path.joinpath(f"{agent.session_state.session_id}/checkpoint.json").read_text(encoding="utf-8")
     session_record = tmp_path.joinpath(f"{agent.session_state.session_id}/session.json").read_text(encoding="utf-8")
+    session_dir = tmp_path / agent.session_state.session_id
 
     assert '"transcript_file": "transcript.jsonl"' in checkpoint
     assert '"transcript_file": "transcript.jsonl"' in session_record
-    assert '"llm_rounds_file": "llm_rounds.md"' in checkpoint
-    assert '"llm_rounds_file": "llm_rounds.md"' in session_record
+    assert {path.name for path in session_dir.iterdir()} == {
+        "audit.jsonl",
+        "checkpoint.json",
+        "current_task.json",
+        "session.json",
+        "trace.json",
+        "transcript.jsonl",
+    }
 
