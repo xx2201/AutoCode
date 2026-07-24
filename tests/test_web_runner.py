@@ -93,6 +93,7 @@ def test_runner_bootstrap_lists_only_cli_registered_workspaces(tmp_path):
 
     assert result["model"] == "fake-model"
     assert result["capabilities"]["file_download"] is True
+    assert result["capabilities"]["git_workspace"] is True
     assert [item["workspace_id"] for item in result["workspaces"]] == [
         workspace.workspace_id
     ]
@@ -167,6 +168,18 @@ def test_runner_rejects_unknown_action(tmp_path):
 
     with pytest.raises(ValueError, match="Unknown relay action"):
         runner.execute("unknown", {"workspace_id": workspace.workspace_id})
+
+
+def test_runner_routes_git_status_without_creating_agent_manager(tmp_path):
+    runner, workspace, managers = _runner(tmp_path)
+
+    result = runner.execute(
+        "git_status",
+        {"workspace_id": workspace.workspace_id},
+    )
+
+    assert result["available"] is False
+    assert managers == {}
 
 
 def test_runner_downloads_only_an_offered_workspace_file(tmp_path):

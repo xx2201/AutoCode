@@ -26,6 +26,7 @@ from ..remote.manager import RemoteManager
 from ..tools.factory import build_agent_tools
 from ..workspaces import WorkspaceRegistry
 from .files import WebFileStore, WebSendTool
+from .git import GitWorkspace
 
 
 @dataclass(frozen=True)
@@ -121,6 +122,7 @@ class LocalRunner:
                     "streaming": True,
                     "file_upload": True,
                     "file_download": True,
+                    "git_workspace": True,
                     "image_input": True,
                     "workspace_image_tool": True,
                 },
@@ -132,6 +134,25 @@ class LocalRunner:
                     ),
                 },
             }
+        workspace_id = str(payload["workspace_id"])
+        if action == "git_status":
+            workspace = self.registry.resolve(workspace_id)
+            return GitWorkspace.inspect(workspace)
+        if action == "git_diff":
+            workspace = self.registry.resolve(workspace_id)
+            return GitWorkspace(workspace).diff(
+                scope=str(payload["scope"]),
+                path=str(payload.get("path", "")),
+                base=str(payload.get("base", "")),
+            )
+        if action == "git_action":
+            workspace = self.registry.resolve(workspace_id)
+            return GitWorkspace(workspace).action(
+                action=str(payload["git_action"]),
+                paths=list(payload.get("paths") or []),
+                branch=str(payload.get("branch", "")),
+                message=str(payload.get("message", "")),
+            )
         manager = self._manager(str(payload["workspace_id"]))
         if action == "diagnostics":
             return {

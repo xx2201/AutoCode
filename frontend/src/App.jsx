@@ -10,8 +10,12 @@ import {
   Download,
   ExternalLink,
   FileCode2,
+  FileDiff,
   Folder,
   FolderGit2,
+  GitBranch,
+  GitCommitHorizontal,
+  GitCompare,
   Github,
   History,
   KeyRound,
@@ -37,6 +41,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import GitPanel from "./GitPanel";
 
 const TOKEN_KEY = "autocode_web_token";
 const WORKSPACE_KEY = "autocode_workspace_id";
@@ -520,11 +525,18 @@ export default function App() {
   const [runStage, setRunStage] = useState("");
   const [lastTimings, setLastTimings] = useState(null);
   const [downloadingFileId, setDownloadingFileId] = useState("");
+  const [gitState, setGitState] = useState(null);
+  const [gitDiff, setGitDiff] = useState(null);
+  const [gitOpen, setGitOpen] = useState(false);
+  const [gitView, setGitView] = useState("changes");
+  const [gitLoading, setGitLoading] = useState(false);
+  const [gitBusy, setGitBusy] = useState(false);
   const [toast, setToast] = useState("");
   const [panel, setPanel] = useState(null);
   const [panelContent, setPanelContent] = useState("");
   const messageEndRef = useRef(null);
   const fileInputRef = useRef(null);
+  const promptInputRef = useRef(null);
 
   const selectedWorkspace = useMemo(
     () => bootstrap.workspaces.find((item) => item.workspace_id === selectedId) || null,
@@ -597,13 +609,29 @@ export default function App() {
     setSessions(data.sessions || []);
   }, [runnerOnline, selectedWorkspace, token]);
 
+  const refreshGit = useCallback(async () => {
+    if (!selectedWorkspace || !runnerOnline) return null;
+    setGitLoading(true);
+    try {
+      const data = await request(
+        token,
+        `/api/git/status?workspace_id=${encodeURIComponent(selectedWorkspace.workspace_id)}`,
+      );
+      setGitState(data);
+      return data;
+    } finally {
+      setGitLoading(false);
+    }
+  }, [runnerOnline, selectedWorkspace, token]);
+
   useEffect(() => {
     if (!selectedWorkspace) return;
     setMessages([]);
     setPending(null);
     setStatus("idle");
     refreshSessions().catch((error) => showToast(error.message));
-  }, [refreshSessions, selectedWorkspace, showToast]);
+    refreshGit().catch((error) => showToast(error.message));
+  }, [refreshGit, refreshSessions, selectedWorkspace, showToast]);
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -747,6 +775,7 @@ export default function App() {
       } catch (error) {
         showToast(`会话列表刷新失败：${error.message}`);
       }
+      refreshGit().catch((error) => showToast(`Git 刷新失败：${error.message}`));
     } catch (error) {
       setMessages((items) => [
         ...items,
@@ -941,6 +970,133 @@ export default function App() {
     }
   }
 
+  async function loadGitDiff(scope = gitView, path = "", base = "") {
+    if (!selectedWorkspace || !runnerOnline) return null;
+    setGitLoading(true);
+    try {
+      const data = await request(token, "/api/git/diff", {
+        method: "POST",
+        body: JSON.stringify({
+          workspace_id: selectedWorkspace.workspace_id,
+          scope,
+          path,
+          base,
+        }),
+      });
+      setGitDiff(data);
+      return data;
+    } catch (error) {
+      showToast(error.message);
+      return null;
+    } finally {
+      setGitLoading(false);
+    }
+  }
+
+  async function openGit(view = "changes") {
+    if (!selectedWorkspace) return;
+    setGitOpen(true);
+    setGitView(view);
+    setGitDiff(null);
+    setMobileNavOpen(false);
+    try {
+      const latest = await refreshGit();
+      if (!latest?.available) return;
+      const base = view === "compare" ? latest.default_base : "";
+      await loadGitDiff(view, "", base);
+    } catch (error) {
+      showToast(error.message);
+    }
+  }
+
+  async function handleGitView(view, base = "") {
+    setGitView(view);
+    setGitDiff(null);
+    await loadGitDiff(view, "", view === "compare" ? base : "");
+  }
+
+  async function handleGitAction(action, values = {}) {
+    if (!selectedWorkspace || gitBusy || busy) return false;
+    setGitBusy(true);
+    try {
+      const result = await request(token, "/api/git/action", {
+        method: "POST",
+        body: JSON.stringify({
+          workspace_id: selectedWorkspace.workspace_id,
+          action,
+          paths: values.paths || [],
+          branch: values.branch || "",
+          message: values.message || "",
+        }),
+      });
+      setGitState(result.git);
+      const labels = {
+        stage: "文件已暂存",
+        unstage: "已取消暂存",
+        switch: `已切换到 ${result.git.branch}`,
+        create_branch: `已创建并切换到 ${result.git.branch}`,
+        commit: "提交已创建",
+        push: "当前分支已推送",
+      };
+      showToast(labels[action] || "Git 操作完成");
+      if (action === "switch" || action === "create_branch") {
+        try {
+          await request(token, "/api/reset", {
+            method: "POST",
+            body: JSON.stringify({
+              client_id: clientId,
+              workspace_id: selectedWorkspace.workspace_id,
+            }),
+          });
+        } catch (error) {
+          if (error.status !== 503) showToast(error.message);
+        }
+        renewClientId(selectedWorkspace.workspace_id);
+        setMessages([]);
+        setPending(null);
+        setStatus("idle");
+        setGitView("changes");
+        await loadGitDiff("changes");
+      } else if (action !== "push") {
+        await loadGitDiff(
+          gitView,
+          action === "commit" ? "" : gitDiff?.path || "",
+          gitDiff?.base || "",
+        );
+      }
+      return true;
+    } catch (error) {
+      showToast(error.message);
+      return false;
+    } finally {
+      setGitBusy(false);
+    }
+  }
+
+  function launchGitReview(view, base, path) {
+    if (busy) return;
+    const range = view === "compare"
+      ? `当前分支相对 ${base} 的变更`
+      : "当前未提交变更";
+    const target = path ? `，重点审查文件 ${path}` : "";
+    setGitOpen(false);
+    submitPrompt(
+      `请以代码审查者身份 Review ${range}${target}。优先发现会导致错误、回归、数据损坏、`
+      + "安全问题或缺失测试的具体问题；按严重程度列出发现，并提供文件和行号。"
+      + "如果没有发现问题，请明确说明剩余测试风险。",
+    );
+  }
+
+  function addDiffLineToPrompt(path, line) {
+    const lineNumber = line.next || line.old;
+    setPrompt(
+      `请重点检查 ${path}:${lineNumber} 这一处变更，解释它是否存在缺陷或回归风险：\n`
+      + line.text,
+    );
+    setGitOpen(false);
+    window.requestAnimationFrame(() => promptInputRef.current?.focus());
+  }
+
   function logout(message = "") {
     localStorage.removeItem(TOKEN_KEY);
     setToken("");
@@ -1014,6 +1170,32 @@ export default function App() {
           >
             <History size={18} /> 历史会话
             {sessions.length > 0 && <em>{sessions.length}</em>}
+          </button>
+        </nav>
+
+        <nav className="side-nav git-side-nav">
+          <span className="nav-caption">GIT</span>
+          <button type="button" onClick={() => openGit("changes")}>
+            <FileDiff size={18} /> Changes
+            {gitState?.available && (
+              <span className="sidebar-git-stats">
+                <b>+{gitState.additions}</b>
+                <i>-{gitState.deletions}</i>
+              </span>
+            )}
+          </button>
+          <button type="button" onClick={() => openGit("changes")}>
+            <GitBranch size={18} />
+            <span className="branch-nav-copy">
+              <small>Local</small>
+              <strong>{gitState?.available ? gitState.branch : "非 Git 项目"}</strong>
+            </span>
+          </button>
+          <button type="button" onClick={() => openGit("changes")}>
+            <GitCommitHorizontal size={18} /> Commit or push
+          </button>
+          <button type="button" onClick={() => openGit("compare")}>
+            <GitCompare size={18} /> Compare branch
           </button>
         </nav>
 
@@ -1174,6 +1356,7 @@ export default function App() {
               </div>
             )}
             <textarea
+              ref={promptInputRef}
               value={prompt}
               onChange={(event) => setPrompt(event.target.value)}
               onKeyDown={(event) => {
@@ -1245,6 +1428,33 @@ export default function App() {
         onClose={() => setProjectPickerOpen(false)}
         onRefresh={openProjectPicker}
         required={!selectedWorkspace}
+      />
+
+      <GitPanel
+        open={gitOpen}
+        state={gitState}
+        diff={gitDiff}
+        view={gitView}
+        loading={gitLoading}
+        busy={gitBusy || busy}
+        onClose={() => setGitOpen(false)}
+        onRefresh={async () => {
+          const latest = await refreshGit();
+          if (latest?.available) {
+            await loadGitDiff(
+              gitView,
+              "",
+              gitView === "compare"
+                ? gitDiff?.base || latest.default_base
+                : "",
+            );
+          }
+        }}
+        onChangeView={handleGitView}
+        onLoadDiff={loadGitDiff}
+        onAction={handleGitAction}
+        onReview={launchGitReview}
+        onLineFeedback={addDiffLineToPrompt}
       />
 
       {panel && (

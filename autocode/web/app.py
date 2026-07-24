@@ -9,7 +9,7 @@ import json
 import os
 import re
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
 from urllib.parse import quote
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Response, status
@@ -76,6 +76,24 @@ class ResumeRequest(ClientRequest):
 
 class DownloadRequest(ClientRequest):
     file_id: str = Field(min_length=20, max_length=80)
+
+
+class GitDiffRequest(BaseModel):
+    workspace_id: str = Field(min_length=20, max_length=20)
+    scope: Literal["changes", "compare"]
+    path: str = Field(default="", max_length=1000)
+    base: str = Field(default="", max_length=200)
+
+
+class GitActionRequest(BaseModel):
+    workspace_id: str = Field(min_length=20, max_length=20)
+    action: Literal["stage", "unstage", "switch", "create_branch", "commit", "push"]
+    paths: list[Annotated[str, Field(max_length=1000)]] = Field(
+        default_factory=list,
+        max_length=200,
+    )
+    branch: str = Field(default="", max_length=200)
+    message: str = Field(default="", max_length=500)
 
 
 class RunnerResultRequest(BaseModel):
@@ -307,6 +325,35 @@ def create_app(
             headers={
                 "Content-Disposition": f"attachment; filename*=UTF-8''{quote(name)}",
                 "Content-Length": str(len(content)),
+            },
+        )
+
+    @app.get("/api/git/status", dependencies=browser_auth)
+    async def git_status(workspace_id: str = Query(min_length=20, max_length=20)):
+        return await dispatch(
+            "git_status",
+            {"workspace_id": workspace_id},
+            timeout=control_request_timeout,
+        )
+
+    @app.post("/api/git/diff", dependencies=browser_auth)
+    async def git_diff(payload: GitDiffRequest):
+        return await dispatch(
+            "git_diff",
+            payload.model_dump(),
+            timeout=control_request_timeout,
+        )
+
+    @app.post("/api/git/action", dependencies=browser_auth)
+    async def git_action(payload: GitActionRequest):
+        return await dispatch(
+            "git_action",
+            {
+                "workspace_id": payload.workspace_id,
+                "git_action": payload.action,
+                "paths": payload.paths,
+                "branch": payload.branch,
+                "message": payload.message,
             },
         )
 

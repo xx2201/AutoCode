@@ -96,6 +96,10 @@ def test_browser_and_runner_tokens_are_isolated(relay_client):
     assert client.post("/api/auth/verify", headers=_runner_headers()).status_code == 401
     assert client.post("/api/auth/verify", headers=_browser_headers()).status_code == 200
     assert client.get("/api/runner/next", headers=_browser_headers()).status_code == 401
+    assert (
+        client.get(f"/api/git/status?workspace_id={WORKSPACE_ID}").status_code
+        == 401
+    )
 
 
 def test_runner_heartbeat_marks_runner_connected(relay_client):
@@ -173,6 +177,57 @@ def test_authenticated_download_is_relayed_and_returns_file(relay_client):
     assert response.headers["content-type"] == "application/pdf"
     assert "filename*=UTF-8''" in response.headers["content-disposition"]
     assert job["payload"]["file_id"] == "opaque-file-id-that-is-long-enough"
+
+
+def test_git_status_diff_and_action_are_relayed(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+
+    status_response, status_job = _round_trip(
+        client,
+        lambda: client.get(
+            f"/api/git/status?workspace_id={WORKSPACE_ID}",
+            headers=_browser_headers(),
+        ),
+        "git_status",
+        {"available": True, "branch": "main", "changes": []},
+    )
+    diff_response, diff_job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/git/diff",
+            headers=_browser_headers(),
+            json={
+                "workspace_id": WORKSPACE_ID,
+                "scope": "compare",
+                "base": "main",
+                "path": "app.py",
+            },
+        ),
+        "git_diff",
+        {"scope": "compare", "base": "main", "path": "app.py", "diff": ""},
+    )
+    action_response, action_job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/git/action",
+            headers=_browser_headers(),
+            json={
+                "workspace_id": WORKSPACE_ID,
+                "action": "stage",
+                "paths": ["app.py"],
+            },
+        ),
+        "git_action",
+        {"action": "stage", "git": {"available": True, "branch": "main"}},
+    )
+
+    assert status_response.status_code == 200
+    assert status_job["payload"] == {"workspace_id": WORKSPACE_ID}
+    assert diff_response.status_code == 200
+    assert diff_job["payload"]["base"] == "main"
+    assert action_response.status_code == 200
+    assert action_job["payload"]["git_action"] == "stage"
 
 
 def test_streaming_chat_relays_tokens_stages_and_final_result(relay_client):
