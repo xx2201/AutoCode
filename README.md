@@ -271,7 +271,7 @@ Example configuration:
       "command": "npx",
       "args": ["-y", "@modelcontextprotocol/server-memory"],
       "env": {
-        "MEMORY_FILE_PATH": "data/mcp-memory.jsonl"
+        "MEMORY_FILE_PATH": "/absolute/path/to/mcp-memory.jsonl"
       }
     }
   }

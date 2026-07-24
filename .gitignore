@@ -12,6 +12,9 @@ venv/
 .mypy_cache/
 .ruff_cache/
 .autocode_history
+/.autocode/
+/.iceCoder/
+/tmp/
 .DS_Store
 dist/
 .pytest_cache/
