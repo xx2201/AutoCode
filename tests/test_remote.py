@@ -77,16 +77,19 @@ def test_remote_manager_handles_approval_flow(tmp_path):
 
 def test_remote_manager_can_resume_checkpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
-    llm = _FakeLLM([LLMResponse(content="finished")])
+    llm = _FakeLLM([LLMResponse(content="finished", prompt_tokens=125)])
     manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
 
     result = manager.submit(202, "finish task")
     assert result.status == "completed"
+    assert result.context_used_tokens == 125
+    assert result.context_window_tokens == 1_000_000
     session_id = result.session_id
 
     resumed = manager.resume_session(202, session_id)
     assert resumed.session_id == session_id
     assert resumed.status == "completed"
+    assert resumed.context_used_tokens == 125
 
 
 def test_remote_manager_deletes_saved_and_active_session(tmp_path, monkeypatch):

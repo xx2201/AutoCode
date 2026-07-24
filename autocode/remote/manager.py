@@ -29,6 +29,8 @@ class RemoteTurnResult:
     pending_arguments: dict | None = None
     pending_requires_manual: bool = False
     auto_approve_for_task: bool = False
+    context_used_tokens: int = 0
+    context_window_tokens: int = 0
 
 
 @dataclass
@@ -339,11 +341,21 @@ class RemoteManager:
 
     @staticmethod
     def _result_from_agent(agent: Agent, text: str) -> RemoteTurnResult:
+        context = agent.context_usage()
         if agent.session_state is None:
-            return RemoteTurnResult(text=text)
+            return RemoteTurnResult(
+                text=text,
+                context_used_tokens=context["used_tokens"],
+                context_window_tokens=context["window_tokens"],
+            )
         task = agent.task_state
         if task is None:
-            return RemoteTurnResult(text=text, session_id=agent.session_state.session_id)
+            return RemoteTurnResult(
+                text=text,
+                session_id=agent.session_state.session_id,
+                context_used_tokens=context["used_tokens"],
+                context_window_tokens=context["window_tokens"],
+            )
         pending_tool = ""
         pending_reason = ""
         pending_arguments = None
@@ -363,4 +375,6 @@ class RemoteManager:
             pending_arguments=pending_arguments,
             pending_requires_manual=pending_requires_manual,
             auto_approve_for_task=task.auto_approve_for_task,
+            context_used_tokens=context["used_tokens"],
+            context_window_tokens=context["window_tokens"],
         )

@@ -306,6 +306,53 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .connection-pill.online i { background: var(--mint); }
 .connection-pill.offline i { background: var(--danger); }
 .model-pill { color: var(--primary); }
+.context-meter { position: relative; }
+.context-meter summary {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: #70758a;
+  background: white;
+  cursor: pointer;
+  list-style: none;
+}
+.context-meter summary::-webkit-details-marker { display: none; }
+.context-meter summary:hover { color: var(--primary); border-color: #d7d8f7; background: #fafaff; }
+.context-meter summary:focus-visible { outline: 3px solid rgba(91, 92, 226, 0.2); outline-offset: 2px; }
+.context-meter svg { width: 23px; height: 23px; overflow: visible; transform: rotate(-90deg); }
+.context-ring-track, .context-ring-value { fill: none; stroke-width: 2.6; }
+.context-ring-track { stroke: #e7e8ef; }
+.context-ring-value { stroke: var(--primary); stroke-linecap: round; transition: stroke-dashoffset 220ms ease; }
+.context-meter.is-high .context-ring-value { stroke: var(--danger); }
+.context-popover {
+  position: absolute;
+  z-index: 35;
+  top: calc(100% + 8px);
+  right: 0;
+  width: max-content;
+  min-width: 218px;
+  padding: 12px 14px;
+  border: 1px solid #e2e4ec;
+  border-radius: 12px;
+  opacity: 0;
+  color: #404454;
+  background: rgba(255, 255, 255, 0.98);
+  box-shadow: 0 14px 38px rgba(51, 54, 82, 0.16);
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+.context-popover strong, .context-popover span, .context-popover small { display: block; }
+.context-popover strong { margin-bottom: 6px; font-size: 10px; }
+.context-popover span { font-size: 11px; }
+.context-popover small { margin-top: 5px; color: #858a9c; font-size: 9px; }
+.context-meter:hover .context-popover,
+.context-meter:focus-within .context-popover,
+.context-meter[open] .context-popover { opacity: 1; pointer-events: auto; transform: translateY(0); }
 
 .conversation { min-height: 0; overflow-y: auto; background: linear-gradient(180deg, #ffffff, #fcfcff); }
 .conversation-inner { width: min(920px, 100%); min-height: 100%; margin: 0 auto; padding: 36px 38px 25px; }

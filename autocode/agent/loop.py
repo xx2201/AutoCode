@@ -111,6 +111,24 @@ class Agent:
             return None
         return self.session_state.current_task
 
+    def context_usage(self) -> dict:
+        """Return the current conversation-window occupancy, not cumulative billing tokens."""
+        estimated_tokens = estimate_tokens(self.messages)
+        persisted_tokens = (
+            self.session_state.context_used_tokens
+            if self.session_state is not None
+            else 0
+        )
+        used_tokens = max(estimated_tokens, self._last_prompt_tokens, persisted_tokens)
+        window_tokens = max(1, int(self.context.max_tokens))
+        used_tokens = min(used_tokens, window_tokens)
+        return {
+            "used_tokens": used_tokens,
+            "window_tokens": window_tokens,
+            "remaining_tokens": max(0, window_tokens - used_tokens),
+            "used_percent": round(used_tokens / window_tokens * 100, 1),
+        }
+
     def _fresh_tools(self) -> list[Tool]:
         if self._tool_factory is not None:
             return list(self._tool_factory())
@@ -498,6 +516,7 @@ class Agent:
     def restore_session(self, session_state: SessionState, messages: list[dict], model: str | None = None):
         self.session_state = session_state
         self.messages = messages
+        self._last_prompt_tokens = max(0, session_state.context_used_tokens)
         if model:
             self.llm.model = model
 
@@ -518,6 +537,7 @@ class Agent:
                 on_token=on_token,
             )
             self._last_prompt_tokens = resp.prompt_tokens
+            self.session_state.context_used_tokens = max(0, resp.prompt_tokens)
 
             if not resp.tool_calls:
                 self._append_message(resp.message)

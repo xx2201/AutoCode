@@ -3,13 +3,40 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
-from autocode.cli import _clear_terminal, _load_resumable_session, _prompt_approval, _resume_candidates, _show_help, _welcome_panel, main
+from autocode.cli import (
+    _clear_terminal,
+    _context_toolbar,
+    _format_token_count,
+    _load_resumable_session,
+    _prompt_approval,
+    _resume_candidates,
+    _show_help,
+    _welcome_panel,
+    main,
+)
 from autocode.config import Config
 
 
 class _Pending:
     tool_name = "bash"
     reason = "confirmation required"
+
+
+def test_context_toolbar_uses_same_window_metrics_as_agent():
+    agent = SimpleNamespace(
+        context_usage=lambda: {
+            "used_tokens": 127_000,
+            "window_tokens": 258_000,
+            "remaining_tokens": 131_000,
+            "used_percent": 49.2,
+        }
+    )
+
+    toolbar = _context_toolbar(agent)
+
+    assert "49.2% used" in toolbar[1][1]
+    assert "127.0k / 258.0k tokens" in toolbar[2][1]
+    assert _format_token_count(1_500_000) == "1.5m"
 
 
 def test_prompt_approval_accepts_dialog_approve(monkeypatch):

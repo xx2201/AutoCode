@@ -252,6 +252,32 @@ def test_agent_passes_last_real_prompt_tokens_into_compression(tmp_path):
     assert captured["last_prompt_tokens"] == 4321
 
 
+def test_agent_context_usage_prefers_real_prompt_and_caps_at_window(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+
+    agent = Agent(
+        llm=_NoopLLM(),
+        workspace_root=str(tmp_path),
+        max_context_tokens=10_000,
+    )
+    agent.messages = [{"role": "user", "content": "short"}]
+    agent._last_prompt_tokens = 4_321
+
+    usage = agent.context_usage()
+
+    assert usage == {
+        "used_tokens": 4_321,
+        "window_tokens": 10_000,
+        "remaining_tokens": 5_679,
+        "used_percent": 43.2,
+    }
+
+    agent._last_prompt_tokens = 20_000
+    assert agent.context_usage()["used_tokens"] == 10_000
+    assert agent.context_usage()["used_percent"] == 100.0
+
+
 def test_memory_manager_reads_project_memory(monkeypatch, tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

@@ -116,6 +116,7 @@ class LocalRunner:
         if action == "bootstrap":
             return {
                 "model": self._base_config.model,
+                "context_window_tokens": self._base_config.max_context_tokens,
                 "workspaces": self.registry.list_workspaces(),
                 "version": __version__,
                 "capabilities": {

@@ -24,7 +24,6 @@ import {
   LogOut,
   Menu,
   MessageSquareText,
-  MoreHorizontal,
   Paperclip,
   PanelLeftClose,
   Play,
@@ -528,11 +527,61 @@ function Welcome({ workspace, onPrompt }) {
   );
 }
 
+function formatContextTokens(value) {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(1)}m`;
+  if (value >= 1_000) return `${Math.round(value / 1_000)}k`;
+  return String(value || 0);
+}
+
+function ContextMeter({ usage }) {
+  const windowTokens = Math.max(0, usage.window_tokens || 0);
+  const usedTokens = Math.min(Math.max(0, usage.used_tokens || 0), windowTokens || Infinity);
+  const usedPercent = windowTokens ? Math.min(100, usedTokens / windowTokens * 100) : 0;
+  const remainingPercent = Math.max(0, 100 - usedPercent);
+  const radius = 8;
+  const circumference = 2 * Math.PI * radius;
+
+  return (
+    <details className={`context-meter ${usedPercent >= 80 ? "is-high" : ""}`}>
+      <summary
+        aria-label={`上下文窗口已使用 ${usedPercent.toFixed(0)}%`}
+        title="上下文窗口"
+      >
+        <svg viewBox="0 0 22 22" aria-hidden="true">
+          <circle className="context-ring-track" cx="11" cy="11" r={radius} />
+          <circle
+            className="context-ring-value"
+            cx="11"
+            cy="11"
+            r={radius}
+            strokeDasharray={circumference}
+            strokeDashoffset={circumference * (1 - usedPercent / 100)}
+          />
+        </svg>
+      </summary>
+      <div className="context-popover">
+        <strong>Context window:</strong>
+        <span>
+          {usedPercent.toFixed(0)}% used ({remainingPercent.toFixed(0)}% left)
+        </span>
+        <small>
+          {formatContextTokens(usedTokens)} / {formatContextTokens(windowTokens)} tokens used
+        </small>
+      </div>
+    </details>
+  );
+}
+
 export default function App() {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY) || "");
   const [authState, setAuthState] = useState("checking");
   const [authError, setAuthError] = useState("");
-  const [bootstrap, setBootstrap] = useState({ model: "", workspaces: [], version: "" });
+  const [bootstrap, setBootstrap] = useState({
+    model: "",
+    workspaces: [],
+    version: "",
+    context_window_tokens: 0,
+  });
   const [selectedId, setSelectedId] = useState(
     () => localStorage.getItem(WORKSPACE_KEY) || "",
   );
@@ -553,6 +602,10 @@ export default function App() {
   const [streamText, setStreamText] = useState("");
   const [runStage, setRunStage] = useState("");
   const [lastTimings, setLastTimings] = useState(null);
+  const [contextUsage, setContextUsage] = useState({
+    used_tokens: 0,
+    window_tokens: 0,
+  });
   const [downloadingFileId, setDownloadingFileId] = useState("");
   const [gitState, setGitState] = useState(null);
   const [gitDiff, setGitDiff] = useState(null);
@@ -582,6 +635,10 @@ export default function App() {
     async (activeToken) => {
       const data = await request(activeToken, "/api/bootstrap");
       setBootstrap(data);
+      setContextUsage((current) => ({
+        used_tokens: current.used_tokens,
+        window_tokens: data.context_window_tokens || current.window_tokens,
+      }));
       setRunnerOnline(true);
       const saved = localStorage.getItem(WORKSPACE_KEY);
       const savedExists = data.workspaces.some((item) => item.workspace_id === saved);
@@ -660,6 +717,10 @@ export default function App() {
       setMessages([]);
       setPending(null);
       setStatus("idle");
+      setContextUsage({
+        used_tokens: 0,
+        window_tokens: bootstrap.context_window_tokens || 0,
+      });
       const savedSessionId = storedSessionId(selectedWorkspace.workspace_id);
       setActiveSessionId(savedSessionId);
       try {
@@ -680,6 +741,13 @@ export default function App() {
         setMessages(data.messages || []);
         setPending(data.result?.pending_tool ? data.result : null);
         setStatus(data.result?.status || "idle");
+        setContextUsage({
+          used_tokens: data.result?.context_used_tokens || 0,
+          window_tokens:
+            data.result?.context_window_tokens
+            || bootstrap.context_window_tokens
+            || 0,
+        });
       } catch (error) {
         if (!ignore) {
           storeSessionId(selectedWorkspace.workspace_id, "");
@@ -833,6 +901,13 @@ export default function App() {
       }
       setPending(result.pending_tool ? result : null);
       setStatus(result.status || "completed");
+      setContextUsage({
+        used_tokens: result.context_used_tokens || 0,
+        window_tokens:
+          result.context_window_tokens
+          || bootstrap.context_window_tokens
+          || 0,
+      });
       if (result.session_id) {
         storeSessionId(selectedWorkspace.workspace_id, result.session_id);
         setActiveSessionId(result.session_id);
@@ -967,6 +1042,13 @@ export default function App() {
       }
       setPending(result.pending_tool ? result : null);
       setStatus(result.status || "completed");
+      setContextUsage({
+        used_tokens: result.context_used_tokens || 0,
+        window_tokens:
+          result.context_window_tokens
+          || bootstrap.context_window_tokens
+          || 0,
+      });
       await refreshSessions();
     } catch (error) {
       showToast(error.message);
@@ -992,6 +1074,13 @@ export default function App() {
       setMessages(data.messages || []);
       setPending(data.result?.pending_tool ? data.result : null);
       setStatus(data.result?.status || "idle");
+      setContextUsage({
+        used_tokens: data.result?.context_used_tokens || 0,
+        window_tokens:
+          data.result?.context_window_tokens
+          || bootstrap.context_window_tokens
+          || 0,
+      });
       storeSessionId(selectedWorkspace.workspace_id, sessionId);
       setActiveSessionId(sessionId);
       setPanel(null);
@@ -1023,6 +1112,10 @@ export default function App() {
     setMessages([]);
     setPending(null);
     setStatus("idle");
+    setContextUsage({
+      used_tokens: 0,
+      window_tokens: bootstrap.context_window_tokens || 0,
+    });
     setPanel(null);
     showToast("已新建会话");
   }
@@ -1349,9 +1442,7 @@ export default function App() {
               <i /> {runnerOnline ? "Connected" : "Offline"}
             </span>
             <span className="model-pill"><Zap size={14} /> {bootstrap.model || "model"}</span>
-            <button className="icon-button" type="button" onClick={() => openInfo("trace")}>
-              <MoreHorizontal size={20} />
-            </button>
+            <ContextMeter usage={contextUsage} />
           </div>
         </header>
 

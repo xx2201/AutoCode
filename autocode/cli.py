@@ -296,6 +296,7 @@ def _repl(agent: Agent, config: Config):
                 multiline=True,
                 key_bindings=kb,
                 prompt_continuation="...  ",
+                bottom_toolbar=lambda: _context_toolbar(agent),
             ).strip()
         except (EOFError, KeyboardInterrupt):
             agent.close()
@@ -343,6 +344,14 @@ def _repl(agent: Agent, config: Config):
                 "Prompt cache: "
                 f"[cyan]{cache_read}[/cyan] hit + [cyan]{cache_miss}[/cyan] miss = [bold]{cache_total}[/bold] total  "
                 f"(hit rate {cache_rate})"
+            )
+            usage = agent.context_usage()
+            console.print(
+                "Context window: "
+                f"[bold]{usage['used_percent']:.1f}% used[/bold] "
+                f"([cyan]{_format_token_count(usage['used_tokens'])}[/cyan] / "
+                f"{_format_token_count(usage['window_tokens'])} tokens, "
+                f"{_format_token_count(usage['remaining_tokens'])} left)"
             )
             continue
         if user_input == "/model" or user_input.startswith("/model "):
@@ -539,6 +548,27 @@ def _show_help():
 def _brief(kwargs: dict, maxlen: int = 80) -> str:
     s = ", ".join(f"{k}={repr(v)[:40]}" for k, v in kwargs.items())
     return s[:maxlen] + ("..." if len(s) > maxlen else "")
+
+
+def _format_token_count(value: int) -> str:
+    if value >= 1_000_000:
+        return f"{value / 1_000_000:.1f}m"
+    if value >= 1_000:
+        return f"{value / 1_000:.1f}k"
+    return str(value)
+
+
+def _context_toolbar(agent: Agent):
+    usage = agent.context_usage()
+    return [
+        ("class:bottom-toolbar", " Context "),
+        ("class:bottom-toolbar.text", f"{usage['used_percent']:.1f}% used"),
+        (
+            "class:bottom-toolbar",
+            f" · {_format_token_count(usage['used_tokens'])} / "
+            f"{_format_token_count(usage['window_tokens'])} tokens ",
+        ),
+    ]
 
 
 def _resume_candidates(workspace_root: str, limit: int = 10) -> list[dict]:
