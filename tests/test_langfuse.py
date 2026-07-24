@@ -119,3 +119,22 @@ def test_agent_chat_batches_turn_trace_until_shutdown(monkeypatch, tmp_path):
     agent.close()
     assert any(item["event"] == "shutdown" for item in events)
     assert not any(item["event"] == "get_current_trace_id" for item in events)
+
+
+def test_llm_clone_reuses_tracer_without_shutting_it_down(monkeypatch, tmp_path):
+    events = _install_fake_langfuse(monkeypatch)
+    llm = LLM(
+        model="fake-model",
+        api_key="sk-test",
+        langfuse_public_key="pk-test",
+        langfuse_secret_key="sk-lf-test",
+    )
+    agent = Agent(llm=llm, tools=[], workspace_root=str(tmp_path))
+    llm_copy = llm.clone()
+
+    assert llm_copy.tracer is llm.tracer
+    agent.close(shutdown_observability=False)
+    assert not any(item["event"] == "shutdown" for item in events)
+    llm.tracer.shutdown()
+    llm.tracer.shutdown()
+    assert [item["event"] for item in events].count("shutdown") == 1

@@ -180,6 +180,19 @@ def test_remote_manager_replace_runtime_closes_previous_agent(tmp_path):
     assert replaced is not runtime
 
 
+def test_remote_manager_replace_keeps_shared_observability_alive(tmp_path):
+    manager = RemoteManager(_config(tmp_path), tools=[])
+    runtime = manager._get_or_create_runtime(909)
+    close_calls = []
+    runtime.agent.close = lambda **kwargs: close_calls.append(kwargs)
+
+    replaced = manager._get_or_create_runtime(909, replace=True)
+
+    assert close_calls == [{"shutdown_observability": False}]
+    assert replaced.agent.llm.tracer is manager._shared_tracer
+    manager.close()
+
+
 def test_render_turn_result_includes_approval_hint():
     text = render_turn_result(
         type("Result", (), {

@@ -200,9 +200,6 @@ class MemoryManager:
             with self._lock:
                 if self._pending_project_memory_key == key:
                     self._pending_project_memory_key = ""
-            tracer = getattr(llm_copy, "tracer", None)
-            if tracer is not None:
-                tracer.shutdown()
 
         future.add_done_callback(_clear_pending)
         return True

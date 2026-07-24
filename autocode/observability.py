@@ -43,6 +43,7 @@ class LangfuseTracer:
         self.secret_key = secret_key or ""
         self.base_url = base_url
         self._client = None
+        self._shutdown = False
         self._logger = get_diagnostic_logger("observability")
         self._status = "disabled"
         self._last_error = ""
@@ -214,10 +215,12 @@ class LangfuseTracer:
 
     def shutdown(self) -> None:
         """Drain the SDK queue when the owning runtime exits."""
-        if not self.enabled:
+        if not self.enabled or self._shutdown:
             return
+        self._shutdown = True
         try:
             self._client.shutdown()
+            self._status = "shutdown"
             log_event(self._logger, logging.INFO, "Langfuse client shut down")
         except Exception as exc:
             self._last_error = f"{type(exc).__name__}: {exc}"

@@ -3,6 +3,7 @@
 import json
 import os
 import re
+import threading
 import time
 import uuid
 from pathlib import Path
@@ -14,6 +15,8 @@ SESSIONS_DIR = Path(
 ).expanduser()
 _SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_TASK_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_CHECKPOINT_CACHE: dict[Path, tuple[int, int, dict]] = {}
+_CHECKPOINT_CACHE_LOCK = threading.Lock()
 
 
 def new_session_id() -> str:
@@ -61,10 +64,14 @@ def save_checkpoint(session_state: SessionState, messages: list[dict], model: st
         "llm_rounds_raw_file": "llm_rounds.jsonl",
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
-    (directory / "checkpoint.json").write_text(
+    path = directory / "checkpoint.json"
+    path.write_text(
         json.dumps(payload, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
+    stat = path.stat()
+    with _CHECKPOINT_CACHE_LOCK:
+        _CHECKPOINT_CACHE[path] = (stat.st_mtime_ns, stat.st_size, payload)
 
 
 def load_checkpoint(session_id: str) -> tuple[SessionState, list[dict], str] | None:
@@ -91,7 +98,7 @@ def list_sessions(workspace_root: str | None = None, limit: int = 20) -> list[di
         if not path.exists():
             continue
         try:
-            data = _read_json(path)
+            data = _read_cached_json(path)
             session = data.get("session", {})
             current_task = session.get("current_task") or {}
             item_workspace = _normalize_workspace_root(data.get("workspace_root", ""))
@@ -114,3 +121,15 @@ def list_sessions(workspace_root: str | None = None, limit: int = 20) -> list[di
 
 def _read_json(path: Path) -> dict:
     return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _read_cached_json(path: Path) -> dict:
+    stat = path.stat()
+    with _CHECKPOINT_CACHE_LOCK:
+        cached = _CHECKPOINT_CACHE.get(path)
+        if cached is not None and cached[:2] == (stat.st_mtime_ns, stat.st_size):
+            return cached[2]
+    data = _read_json(path)
+    with _CHECKPOINT_CACHE_LOCK:
+        _CHECKPOINT_CACHE[path] = (stat.st_mtime_ns, stat.st_size, data)
+    return data

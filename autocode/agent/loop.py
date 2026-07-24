@@ -723,8 +723,8 @@ class Agent:
                     tool.close()
                 except Exception:
                     continue
+            self.memory.close()
             if shutdown_observability:
-                self.memory.close()
                 tracer = getattr(self.llm, "tracer", None)
                 if tracer is not None:
                     tracer.shutdown()

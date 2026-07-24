@@ -13,6 +13,7 @@ from ..config import Config
 from ..llm import LLM, LiteLLM
 from ..message_content import content_text
 from ..mcp import get_shared_mcp_manager
+from ..observability import LangfuseTracer
 from ..state import format_trace, list_sessions, load_checkpoint, load_trace
 from ..tools.factory import build_agent_tools
 
@@ -57,6 +58,15 @@ class RemoteManager:
         self._llm_factory = llm_factory
         self._tools = tools
         self._tool_factory = tool_factory
+        self._shared_tracer = (
+            None
+            if llm_factory is not None
+            else LangfuseTracer(
+                public_key=config.langfuse_public_key,
+                secret_key=config.langfuse_secret_key,
+                base_url=config.langfuse_base_url,
+            )
+        )
         self._mcp_manager = get_shared_mcp_manager(config.workspace_root, config.mcp_config_path)
         self._mcp_manager.start_background()
         self._state_lock = threading.Lock()
@@ -111,7 +121,7 @@ class RemoteManager:
             runtime = self._chats.pop(chat_id, None)
         if runtime is not None:
             with runtime.lock:
-                runtime.agent.close()
+                self._close_agent(runtime.agent)
 
     def close(self) -> None:
         """Close every chat runtime and the shared MCP manager."""
@@ -120,7 +130,9 @@ class RemoteManager:
             self._chats.clear()
         for runtime in runtimes:
             with runtime.lock:
-                runtime.agent.close()
+                self._close_agent(runtime.agent)
+        if self._shared_tracer is not None:
+            self._shared_tracer.shutdown()
         self._mcp_manager.close()
 
     def conversation_messages(self, chat_id: Hashable, limit: int = 100) -> list[dict]:
@@ -237,8 +249,14 @@ class RemoteManager:
             self._chats[chat_id] = runtime
         if previous is not None:
             with previous.lock:
-                previous.agent.close()
+                self._close_agent(previous.agent)
         return runtime
+
+    def _close_agent(self, agent: Agent) -> None:
+        if self._shared_tracer is None:
+            agent.close()
+            return
+        agent.close(shutdown_observability=False)
 
     def _require_runtime(self, chat_id: Hashable) -> _ChatRuntime:
         with self._state_lock:
@@ -280,6 +298,7 @@ class RemoteManager:
             langfuse_public_key=self.config.langfuse_public_key,
             langfuse_secret_key=self.config.langfuse_secret_key,
             langfuse_base_url=self.config.langfuse_base_url,
+            tracer=self._shared_tracer,
             temperature=self.config.temperature,
             max_tokens=self.config.max_tokens,
         )

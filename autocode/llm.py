@@ -142,6 +142,7 @@ class LLM:
         langfuse_public_key: str = "",
         langfuse_secret_key: str = "",
         langfuse_base_url: str | None = None,
+        tracer: LangfuseTracer | None = None,
         **kwargs,
     ):
         self.model = model
@@ -156,7 +157,7 @@ class LLM:
         self.total_completion_tokens = 0
         self.total_cache_read_tokens = 0
         self.total_cache_miss_tokens = 0
-        self.tracer = LangfuseTracer(
+        self.tracer = tracer or LangfuseTracer(
             public_key=langfuse_public_key,
             secret_key=langfuse_secret_key,
             base_url=langfuse_base_url,
@@ -170,6 +171,7 @@ class LLM:
             langfuse_public_key=self.langfuse_public_key,
             langfuse_secret_key=self.langfuse_secret_key,
             langfuse_base_url=self.langfuse_base_url,
+            tracer=self.tracer,
             **self.extra,
         )
 
@@ -360,6 +362,7 @@ class LiteLLM(LLM):
         langfuse_public_key: str = "",
         langfuse_secret_key: str = "",
         langfuse_base_url: str | None = None,
+        tracer: LangfuseTracer | None = None,
         **kwargs,
     ):
         # skip LLM.__init__ which creates an OpenAI client
@@ -374,7 +377,7 @@ class LiteLLM(LLM):
         self.total_completion_tokens = 0
         self.total_cache_read_tokens = 0
         self.total_cache_miss_tokens = 0
-        self.tracer = LangfuseTracer(
+        self.tracer = tracer or LangfuseTracer(
             public_key=langfuse_public_key,
             secret_key=langfuse_secret_key,
             base_url=langfuse_base_url,
@@ -388,6 +391,7 @@ class LiteLLM(LLM):
             langfuse_public_key=self.langfuse_public_key,
             langfuse_secret_key=self.langfuse_secret_key,
             langfuse_base_url=self.langfuse_base_url,
+            tracer=self.tracer,
             **self.extra,
         )
 

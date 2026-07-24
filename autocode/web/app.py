@@ -121,6 +121,10 @@ def create_app(
     expected_browser_token = browser_token or os.getenv("AUTOCODE_WEB_TOKEN", "")
     expected_runner_token = runner_token or os.getenv("AUTOCODE_RUNNER_TOKEN", "")
     request_timeout = float(os.getenv("AUTOCODE_RELAY_REQUEST_TIMEOUT", "3600"))
+    control_request_timeout = min(
+        request_timeout,
+        float(os.getenv("AUTOCODE_CONTROL_REQUEST_TIMEOUT", "20")),
+    )
 
     if len(expected_browser_token) < 24:
         raise RuntimeError("AUTOCODE_WEB_TOKEN must contain at least 24 characters.")
@@ -147,13 +151,18 @@ def create_app(
             response.headers[name] = value
         return response
 
-    async def dispatch(action: str, payload: dict[str, Any] | None = None):
+    async def dispatch(
+        action: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout: float | None = None,
+    ):
         try:
             return await run_in_threadpool(
                 relay.dispatch,
                 action,
                 payload or {},
-                timeout=request_timeout,
+                timeout=request_timeout if timeout is None else timeout,
             )
         except RunnerOfflineError as exc:
             raise HTTPException(status_code=503, detail=str(exc)) from exc
@@ -260,6 +269,7 @@ def create_app(
         return await dispatch(
             "sessions",
             {"workspace_id": workspace_id, "limit": 50},
+            timeout=control_request_timeout,
         )
 
     @app.post("/api/resume", dependencies=browser_auth)
@@ -271,6 +281,7 @@ def create_app(
                 "workspace_id": payload.workspace_id,
                 "session_id": payload.session_id,
             },
+            timeout=control_request_timeout,
         )
 
     @app.get("/api/task/{client_id}", dependencies=browser_auth)

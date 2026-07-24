@@ -575,6 +575,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .session-list { max-height: 470px; margin-top: 12px; overflow-y: auto; }
 .session-list > button { width: 100%; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 11px; padding: 11px; border: 0; border-bottom: 1px solid #eff0f5; background: white; cursor: pointer; text-align: left; }
 .session-list > button:hover { background: #fafaff; }
+.session-list > button:disabled { cursor: wait; opacity: 0.58; }
+.session-list > button.is-resuming { opacity: 1; color: var(--primary); background: var(--primary-soft); }
 .session-icon { display: grid; width: 36px; height: 36px; place-items: center; border-radius: 11px; color: var(--primary); background: var(--primary-soft); }
 .session-list strong, .session-list small { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .session-list strong { font-size: 11px; }

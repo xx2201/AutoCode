@@ -65,6 +65,32 @@ def test_list_sessions(tmp_path, monkeypatch):
     assert entries[0]["status"] == "waiting_approval"
 
 
+def test_list_sessions_reuses_unchanged_checkpoint_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
+    save_checkpoint(
+        SessionState(
+            session_id="session_cached",
+            current_task=TaskState(task_id="task_cached", title="cached"),
+        ),
+        [],
+        "m1",
+        workspace_root=str(tmp_path),
+    )
+    checkpoint_module._CHECKPOINT_CACHE.clear()
+    reads = []
+    original_read_json = checkpoint_module._read_json
+
+    def counting_read_json(path):
+        reads.append(path)
+        return original_read_json(path)
+
+    monkeypatch.setattr(checkpoint_module, "_read_json", counting_read_json)
+
+    assert len(list_sessions(workspace_root=str(tmp_path))) == 1
+    assert len(list_sessions(workspace_root=str(tmp_path))) == 1
+    assert len(reads) == 1
+
+
 def test_checkpoint_is_written_as_utf8(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
     save_checkpoint(

@@ -74,17 +74,37 @@ function renewClientId(workspaceId) {
 }
 
 async function request(token, path, options = {}) {
+  const { timeoutMs = 0, ...fetchOptions } = options;
   const headers = new Headers(options.headers || {});
   headers.set("Authorization", `Bearer ${token}`);
   if (options.body) headers.set("Content-Type", "application/json");
-  const response = await fetch(path, { ...options, headers });
-  const data = await response.json().catch(() => ({}));
-  if (!response.ok) {
-    const error = new Error(data.detail || `请求失败 (${response.status})`);
-    error.status = response.status;
+  const controller = timeoutMs > 0 ? new AbortController() : null;
+  const timeoutId = controller
+    ? window.setTimeout(() => controller.abort(), timeoutMs)
+    : null;
+  try {
+    const response = await fetch(path, {
+      ...fetchOptions,
+      headers,
+      signal: controller?.signal || fetchOptions.signal,
+    });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) {
+      const error = new Error(data.detail || `请求失败 (${response.status})`);
+      error.status = response.status;
+      throw error;
+    }
+    return data;
+  } catch (error) {
+    if (error.name === "AbortError") {
+      const timeoutError = new Error("恢复会话超时，请确认本机 Runner 正常后重试。");
+      timeoutError.status = 408;
+      throw timeoutError;
+    }
     throw error;
+  } finally {
+    if (timeoutId !== null) window.clearTimeout(timeoutId);
   }
-  return data;
 }
 
 async function streamRequest(token, path, payload, onEvent) {
@@ -441,6 +461,7 @@ export default function App() {
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [busy, setBusy] = useState(false);
+  const [resumingSessionId, setResumingSessionId] = useState("");
   const [status, setStatus] = useState("idle");
   const [streamText, setStreamText] = useState("");
   const [runStage, setRunStage] = useState("");
@@ -733,11 +754,13 @@ export default function App() {
   }
 
   async function resumeSession(sessionId) {
-    setPanel(null);
+    if (busy || !selectedWorkspace) return;
     setBusy(true);
+    setResumingSessionId(sessionId);
     try {
       const data = await request(token, "/api/resume", {
         method: "POST",
+        timeoutMs: 20_000,
         body: JSON.stringify({
           client_id: clientId,
           workspace_id: selectedWorkspace.workspace_id,
@@ -747,10 +770,12 @@ export default function App() {
       setMessages(data.messages || []);
       setPending(data.result?.pending_tool ? data.result : null);
       setStatus(data.result?.status || "idle");
+      setPanel(null);
       showToast("会话已恢复");
     } catch (error) {
       showToast(error.message);
     } finally {
+      setResumingSessionId("");
       setBusy(false);
     }
   }
@@ -1130,6 +1155,8 @@ export default function App() {
                     <button
                       type="button"
                       key={session.session_id}
+                      className={resumingSessionId === session.session_id ? "is-resuming" : ""}
+                      disabled={busy}
                       onClick={() => resumeSession(session.session_id)}
                     >
                       <span className="session-icon"><MessageSquareText size={18} /></span>
@@ -1140,7 +1167,9 @@ export default function App() {
                           {session.saved_at} · step {session.step_index}
                         </small>
                       </span>
-                      <ArrowRight size={16} />
+                      {resumingSessionId === session.session_id
+                        ? <RefreshCw className="spin" size={16} />
+                        : <ArrowRight size={16} />}
                     </button>
                   ))}
                   {!sessions.length && <div className="panel-empty">这个项目还没有可恢复的会话。</div>}
