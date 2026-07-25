@@ -102,10 +102,23 @@ def test_runner_bootstrap_lists_only_cli_registered_workspaces(tmp_path):
     assert result["context_window_tokens"] == 1_000_000
     assert result["capabilities"]["file_download"] is True
     assert result["capabilities"]["git_workspace"] is True
+    assert result["capabilities"]["web_search"] is False
     assert [item["workspace_id"] for item in result["workspaces"]] == [
         workspace.workspace_id
     ]
     assert all(item["path"] != str(unregistered) for item in result["workspaces"])
+
+
+def test_runner_bootstrap_reports_configured_web_search(tmp_path):
+    runner, _, _ = _runner(tmp_path)
+    runner._base_config = replace(
+        runner._base_config,
+        tavily_api_key="tvly-test",
+    )
+
+    result = runner.execute("bootstrap", {})
+
+    assert result["capabilities"]["web_search"] is True
 
 
 def test_changed_git_files_returns_only_entries_changed_during_turn():
@@ -329,6 +342,25 @@ def test_runner_routes_git_status_without_creating_agent_manager(tmp_path):
     )
 
     assert result["available"] is False
+    assert managers == {}
+
+
+def test_runner_lists_and_reads_workspace_files_without_agent_manager(tmp_path):
+    runner, workspace, managers = _runner(tmp_path)
+    source = tmp_path / "project-a" / "app.py"
+    source.write_text("print('ok')", encoding="utf-8")
+
+    listing = runner.execute(
+        "workspace_files",
+        {"workspace_id": workspace.workspace_id},
+    )
+    opened = runner.execute(
+        "workspace_file",
+        {"workspace_id": workspace.workspace_id, "path": "app.py"},
+    )
+
+    assert listing["files"] == ["app.py"]
+    assert opened["content"] == "print('ok')"
     assert managers == {}
 
 

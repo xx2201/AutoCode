@@ -13,8 +13,6 @@ import {
   Folder,
   FolderGit2,
   GitBranch,
-  GitCommitHorizontal,
-  GitCompare,
   Github,
   History,
   KeyRound,
@@ -40,6 +38,7 @@ import {
   Zap,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import FilePanel from "./FilePanel";
 import GitPanel from "./GitPanel";
 import {
   formatDuration,
@@ -596,7 +595,7 @@ function TurnChangedFiles({ files = [], onOpenChanges }) {
       </summary>
       <div className="turn-change-list">
         {visibleFiles.map((file) => (
-          <button type="button" onClick={onOpenChanges} key={file.path}>
+          <button type="button" onClick={() => onOpenChanges(file.path)} key={file.path}>
             <FileCode2 size={16} />
             <span title={file.path}>{file.path}</span>
             <b>+{file.additions || 0}</b>
@@ -805,6 +804,13 @@ export default function App() {
   const [gitView, setGitView] = useState("changes");
   const [gitLoading, setGitLoading] = useState(false);
   const [gitBusy, setGitBusy] = useState(false);
+  const [filePanelOpen, setFilePanelOpen] = useState(false);
+  const [filePanelMode, setFilePanelMode] = useState("changed");
+  const [projectFiles, setProjectFiles] = useState([]);
+  const [projectFilesTruncated, setProjectFilesTruncated] = useState(false);
+  const [selectedFilePath, setSelectedFilePath] = useState("");
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [filePanelLoading, setFilePanelLoading] = useState(false);
   const [toast, setToast] = useState("");
   const [panel, setPanel] = useState(null);
   const [panelContent, setPanelContent] = useState("");
@@ -1471,6 +1477,73 @@ export default function App() {
     }
   }
 
+  async function loadProjectFiles() {
+    if (!selectedWorkspace || !runnerOnline) return [];
+    setFilePanelLoading(true);
+    try {
+      const suffix = `workspace_id=${encodeURIComponent(selectedWorkspace.workspace_id)}`;
+      const data = await request(token, `/api/files?${suffix}`);
+      setProjectFiles(data.files || []);
+      setProjectFilesTruncated(Boolean(data.truncated));
+      return data.files || [];
+    } catch (error) {
+      showToast(error.message);
+      return [];
+    } finally {
+      setFilePanelLoading(false);
+    }
+  }
+
+  async function openFilePanel(mode = "changed", path = "") {
+    if (!selectedWorkspace) return;
+    setFilePanelOpen(true);
+    setFilePanelMode(mode);
+    setSelectedFilePath(path);
+    setSelectedFile(null);
+    setMobileNavOpen(false);
+    if (mode === "changed") {
+      setGitDiff(null);
+      const latest = await refreshGit();
+      const target = path || "";
+      if (target && latest?.changes?.some((item) => item.path === target)) {
+        await loadGitDiff("changes", target);
+      }
+      return;
+    }
+    if (!projectFiles.length) await loadProjectFiles();
+  }
+
+  async function selectProjectFile(path) {
+    if (!selectedWorkspace) return;
+    setSelectedFilePath(path);
+    setSelectedFile(null);
+    setFilePanelLoading(true);
+    try {
+      const data = await request(token, "/api/files/read", {
+        method: "POST",
+        body: JSON.stringify({
+          workspace_id: selectedWorkspace.workspace_id,
+          path,
+        }),
+      });
+      setSelectedFile(data);
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      setFilePanelLoading(false);
+    }
+  }
+
+  async function changeFilePanelMode(mode) {
+    setFilePanelMode(mode);
+    setSelectedFilePath("");
+    setSelectedFile(null);
+    setGitDiff(null);
+    if (mode === "all") {
+      if (!projectFiles.length) await loadProjectFiles();
+    }
+  }
+
   async function handleGitView(view, base = "") {
     setGitView(view);
     setGitDiff(null);
@@ -1633,11 +1706,14 @@ export default function App() {
             <History size={18} /> 历史会话
             {sessions.length > 0 && <em>{sessions.length}</em>}
           </button>
+          <button type="button" onClick={() => openFilePanel("all")}>
+            <Folder size={18} /> 文件
+          </button>
         </nav>
 
         <nav className="side-nav git-side-nav">
           <span className="nav-caption">GIT</span>
-          <button type="button" onClick={() => openGit("changes")}>
+          <button type="button" onClick={() => openFilePanel("changed")}>
             <FileDiff size={18} /> Changes
             {gitState?.available && (
               <span className="sidebar-git-stats">
@@ -1647,17 +1723,10 @@ export default function App() {
             )}
           </button>
           <button type="button" onClick={() => openGit("changes")}>
-            <GitBranch size={18} />
+            <GitBranch size={18} /> Git 管理
             <span className="branch-nav-copy">
-              <small>Local</small>
-              <strong>{gitState?.available ? gitState.branch : "非 Git 项目"}</strong>
+              <small>{gitState?.available ? gitState.branch : "非 Git 项目"}</small>
             </span>
-          </button>
-          <button type="button" onClick={() => openGit("changes")}>
-            <GitCommitHorizontal size={18} /> Commit or push
-          </button>
-          <button type="button" onClick={() => openGit("compare")}>
-            <GitCompare size={18} /> Compare branch
           </button>
         </nav>
 
@@ -1735,7 +1804,7 @@ export default function App() {
                     liveElapsedMs={runElapsedMs}
                     stage={runStage}
                     onFileAction={handleOutputFile}
-                    onOpenChanges={() => openGit("changes")}
+                    onOpenChanges={(path) => openFilePanel("changed", path)}
                     downloadingFileId={downloadingFileId}
                   />
                 ))}
@@ -1868,6 +1937,29 @@ export default function App() {
         onClose={() => setProjectPickerOpen(false)}
         onRefresh={openProjectPicker}
         required={!selectedWorkspace}
+      />
+
+      <FilePanel
+        open={filePanelOpen}
+        mode={filePanelMode}
+        changedFiles={gitState?.changes || []}
+        files={projectFiles}
+        selectedPath={selectedFilePath}
+        diff={gitDiff}
+        file={selectedFile}
+        loading={filePanelLoading || gitLoading}
+        truncated={projectFilesTruncated}
+        onClose={() => setFilePanelOpen(false)}
+        onModeChange={changeFilePanelMode}
+        onSelectChanged={async (path) => {
+          setSelectedFilePath(path);
+          await loadGitDiff("changes", path);
+        }}
+        onSelectFile={selectProjectFile}
+        onOpenGit={() => {
+          setFilePanelOpen(false);
+          openGit("changes");
+        }}
       />
 
       <GitPanel

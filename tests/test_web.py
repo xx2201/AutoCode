@@ -230,6 +230,36 @@ def test_git_status_diff_and_action_are_relayed(relay_client):
     assert action_job["payload"]["git_action"] == "stage"
 
 
+def test_workspace_file_list_and_read_are_relayed(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+
+    list_response, list_job = _round_trip(
+        client,
+        lambda: client.get(
+            f"/api/files?workspace_id={WORKSPACE_ID}",
+            headers=_browser_headers(),
+        ),
+        "workspace_files",
+        {"files": ["src/app.py"], "truncated": False},
+    )
+    read_response, read_job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/files/read",
+            headers=_browser_headers(),
+            json={"workspace_id": WORKSPACE_ID, "path": "src/app.py"},
+        ),
+        "workspace_file",
+        {"path": "src/app.py", "content": "print('ok')", "binary": False},
+    )
+
+    assert list_response.json()["files"] == ["src/app.py"]
+    assert list_job["payload"] == {"workspace_id": WORKSPACE_ID}
+    assert read_response.json()["content"] == "print('ok')"
+    assert read_job["payload"]["path"] == "src/app.py"
+
+
 def test_streaming_chat_relays_tokens_stages_and_final_result(relay_client):
     client, _ = relay_client
     _connect_runner(client)

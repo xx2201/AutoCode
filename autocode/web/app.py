@@ -89,6 +89,11 @@ class GitDiffRequest(BaseModel):
     base: str = Field(default="", max_length=200)
 
 
+class WorkspaceFileRequest(BaseModel):
+    workspace_id: str = Field(min_length=20, max_length=20)
+    path: str = Field(min_length=1, max_length=1000)
+
+
 class GitActionRequest(BaseModel):
     workspace_id: str = Field(min_length=20, max_length=20)
     action: Literal["stage", "unstage", "switch", "create_branch", "commit", "push"]
@@ -359,6 +364,22 @@ def create_app(
                 "branch": payload.branch,
                 "message": payload.message,
             },
+        )
+
+    @app.get("/api/files", dependencies=browser_auth)
+    async def workspace_files(workspace_id: str = Query(min_length=20, max_length=20)):
+        return await dispatch(
+            "workspace_files",
+            {"workspace_id": workspace_id},
+            timeout=control_request_timeout,
+        )
+
+    @app.post("/api/files/read", dependencies=browser_auth)
+    async def workspace_file(payload: WorkspaceFileRequest):
+        return await dispatch(
+            "workspace_file",
+            payload.model_dump(),
+            timeout=control_request_timeout,
         )
 
     @app.get("/api/sessions", dependencies=browser_auth)

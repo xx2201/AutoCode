@@ -1141,6 +1141,61 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .git-commit-bar .push-action { color: #5558c6; border-color: #d7d9ed; background: white; }
 .git-commit-bar button:disabled { cursor: not-allowed; opacity: 0.45; }
 
+/* Lightweight project file viewer */
+.file-panel-layer { position: fixed; z-index: 75; inset: 0; display: grid; place-items: center; padding: 28px; }
+.file-panel-backdrop { position: absolute; inset: 0; border: 0; background: rgba(37, 40, 57, 0.26); backdrop-filter: blur(7px); }
+.file-panel {
+  position: relative;
+  width: min(1040px, 100%);
+  height: min(760px, calc(100dvh - 56px));
+  display: grid;
+  grid-template-rows: auto auto minmax(0, 1fr);
+  overflow: hidden;
+  border: 1px solid rgba(222, 224, 235, 0.95);
+  border-radius: 24px;
+  background: white;
+  box-shadow: 0 28px 80px rgba(43, 47, 72, 0.2);
+}
+.file-panel > header { display: grid; grid-template-columns: 40px minmax(0, 1fr) 40px; align-items: center; gap: 8px; padding: 16px 18px 10px; }
+.file-panel > header strong { overflow: hidden; color: #383d50; font-size: 16px; text-align: center; text-overflow: ellipsis; white-space: nowrap; }
+.file-panel > header button { display: grid; width: 38px; height: 38px; place-items: center; border: 0; border-radius: 11px; color: #727789; background: transparent; cursor: pointer; }
+.file-panel > header button:hover { background: #f2f3f7; }
+.file-panel > nav { width: min(520px, calc(100% - 32px)); display: grid; grid-template-columns: 1fr 1fr; gap: 4px; margin: 0 auto 12px; padding: 4px; border-radius: 13px; background: #eef0f4; }
+.file-panel > nav button { min-height: 35px; border: 0; border-radius: 10px; color: #777c8d; background: transparent; cursor: pointer; font-size: 11px; font-weight: 750; }
+.file-panel > nav button.active { color: #3f4455; background: white; box-shadow: 0 1px 5px rgba(53, 57, 77, 0.1); }
+.file-panel-body { min-height: 0; display: grid; grid-template-columns: 330px minmax(0, 1fr); border-top: 1px solid var(--line); }
+.file-panel-body > aside { min-width: 0; min-height: 0; overflow: auto; border-right: 1px solid var(--line); background: #fcfcfd; }
+.file-panel-body > main { min-width: 0; min-height: 0; overflow: auto; background: white; }
+.changed-file-list > button { width: 100%; min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto auto; align-items: center; gap: 8px; padding: 12px 14px; border: 0; border-bottom: 1px solid #eff0f4; color: #676c7e; background: transparent; cursor: pointer; text-align: left; }
+.changed-file-list > button:hover, .changed-file-list > button.active { background: #f4f4ff; }
+.changed-file-list > button.active { box-shadow: inset 3px 0 var(--primary); }
+.changed-file-list span { overflow: hidden; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.changed-file-list b { color: #25966e; font-size: 9px; }
+.changed-file-list i { color: #df5c70; font-size: 9px; font-style: normal; }
+.file-panel-empty { display: grid; min-height: 180px; place-items: center; padding: 24px; color: #9ca1b2; font-size: 11px; text-align: center; }
+.file-diff-code { min-width: max-content; padding: 12px 0 24px; }
+.file-diff-line { display: grid; grid-template-columns: 44px 44px minmax(620px, 1fr); color: #44495b; font: 10px/1.58 ui-monospace, SFMono-Regular, Consolas, monospace; }
+.file-diff-line > span { padding: 0 8px; color: #a3a8b7; border-right: 1px solid rgba(224, 226, 235, 0.72); text-align: right; user-select: none; }
+.file-diff-line code { padding: 0 11px; color: inherit; white-space: pre; }
+.file-diff-line.added { color: #23694f; background: #eaf8f1; }
+.file-diff-line.deleted { color: #934050; background: #fff0f2; }
+.file-diff-line.hunk { color: #6268b7; background: #f0f1ff; }
+.file-diff-line.meta { color: #8e93a5; background: #f8f9fb; }
+.file-diff-code > p, .file-content-view > footer, .file-tree-note { margin: 0; padding: 8px 12px; color: #a76b15; background: #fff7e8; font-size: 9px; }
+.file-search { display: flex; align-items: center; gap: 8px; margin: 10px; padding: 0 11px; border: 1px solid var(--line); border-radius: 11px; color: #9ba0b1; background: white; }
+.file-search input { min-width: 0; width: 100%; height: 37px; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 11px; }
+.file-tree { padding: 2px 0 16px; }
+.file-tree-row { width: 100%; min-width: 0; display: flex; min-height: 35px; align-items: center; gap: 7px; padding: 0 12px; border: 0; color: #5f6475; background: transparent; cursor: pointer; text-align: left; }
+.file-tree-row:hover { background: #f2f3f8; }
+.file-tree-row span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.file-tree-folder > .file-tree-row svg:nth-of-type(2) { color: #7779d9; }
+.file-tree-file { color: #717688; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; }
+.file-content-view { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+.file-content-view > header { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 12px 15px; border-bottom: 1px solid var(--line); }
+.file-content-view > header strong { overflow: hidden; font: 10px ui-monospace, SFMono-Regular, Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+.file-content-view > header span { color: #9ca1b2; font-size: 9px; white-space: nowrap; }
+.file-content-view > pre { min-height: 0; margin: 0; padding: 14px 16px 30px; overflow: auto; color: #454a5c; background: #fdfdfe; font: 10px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace; white-space: pre; }
+
 /* Modals */
 .modal-layer {
   position: fixed;
@@ -1326,6 +1381,17 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   .git-panel-mark { display: none; }
   .git-panel-title h2 { font-size: 17px; }
   .git-panel-title p { max-width: 52vw; }
+  .file-panel-layer { align-items: end; padding: 0; }
+  .file-panel { width: 100%; height: min(88dvh, 820px); border-width: 1px 0 0; border-radius: 24px 24px 0 0; }
+  .file-panel > header { padding: 10px 14px 7px; }
+  .file-panel > nav { margin-bottom: 9px; }
+  .file-panel-body { grid-template-columns: 1fr; }
+  .file-panel-body > aside { border-right: 0; }
+  .file-panel-body > main { display: none; }
+  .file-panel-body.selected > aside { display: none; }
+  .file-panel-body.selected > main { display: grid; }
+  .changed-file-list { overflow-y: auto; }
+  .changed-file-list > button { min-height: 48px; }
   .git-head-actions > button:first-child { width: 38px; padding: 0; justify-content: center; font-size: 0; }
   .git-environment { display: flex; gap: 7px; padding: 8px 10px; overflow-x: auto; }
   .git-current-branch, .git-environment label { min-width: 250px; flex: 0 0 auto; }

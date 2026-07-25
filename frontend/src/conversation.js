@@ -12,6 +12,7 @@ export function formatToolTitle(name, argumentsValue = {}) {
     argumentsValue.path
     || argumentsValue.file_path
     || argumentsValue.command
+    || argumentsValue.query
     || ""
   );
   const labels = {

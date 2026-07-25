@@ -34,6 +34,7 @@ dependencies = [
     "prompt_toolkit>=3.0",
     "python-dotenv>=1.0",
     "PyYAML>=6.0",
+    "tavily-python>=0.7.26,<0.8",
 ]
 
 [tool.hatch.build.targets.wheel]

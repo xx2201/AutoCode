@@ -25,7 +25,7 @@ from ..mcp import get_shared_mcp_manager
 from ..remote.manager import RemoteManager, presentation_tool_arguments
 from ..tools.factory import build_agent_tools
 from ..workspaces import WorkspaceRegistry
-from .files import WebFileStore, WebSendTool
+from .files import WebFileStore, WebSendTool, WorkspaceFileBrowser
 from .git import GitWorkspace
 
 
@@ -190,6 +190,7 @@ class LocalRunner:
                     "git_workspace": True,
                     "image_input": True,
                     "workspace_image_tool": True,
+                    "web_search": bool(self._base_config.tavily_api_key),
                 },
                 "diagnostics": {
                     "log_dir": str(diagnostic_log_dir()),
@@ -218,6 +219,12 @@ class LocalRunner:
                 branch=str(payload.get("branch", "")),
                 message=str(payload.get("message", "")),
             )
+        if action == "workspace_files":
+            workspace = self.registry.resolve(workspace_id)
+            return WorkspaceFileBrowser(workspace).list_files()
+        if action == "workspace_file":
+            workspace = self.registry.resolve(workspace_id)
+            return WorkspaceFileBrowser(workspace).read(str(payload["path"]))
         manager = self._manager(str(payload["workspace_id"]))
         if action == "diagnostics":
             return {

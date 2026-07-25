@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 import mimetypes
+import os
 import secrets
 import threading
 import time
@@ -16,6 +17,95 @@ MAX_WEB_FILE_BYTES = 25 * 1024 * 1024
 WEB_FILE_TTL_SECONDS = 60 * 60
 _MAX_RECORDS = 256
 _PROTECTED_DIRECTORIES = {".git", ".autocode"}
+_IGNORED_BROWSER_DIRECTORIES = {
+    ".git",
+    ".autocode",
+    ".venv",
+    "__pycache__",
+    "node_modules",
+}
+MAX_WORKSPACE_FILES = 10_000
+MAX_WORKSPACE_FILE_BYTES = 1024 * 1024
+
+
+class WorkspaceFileBrowser:
+    """List and read safe project files without exposing local secrets."""
+
+    def __init__(self, workspace_root: Path):
+        self.root = workspace_root.resolve()
+
+    def list_files(self) -> dict:
+        files: list[str] = []
+        truncated = False
+        for directory, names, filenames in os.walk(self.root):
+            names[:] = sorted(
+                name
+                for name in names
+                if name.lower() not in _IGNORED_BROWSER_DIRECTORIES
+                and not name.lower().startswith(".env")
+            )
+            current = Path(directory)
+            for name in sorted(filenames):
+                path = current / name
+                relative = path.relative_to(self.root)
+                if self._is_protected(relative):
+                    continue
+                files.append(relative.as_posix())
+                if len(files) >= MAX_WORKSPACE_FILES:
+                    truncated = True
+                    return {"files": files, "truncated": truncated}
+        return {"files": files, "truncated": truncated}
+
+    def read(self, file_path: str) -> dict:
+        normalized = file_path.strip().replace("\\", "/")
+        if not normalized or len(normalized) > 1000:
+            raise ValueError("Invalid workspace file path.")
+        path = (self.root / normalized).resolve()
+        try:
+            relative = path.relative_to(self.root)
+        except ValueError as exc:
+            raise ValueError("Workspace file must stay inside the project.") from exc
+        if self._is_protected(relative):
+            raise ValueError("Protected workspace files cannot be viewed through Web.")
+        if not path.is_file():
+            raise ValueError("Workspace file does not exist or is not a file.")
+
+        size = path.stat().st_size
+        data = path.read_bytes()[: MAX_WORKSPACE_FILE_BYTES + 1]
+        truncated = len(data) > MAX_WORKSPACE_FILE_BYTES
+        data = data[:MAX_WORKSPACE_FILE_BYTES]
+        if b"\0" in data:
+            return {
+                "path": relative.as_posix(),
+                "content": "",
+                "size": size,
+                "binary": True,
+                "truncated": False,
+            }
+        try:
+            content = data.decode("utf-8")
+        except UnicodeDecodeError:
+            return {
+                "path": relative.as_posix(),
+                "content": "",
+                "size": size,
+                "binary": True,
+                "truncated": False,
+            }
+        return {
+            "path": relative.as_posix(),
+            "content": content,
+            "size": size,
+            "binary": False,
+            "truncated": truncated,
+        }
+
+    @staticmethod
+    def _is_protected(relative: Path) -> bool:
+        return any(
+            part.lower() in _PROTECTED_DIRECTORIES or part.lower().startswith(".env")
+            for part in relative.parts
+        )
 
 
 class WebSendTool(Tool):

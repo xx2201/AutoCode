@@ -40,6 +40,7 @@ class Config:
     langfuse_public_key: str = ""
     langfuse_secret_key: str = ""
     langfuse_base_url: str | None = None
+    tavily_api_key: str = ""
     max_tokens: int = 4096
     temperature: float = 0.0
     max_context_tokens: int = 1_000_000
@@ -64,6 +65,7 @@ class Config:
             langfuse_public_key=_resolve_config_value(snapshot, "LANGFUSE_PUBLIC_KEY"),
             langfuse_secret_key=_resolve_config_value(snapshot, "LANGFUSE_SECRET_KEY"),
             langfuse_base_url=_resolve_config_value(snapshot, "LANGFUSE_BASE_URL") or None,
+            tavily_api_key=_resolve_config_value(snapshot, "TAVILY_API_KEY"),
             max_tokens=int(_resolve_config_value(snapshot, "AUTOCODE_MAX_TOKENS", "4096")),
             temperature=float(_resolve_config_value(snapshot, "AUTOCODE_TEMPERATURE", "0")),
             max_context_tokens=int(_resolve_config_value(snapshot, "AUTOCODE_MAX_CONTEXT", "1000000")),

@@ -11,6 +11,7 @@ from .grep import GrepTool
 from .agent import AgentTool
 from .todo_write import TodoWriteTool
 from .process import StartProcessTool, ReadProcessOutputTool, WaitForProcessOutputTool, StopProcessTool
+from .web_search import WebSearchTool
 
 ALL_TOOLS = [
     BashTool(),

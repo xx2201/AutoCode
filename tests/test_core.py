@@ -28,17 +28,20 @@ def test_config_from_env(monkeypatch):
     os.environ["LANGFUSE_PUBLIC_KEY"] = "pk-test"
     os.environ["LANGFUSE_SECRET_KEY"] = "sk-test"
     os.environ["LANGFUSE_BASE_URL"] = "https://langfuse.example"
+    os.environ["TAVILY_API_KEY"] = "tvly-test"
     c = Config.from_env()
     assert c.model == "test-model"
     assert c.telegram_allowed_chat_ids == (123, 456)
     assert c.langfuse_public_key == "pk-test"
     assert c.langfuse_secret_key == "sk-test"
     assert c.langfuse_base_url == "https://langfuse.example"
+    assert c.tavily_api_key == "tvly-test"
     del os.environ["AUTOCODE_MODEL"]
     del os.environ["AUTOCODE_TELEGRAM_ALLOWED_CHATS"]
     del os.environ["LANGFUSE_PUBLIC_KEY"]
     del os.environ["LANGFUSE_SECRET_KEY"]
     del os.environ["LANGFUSE_BASE_URL"]
+    del os.environ["TAVILY_API_KEY"]
 
 
 def test_config_defaults(monkeypatch):
@@ -56,6 +59,7 @@ def test_config_defaults(monkeypatch):
         "LANGFUSE_PUBLIC_KEY",
         "LANGFUSE_SECRET_KEY",
         "LANGFUSE_BASE_URL",
+        "TAVILY_API_KEY",
     ]:
         if k in os.environ:
             saved[k] = os.environ.pop(k)
@@ -67,6 +71,7 @@ def test_config_defaults(monkeypatch):
     assert c.langfuse_public_key == ""
     assert c.langfuse_secret_key == ""
     assert c.langfuse_base_url is None
+    assert c.tavily_api_key == ""
     assert c.max_tokens == 4096
     assert c.max_context_tokens == 1_000_000
     assert c.temperature == 0.0

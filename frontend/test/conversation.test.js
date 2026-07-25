@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   formatDuration,
+  formatToolTitle,
   groupConversation,
   mergeWorkEvent,
 } from "../src/conversation.js";
@@ -74,4 +75,11 @@ test("formats compact work durations", () => {
   assert.equal(formatDuration(200), "<1s");
   assert.equal(formatDuration(25000), "25s");
   assert.equal(formatDuration(157000), "2m 37s");
+});
+
+test("shows the web search query in the work item title", () => {
+  assert.equal(
+    formatToolTitle("web_search", { query: "latest Python release" }),
+    "Searched the web · latest Python release",
+  );
 });
