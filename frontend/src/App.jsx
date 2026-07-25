@@ -66,6 +66,18 @@ function formatFileSize(size) {
   return `${(size / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+function attachChangedFilesToLatestTurn(messages, changedFiles = []) {
+  if (changedFiles.length === 0) return messages;
+  const latestUser = messages.findLastIndex((message) => message.role === "user");
+  if (latestUser < 0) return messages;
+  const next = [...messages];
+  next[latestUser] = {
+    ...next[latestUser],
+    changed_files: changedFiles,
+  };
+  return next;
+}
+
 function clientIdFor(workspaceId) {
   let clients = {};
   try {
@@ -506,7 +518,10 @@ function WorkItem({ item }) {
         <span>{title}{meta}</span>
         <ChevronDown size={15} />
       </summary>
-      <pre>{item.content}</pre>
+      <div className="work-output">
+        <span>Tool output</span>
+        <pre>{item.content}</pre>
+      </div>
     </details>
   );
 }
@@ -560,7 +575,52 @@ function WorkBlock({ items, elapsedMs, active = false, liveText = "", stage = ""
   );
 }
 
-function AssistantAnswer({ message, onFileAction, downloadingFileId }) {
+function TurnChangedFiles({ files = [], onOpenChanges }) {
+  const [expanded, setExpanded] = useState(true);
+  if (files.length === 0) return null;
+  const additions = files.reduce((total, file) => total + Number(file.additions || 0), 0);
+  const deletions = files.reduce((total, file) => total + Number(file.deletions || 0), 0);
+  const visibleFiles = files.slice(0, 3);
+  const remaining = files.length - visibleFiles.length;
+  return (
+    <details
+      className="turn-changes"
+      open={expanded}
+      onToggle={(event) => setExpanded(event.currentTarget.open)}
+    >
+      <summary>
+        <span>已更改 {files.length} 个文件</span>
+        <b>+{additions}</b>
+        <i>−{deletions}</i>
+        <ChevronDown size={17} />
+      </summary>
+      <div className="turn-change-list">
+        {visibleFiles.map((file) => (
+          <button type="button" onClick={onOpenChanges} key={file.path}>
+            <FileCode2 size={16} />
+            <span title={file.path}>{file.path}</span>
+            <b>+{file.additions || 0}</b>
+            <i>−{file.deletions || 0}</i>
+          </button>
+        ))}
+        {remaining > 0 && (
+          <button className="turn-changes-more" type="button" onClick={onOpenChanges}>
+            查看另外 {remaining} 个文件
+            <ArrowRight size={16} />
+          </button>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function AssistantAnswer({
+  message,
+  changedFiles,
+  onFileAction,
+  onOpenChanges,
+  downloadingFileId,
+}) {
   if (!message) return null;
   return (
     <article className="turn-answer">
@@ -570,6 +630,7 @@ function AssistantAnswer({ message, onFileAction, downloadingFileId }) {
         onFileAction={onFileAction}
         downloadingFileId={downloadingFileId}
       />
+      <TurnChangedFiles files={changedFiles} onOpenChanges={onOpenChanges} />
     </article>
   );
 }
@@ -582,6 +643,7 @@ function ConversationTurn({
   liveElapsedMs,
   stage,
   onFileAction,
+  onOpenChanges,
   downloadingFileId,
 }) {
   return (
@@ -598,7 +660,9 @@ function ConversationTurn({
         {!active && (
           <AssistantAnswer
             message={turn.answer}
+            changedFiles={turn.changedFiles}
             onFileAction={onFileAction}
+            onOpenChanges={onOpenChanges}
             downloadingFileId={downloadingFileId}
           />
         )}
@@ -1047,6 +1111,10 @@ export default function App() {
         showToast(`操作记录刷新失败：${error.message}`);
       }
       if (synchronized.length > 0) {
+        synchronized = attachChangedFilesToLatestTurn(
+          synchronized,
+          result.changed_files || [],
+        );
         const lastAssistant = synchronized.findLastIndex(
           (message) => message.role === "assistant" && !(message.tool_calls?.length),
         );
@@ -1059,7 +1127,7 @@ export default function App() {
         setMessages(synchronized);
       } else if (result.text || result.files?.length) {
         setMessages((items) => [
-          ...items,
+          ...attachChangedFilesToLatestTurn(items, result.changed_files || []),
           {
             role: "assistant",
             content: result.text || "文件已准备好。",
@@ -1202,9 +1270,30 @@ export default function App() {
           action,
         }),
       });
-      if (result.text || result.files?.length) {
+      let synchronized = [];
+      try {
+        synchronized = await refreshMessages();
+      } catch (error) {
+        showToast(`操作记录刷新失败：${error.message}`);
+      }
+      if (synchronized.length > 0) {
+        synchronized = attachChangedFilesToLatestTurn(
+          synchronized,
+          result.changed_files || [],
+        );
+        const lastAssistant = synchronized.findLastIndex(
+          (message) => message.role === "assistant" && !(message.tool_calls?.length),
+        );
+        if (lastAssistant >= 0 && result.files?.length) {
+          synchronized[lastAssistant] = {
+            ...synchronized[lastAssistant],
+            files: result.files,
+          };
+        }
+        setMessages(synchronized);
+      } else if (result.text || result.files?.length) {
         setMessages((items) => [
-          ...items,
+          ...attachChangedFilesToLatestTurn(items, result.changed_files || []),
           {
             role: "assistant",
             content: result.text || "文件已准备好。",
@@ -1646,6 +1735,7 @@ export default function App() {
                     liveElapsedMs={runElapsedMs}
                     stage={runStage}
                     onFileAction={handleOutputFile}
+                    onOpenChanges={() => openGit("changes")}
                     downloadingFileId={downloadingFileId}
                   />
                 ))}

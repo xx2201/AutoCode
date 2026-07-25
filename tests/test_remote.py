@@ -151,6 +151,35 @@ def test_remote_manager_exposes_bounded_conversation_snapshot(tmp_path):
     assert messages[0]["turn_elapsed_ms"] >= 0
 
 
+def test_remote_manager_persists_changed_files_on_latest_turn(tmp_path):
+    llm = _FakeLLM([LLMResponse(content="finished")])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
+    manager.submit(808, "create a file")
+
+    manager.annotate_turn_changes(
+        808,
+        [
+            {
+                "path": "result.txt",
+                "status": "untracked",
+                "additions": 2,
+                "deletions": 0,
+            }
+        ],
+    )
+
+    messages = manager.conversation_messages(808)
+    assert messages[0]["changed_files"] == [
+        {
+            "path": "result.txt",
+            "status": "untracked",
+            "additions": 2,
+            "deletions": 0,
+        }
+    ]
+    assert messages[1]["changed_files"] == []
+
+
 def test_remote_manager_exposes_tool_metadata_for_collapsible_work(tmp_path):
     llm = _FakeLLM([
         LLMResponse(

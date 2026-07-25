@@ -228,9 +228,66 @@ class RemoteManager:
                         "tool_calls": safe_tool_calls,
                         "turn_id": str(message.get("turn_id", "")),
                         "turn_elapsed_ms": float(message.get("turn_elapsed_ms", 0) or 0),
+                        "changed_files": self._presentation_changed_files(
+                            message.get("changed_files")
+                        ),
                     }
                 )
             return messages
+
+    def annotate_turn_changes(self, chat_id: Hashable, changed_files: list[dict]) -> None:
+        """Persist Git changes on the latest user turn for presentation clients."""
+        safe_changes = self._presentation_changed_files(changed_files)
+        if not safe_changes:
+            return
+        runtime = self._require_runtime(chat_id)
+        with runtime.lock:
+            user_message = next(
+                (
+                    message
+                    for message in reversed(runtime.agent.messages)
+                    if message.get("role") == "user"
+                ),
+                None,
+            )
+            if user_message is None:
+                return
+            merged = {
+                item["path"]: item
+                for item in self._presentation_changed_files(
+                    user_message.get("changed_files")
+                )
+            }
+            merged.update({item["path"]: item for item in safe_changes})
+            user_message["changed_files"] = list(merged.values())[:200]
+            runtime.agent.persist_session()
+
+    @staticmethod
+    def _presentation_changed_files(value: object) -> list[dict]:
+        if not isinstance(value, list):
+            return []
+        files = []
+        for item in value[:200]:
+            if not isinstance(item, dict):
+                continue
+            path = str(item.get("path", "")).strip().replace("\\", "/")[:1000]
+            if not path:
+                continue
+            try:
+                additions = max(0, int(item.get("additions", 0) or 0))
+                deletions = max(0, int(item.get("deletions", 0) or 0))
+            except (TypeError, ValueError):
+                additions = 0
+                deletions = 0
+            files.append(
+                {
+                    "path": path,
+                    "status": str(item.get("status", "modified"))[:32],
+                    "additions": additions,
+                    "deletions": deletions,
+                }
+            )
+        return files
 
     @staticmethod
     def _annotate_turn(agent: Agent, message_start: int, elapsed_ms: float) -> None:

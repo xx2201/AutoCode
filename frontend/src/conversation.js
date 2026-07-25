@@ -51,6 +51,7 @@ export function groupConversation(messages) {
         work: [],
         answer: null,
         elapsedMs: Number(message.turn_elapsed_ms || 0),
+        changedFiles: message.changed_files || [],
       };
       turns.push(current);
       return;
@@ -63,6 +64,7 @@ export function groupConversation(messages) {
         work: [],
         answer: null,
         elapsedMs: Number(message.turn_elapsed_ms || 0),
+        changedFiles: [],
       };
       turns.push(current);
     }

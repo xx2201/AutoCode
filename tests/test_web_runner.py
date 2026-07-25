@@ -7,7 +7,7 @@ pytest.importorskip("httpx")
 
 from autocode.config import Config
 from autocode.remote.manager import RemoteTurnResult
-from autocode.web.runner import LocalRunner, RunnerSettings
+from autocode.web.runner import LocalRunner, RunnerSettings, changed_git_files
 from autocode.workspaces import WorkspaceRegistry
 
 
@@ -25,6 +25,7 @@ class _FakeManager:
             status="completed",
         )
         self.calls = []
+        self.changed_files = []
 
     def list_resume_candidates(self, limit=10):
         return [{"session_id": "session_1"}][:limit]
@@ -36,6 +37,9 @@ class _FakeManager:
     def resolve_approval(self, client_id, approved, approve_all):
         self.calls.append(("approval", client_id, approved, approve_all))
         return replace(self.result, text="approved")
+
+    def annotate_turn_changes(self, client_id, changed_files):
+        self.changed_files.extend(changed_files)
 
     def resume_session(self, client_id, session_id):
         self.calls.append(("resume", client_id, session_id))
@@ -102,6 +106,72 @@ def test_runner_bootstrap_lists_only_cli_registered_workspaces(tmp_path):
         workspace.workspace_id
     ]
     assert all(item["path"] != str(unregistered) for item in result["workspaces"])
+
+
+def test_changed_git_files_returns_only_entries_changed_during_turn():
+    unchanged = {
+        "path": "existing.py",
+        "status": "modified",
+        "index_status": " ",
+        "worktree_status": "M",
+        "staged": False,
+        "unstaged": True,
+        "additions": 2,
+        "deletions": 0,
+    }
+    before = {"available": True, "changes": [unchanged]}
+    after = {
+        "available": True,
+        "changes": [
+            unchanged,
+            {
+                "path": "created.txt",
+                "status": "untracked",
+                "index_status": "?",
+                "worktree_status": "?",
+                "staged": False,
+                "unstaged": True,
+                "additions": 3,
+                "deletions": 0,
+            },
+        ],
+    }
+
+    assert changed_git_files(before, after) == [
+        {
+            "path": "created.txt",
+            "status": "untracked",
+            "additions": 3,
+            "deletions": 0,
+        }
+    ]
+
+
+def test_changed_git_files_detects_same_size_untracked_rewrite():
+    before_item = {
+        "path": "draft.txt",
+        "status": "untracked",
+        "index_status": "?",
+        "worktree_status": "?",
+        "staged": False,
+        "unstaged": True,
+        "additions": 1,
+        "deletions": 0,
+        "_worktree_fingerprint": (5, 100),
+    }
+    after_item = {**before_item, "_worktree_fingerprint": (5, 200)}
+
+    assert changed_git_files(
+        {"available": True, "changes": [before_item]},
+        {"available": True, "changes": [after_item]},
+    ) == [
+        {
+            "path": "draft.txt",
+            "status": "untracked",
+            "additions": 1,
+            "deletions": 0,
+        }
+    ]
 
 
 def test_runner_executes_chat_and_approval_in_selected_workspace(tmp_path):

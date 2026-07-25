@@ -9,7 +9,15 @@ import {
 
 test("groups intermediate assistant and tool messages under one work section", () => {
   const turns = groupConversation([
-    { role: "user", content: "创建文件", turn_id: "task_1", turn_elapsed_ms: 25100 },
+    {
+      role: "user",
+      content: "创建文件",
+      turn_id: "task_1",
+      turn_elapsed_ms: 25100,
+      changed_files: [
+        { path: "hello.txt", status: "added", additions: 1, deletions: 0 },
+      ],
+    },
     {
       role: "assistant",
       content: "我会先创建文件。",
@@ -33,6 +41,9 @@ test("groups intermediate assistant and tool messages under one work section", (
   assert.equal(turns[0].work[0].type, "narrative");
   assert.equal(turns[0].work[1].toolName, "write_file");
   assert.equal(turns[0].answer.content, "文件已创建。");
+  assert.deepEqual(turns[0].changedFiles, [
+    { path: "hello.txt", status: "added", additions: 1, deletions: 0 },
+  ]);
 });
 
 test("merges started and completed events using the tool call id", () => {

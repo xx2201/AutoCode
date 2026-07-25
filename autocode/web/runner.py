@@ -29,6 +29,70 @@ from .files import WebFileStore, WebSendTool
 from .git import GitWorkspace
 
 
+_GIT_CHANGE_FIELDS = (
+    "old_path",
+    "status",
+    "index_status",
+    "worktree_status",
+    "staged",
+    "unstaged",
+    "additions",
+    "deletions",
+    "_worktree_fingerprint",
+)
+
+
+def git_turn_snapshot(workspace: Path) -> dict:
+    """Add cheap local file identities to a Git snapshot for turn-level comparison."""
+    snapshot = GitWorkspace.inspect(workspace)
+    if not snapshot.get("available"):
+        return snapshot
+    repo_root = Path(str(snapshot["repo_root"])).resolve()
+    for item in snapshot.get("changes", []):
+        target = (repo_root / str(item.get("path", ""))).resolve()
+        try:
+            target.relative_to(repo_root)
+            stat = target.stat()
+            item["_worktree_fingerprint"] = (stat.st_size, stat.st_mtime_ns)
+        except (OSError, ValueError):
+            item["_worktree_fingerprint"] = None
+    return snapshot
+
+
+def changed_git_files(before: dict, after: dict) -> list[dict]:
+    """Return files whose observable Git state changed during one Agent turn."""
+    if not before.get("available") or not after.get("available"):
+        return []
+    before_by_path = {
+        str(item.get("path", "")): item
+        for item in before.get("changes", [])
+        if item.get("path")
+    }
+    changed = []
+    for item in after.get("changes", []):
+        path = str(item.get("path", ""))
+        if not path:
+            continue
+        previous = before_by_path.get(path)
+        before_signature = (
+            tuple(previous.get(field) for field in _GIT_CHANGE_FIELDS)
+            if previous
+            else None
+        )
+        after_signature = tuple(item.get(field) for field in _GIT_CHANGE_FIELDS)
+        if before_signature == after_signature:
+            continue
+        changed.append(
+            {
+                "path": path,
+                "status": str(item.get("status", "modified")),
+                "additions": max(0, int(item.get("additions", 0) or 0)),
+                "deletions": max(0, int(item.get("deletions", 0) or 0)),
+            }
+        )
+    return changed
+
+
 @dataclass(frozen=True)
 class RunnerSettings:
     relay_url: str
@@ -161,8 +225,10 @@ class LocalRunner:
                     "log_dir": str(diagnostic_log_dir()),
                     "observability": manager.observability_status(),
                 }
-            }
+        }
         if action == "chat":
+            workspace = self.registry.resolve(workspace_id)
+            git_before = git_turn_snapshot(workspace)
             first_token_seen = False
 
             def on_token(text: str) -> None:
@@ -230,22 +296,36 @@ class LocalRunner:
                     payload.get("prompt", ""),
                     **submit_kwargs,
                 )
+            changed_files = changed_git_files(
+                git_before,
+                git_turn_snapshot(workspace),
+            )
+            manager.annotate_turn_changes(payload["client_id"], changed_files)
             if event_handler is not None:
                 if first_token_seen:
                     event_handler({"type": "stage", "stage": "last_token"})
                 event_handler({"type": "stage", "stage": "persisted"})
             response = asdict(result)
             response["files"] = output_files
+            response["changed_files"] = changed_files
             return response
         if action == "approval":
+            workspace = self.registry.resolve(workspace_id)
+            git_before = git_turn_snapshot(workspace)
             with self._capture_output_files(str(payload["workspace_id"])) as output_files:
                 result = manager.resolve_approval(
                     payload["client_id"],
                     payload["approved"],
                     payload["approve_all"],
                 )
+            changed_files = changed_git_files(
+                git_before,
+                git_turn_snapshot(workspace),
+            )
+            manager.annotate_turn_changes(payload["client_id"], changed_files)
             response = asdict(result)
             response["files"] = output_files
+            response["changed_files"] = changed_files
             return response
         if action == "download":
             return self._web_files.read(
