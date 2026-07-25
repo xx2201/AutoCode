@@ -650,17 +650,30 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   color: #696d76;
   font-size: 11px;
 }
-.rich-text p { margin: 0 0 10px; font-size: 13px; line-height: 1.72; white-space: normal; overflow-wrap: anywhere; }
+.turn-answer .rich-text p {
+  margin: 0 0 14px;
+  font-size: inherit;
+  line-height: inherit;
+}
+.rich-text p {
+  margin: 0 0 10px;
+  font-size: 13px;
+  line-height: 1.72;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
 .rich-text p:last-child { margin-bottom: 0; }
 .rich-text pre {
   max-width: 100%;
-  margin: 10px 0;
-  padding: 14px;
+  margin: 12px 0;
+  padding: 2px 0 2px 14px;
   overflow-x: auto;
-  border-radius: 11px;
-  color: #e7e9f3;
-  background: #292c3b;
-  font: 11px/1.65 ui-monospace, SFMono-Regular, Consolas, monospace;
+  border-left: 2px solid #dfe1e7;
+  color: #4f5360;
+  background: transparent;
+  font: 12px/1.75 ui-monospace, SFMono-Regular, Consolas, monospace;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 @keyframes pulse { 0%, 70%, 100% { opacity: 0.25; transform: translateY(0); } 35% { opacity: 1; transform: translateY(-3px); } }
 
