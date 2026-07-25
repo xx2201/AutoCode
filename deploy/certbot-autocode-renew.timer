@@ -1,0 +1,10 @@
+[Unit]
+Description=Check the AutoCode Relay IP certificate twice daily
+
+[Timer]
+OnCalendar=*-*-* 02,14:15:00
+RandomizedDelaySec=30m
+Persistent=true
+
+[Install]
+WantedBy=timers.target

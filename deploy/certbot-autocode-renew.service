@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew the AutoCode Relay IP certificate
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/certbot/bin/certbot renew --quiet --cert-name 34.142.199.209 --deploy-hook /usr/local/sbin/deploy-autocode-ip-cert

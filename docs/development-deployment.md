@@ -141,6 +141,33 @@ The public health endpoint must return `status: ok` and
 expected frontend asset names and that recent service logs contain successful
 Runner heartbeat and polling requests.
 
+## Public IP certificate
+
+The development Relay uses a publicly trusted, short-lived Let's Encrypt
+certificate for `34.142.199.209`. Certbot is installed in `/opt/certbot`.
+
+The certificate is renewed by:
+
+```text
+certbot-autocode-renew.timer
+  -> certbot-autocode-renew.service
+  -> /usr/local/sbin/deploy-autocode-ip-cert
+```
+
+The deploy hook copies the renewed certificate and private key into
+`/home/dev/corecoder-web/tls` with permissions suitable for the `dev` service
+user, then restarts `corecoder-web.service`. The source files for the hook and
+systemd units are stored under `deploy/`.
+
+IP certificates are short-lived. Verify the timer after every deployment or
+server maintenance:
+
+```bash
+systemctl status certbot-autocode-renew.timer --no-pager
+systemctl list-timers certbot-autocode-renew.timer --no-pager
+/opt/certbot/bin/certbot certificates --cert-name 34.142.199.209
+```
+
 ## Rollback
 
 Choose a previous directory under `releases/`, reinstall its wheel into the
@@ -161,3 +188,8 @@ then restart and repeat the verification checks.
 发布过程中不得覆盖。Runner 代码发生变化时，还需要重启 Windows 计划任务
 `AutoCodeLocalWebRunner`。部署完成后必须同时检查 systemd 状态、公网页面
 资产、健康接口中的 `runner_connected`，以及 Runner heartbeat/轮询日志。
+
+开发机公网 IP 证书由 `/opt/certbot` 中的 Certbot 管理。系统定时器
+`certbot-autocode-renew.timer` 每天检查两次；续期成功后，
+`deploy-autocode-ip-cert.sh` 会把新证书复制到 Relay 的 `tls` 目录并重启
+服务。IP 证书有效期很短，服务器维护后必须确认该定时器仍为 active。
