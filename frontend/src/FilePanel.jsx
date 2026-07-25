@@ -10,6 +10,7 @@ import {
 } from "lucide-react";
 import { useMemo, useState } from "react";
 import { parseDiffHunks } from "./diff";
+import { highlightCodeLines } from "./syntax";
 
 function buildTree(paths) {
   const root = { folders: new Map(), files: [] };
@@ -70,6 +71,41 @@ function TreeFolder({ name, node, depth, onSelect }) {
   );
 }
 
+function CodeLine({ className = "", html, lineNumber, marker = "" }) {
+  return (
+    <div className={`file-code-line ${className}`}>
+      <span>{lineNumber}</span>
+      {marker !== null && <i>{marker}</i>}
+      <code dangerouslySetInnerHTML={{ __html: html || "&nbsp;" }} />
+    </div>
+  );
+}
+
+function DiffHunk({ hunk, path }) {
+  const highlighted = useMemo(
+    () => highlightCodeLines(hunk.lines.map((line) => line.text).join("\n"), path),
+    [hunk.lines, path],
+  );
+  const end = Math.max(hunk.newStart, hunk.newStart + hunk.newCount - 1);
+  return (
+    <section className="file-diff-hunk">
+      <header>
+        <span><ChevronDown size={16} /> 第 {hunk.newStart}-{end} 行</span>
+        <span><b>+{hunk.additions}</b><i>−{hunk.deletions}</i></span>
+      </header>
+      {hunk.lines.map((line, index) => (
+        <CodeLine
+          className={line.kind}
+          html={highlighted[index]}
+          key={`${index}-${line.old}-${line.next}`}
+          lineNumber={line.next || line.old}
+          marker={line.marker}
+        />
+      ))}
+    </section>
+  );
+}
+
 function DiffContent({ diff }) {
   const hunks = useMemo(() => parseDiffHunks(diff?.diff), [diff?.diff]);
   if (!diff?.diff) {
@@ -86,30 +122,40 @@ function DiffContent({ diff }) {
         </span>
       </header>
       <div className="file-diff-code">
-        {hunks.map((hunk) => {
-          const end = Math.max(hunk.newStart, hunk.newStart + hunk.newCount - 1);
-          return (
-            <section className="file-diff-hunk" key={`${hunk.oldStart}-${hunk.newStart}`}>
-              <header>
-                <span><ChevronDown size={16} /> 第 {hunk.newStart}-{end} 行</span>
-                <span><b>+{hunk.additions}</b><i>−{hunk.deletions}</i></span>
-              </header>
-              {hunk.lines.map((line, index) => (
-                <div
-                  className={`file-diff-line ${line.kind}`}
-                  key={`${index}-${line.old}-${line.next}`}
-                >
-                  <span>{line.next || line.old}</span>
-                  <i>{line.marker}</i>
-                  <code>{line.text || " "}</code>
-                </div>
-              ))}
-            </section>
-          );
-        })}
+        {hunks.map((hunk) => (
+          <DiffHunk
+            hunk={hunk}
+            key={`${hunk.oldStart}-${hunk.newStart}`}
+            path={diff.path}
+          />
+        ))}
       </div>
       {diff.truncated && <p>Diff 过大，当前仅显示前 2 MB。</p>}
     </div>
+  );
+}
+
+function FileContent({ file }) {
+  const highlighted = useMemo(
+    () => highlightCodeLines(file?.content || "", file?.path || ""),
+    [file?.content, file?.path],
+  );
+  if (!file) return null;
+  return (
+    <>
+      <header><strong>{file.path}</strong><span>{file.size} B</span></header>
+      <div className="file-source-code" aria-label={`${file.path} 代码`}>
+        {highlighted.map((html, index) => (
+          <CodeLine
+            html={html}
+            key={index}
+            lineNumber={index + 1}
+            marker={null}
+          />
+        ))}
+      </div>
+      {file.truncated && <footer>文件过大，当前仅显示前 1 MB。</footer>}
+    </>
   );
 }
 
@@ -235,11 +281,7 @@ export default function FilePanel({
               ) : file?.binary ? (
                 <div className="file-panel-empty">这是二进制文件，无法在此预览。</div>
               ) : file ? (
-                <>
-                  <header><strong>{file.path}</strong><span>{file.size} B</span></header>
-                  <pre>{file.content}</pre>
-                  {file.truncated && <footer>文件过大，当前仅显示前 1 MB。</footer>}
-                </>
+                <FileContent file={file} />
               ) : (
                 <div className="file-panel-empty">从左侧选择文件查看内容。</div>
               )}
