@@ -115,13 +115,31 @@ class _ConfirmAllPolicy(Policy):
 def test_runtime_emits_hooks(tmp_path):
     events = []
     hooks = HookBus()
-    hooks.on("after_tool", lambda event, payload: events.append((event, payload["tool_name"])))
+    hooks.on("before_tool", lambda event, payload: events.append((event, payload)))
+    hooks.on("after_tool", lambda event, payload: events.append((event, payload)))
     runtime = Runtime({"echo": _EchoTool()}, policy=Policy(workspace_root=str(tmp_path)), hooks=hooks)
     state = TaskState(task_id="task_test", status="running")
     tc = ToolCall(id="1", name="echo", arguments={"text": "hi"})
     result = runtime.execute_tool_call(state, tc, "session_test")
+
     assert result == "echo:hi"
-    assert events == [("after_tool", "echo")]
+    assert events[0] == (
+        "before_tool",
+        {
+            "session_id": "session_test",
+            "task_id": "task_test",
+            "task_title": "",
+            "tool_call_id": "1",
+            "tool_name": "echo",
+            "arguments": {"text": "hi"},
+        },
+    )
+    assert events[1][0] == "after_tool"
+    assert events[1][1]["tool_call_id"] == "1"
+    assert events[1][1]["tool_name"] == "echo"
+    assert events[1][1]["result"] == "echo:hi"
+    assert events[1][1]["duration_ms"] >= 0
+    assert events[1][1]["success"] is True
 
 
 def test_agent_waits_for_approval(tmp_path):

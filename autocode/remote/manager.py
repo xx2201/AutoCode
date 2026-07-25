@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import json
 import threading
+import time
 from contextlib import contextmanager
 from dataclasses import dataclass
 from typing import Hashable
@@ -16,6 +18,31 @@ from ..mcp import get_shared_mcp_manager
 from ..observability import LangfuseTracer
 from ..state import delete_session, format_trace, list_sessions, load_checkpoint, load_trace
 from ..tools.factory import build_agent_tools
+
+_PRESENTATION_ARGUMENT_KEYS = (
+    "command",
+    "file_path",
+    "path",
+    "query",
+    "url",
+    "pattern",
+    "task",
+    "process_id",
+)
+
+
+def presentation_tool_arguments(arguments: object) -> dict:
+    """Return bounded operation descriptors without sending full tool payloads."""
+    if not isinstance(arguments, dict):
+        return {}
+    visible = {}
+    for key in _PRESENTATION_ARGUMENT_KEYS:
+        if key not in arguments:
+            continue
+        value = arguments[key]
+        if isinstance(value, (str, int, float, bool)) or value is None:
+            visible[key] = str(value)[:500] if isinstance(value, str) else value
+    return visible
 
 
 @dataclass
@@ -85,6 +112,8 @@ class RemoteManager:
     ) -> RemoteTurnResult:
         runtime = self._get_or_create_runtime(chat_id)
         with runtime.lock:
+            message_start = len(runtime.agent.messages)
+            started_at = time.monotonic()
             prepared = prepare_attachments(
                 self.config.workspace_root,
                 str(chat_id),
@@ -99,6 +128,11 @@ class RemoteManager:
                     on_tool=on_tool,
                     image_parts=prepared.image_parts,
                 )
+            self._annotate_turn(
+                runtime.agent,
+                message_start,
+                round((time.monotonic() - started_at) * 1000, 1),
+            )
             return self._result_from_agent(runtime.agent, reply)
 
     def resolve_approval(
@@ -110,12 +144,19 @@ class RemoteManager:
     ) -> RemoteTurnResult:
         runtime = self._require_runtime(chat_id)
         with runtime.lock:
+            message_start = len(runtime.agent.messages)
+            started_at = time.monotonic()
             with self._temporary_hook(runtime.agent, hook_handler):
                 reply = runtime.agent.approve_pending(
                     approved=approved,
                     approval_handler=None,
                     enable_auto_approve=enable_auto_approve,
                 )
+            self._annotate_turn(
+                runtime.agent,
+                message_start,
+                round((time.monotonic() - started_at) * 1000, 1),
+            )
             return self._result_from_agent(runtime.agent, reply)
 
     def reset_chat(self, chat_id: Hashable) -> None:
@@ -142,20 +183,80 @@ class RemoteManager:
         runtime = self._require_runtime(chat_id)
         with runtime.lock:
             messages = []
+            tool_calls: dict[str, dict] = {}
             for message in runtime.agent.messages[-max(1, limit):]:
                 role = message.get("role", "")
                 raw_content = message.get("content", "")
                 if role not in {"user", "assistant", "tool"}:
                     continue
+                safe_tool_calls = []
+                if role == "assistant":
+                    for item in message.get("tool_calls") or []:
+                        function = item.get("function") or {}
+                        tool_call_id = str(item.get("id", ""))
+                        raw_arguments = function.get("arguments", "")
+                        try:
+                            arguments = json.loads(raw_arguments) if raw_arguments else {}
+                        except (TypeError, json.JSONDecodeError):
+                            arguments = {"raw": str(raw_arguments)[:2000]}
+                        tool_call = {
+                            "id": tool_call_id,
+                            "name": str(function.get("name", "")),
+                            "arguments": presentation_tool_arguments(arguments),
+                        }
+                        safe_tool_calls.append(tool_call)
+                        if tool_call_id:
+                            tool_calls[tool_call_id] = tool_call
                 content = content_text(raw_content)
+                tool_call_id = str(message.get("tool_call_id", ""))
+                known_tool = tool_calls.get(tool_call_id, {})
                 messages.append(
                     {
                         "role": role,
                         "content": content[:20_000],
-                        "tool_call_id": str(message.get("tool_call_id", "")),
+                        "tool_call_id": tool_call_id,
+                        "tool_name": str(
+                            message.get("tool_name")
+                            or known_tool.get("name")
+                            or ""
+                        ),
+                        "tool_arguments": (
+                            presentation_tool_arguments(message.get("tool_arguments"))
+                            or known_tool.get("arguments")
+                            or {}
+                        ),
+                        "tool_calls": safe_tool_calls,
+                        "turn_id": str(message.get("turn_id", "")),
+                        "turn_elapsed_ms": float(message.get("turn_elapsed_ms", 0) or 0),
                     }
                 )
             return messages
+
+    @staticmethod
+    def _annotate_turn(agent: Agent, message_start: int, elapsed_ms: float) -> None:
+        """Persist presentation metadata on the user turn without changing model content."""
+        messages = agent.messages
+        if not messages:
+            return
+        user_index = next(
+            (
+                index
+                for index in range(min(message_start, len(messages) - 1), -1, -1)
+                if messages[index].get("role") == "user"
+            ),
+            None,
+        )
+        if user_index is None:
+            return
+        task_id = agent.task_state.task_id if agent.task_state is not None else ""
+        for message in messages[user_index:]:
+            message["turn_id"] = task_id
+        user_message = messages[user_index]
+        user_message["turn_elapsed_ms"] = round(
+            float(user_message.get("turn_elapsed_ms", 0) or 0) + elapsed_ms,
+            1,
+        )
+        agent.persist_session()
 
     def observability_status(self) -> dict:
         with self._state_lock:

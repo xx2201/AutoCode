@@ -1,7 +1,6 @@
 import {
   Activity,
   ArrowRight,
-  Bot,
   Check,
   ChevronDown,
   CircleStop,
@@ -42,6 +41,12 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import GitPanel from "./GitPanel";
+import {
+  formatDuration,
+  formatToolTitle,
+  groupConversation,
+  mergeWorkEvent,
+} from "./conversation";
 
 const TOKEN_KEY = "autocode_web_token";
 const WORKSPACE_KEY = "autocode_workspace_id";
@@ -403,82 +408,202 @@ function LoginView({ onLogin, error, busy }) {
   );
 }
 
-function Message({ message, onFileAction, downloadingFileId }) {
-  const assistant = message.role === "assistant";
-  const tool = message.role === "tool";
+function MessageAttachments({ attachments = [] }) {
+  if (attachments.length === 0) return null;
   return (
-    <article className={`message-row ${message.role}`}>
-      <div className="message-avatar">
-        {assistant ? <Bot size={18} /> : tool ? <TerminalSquare size={18} /> : "你"}
-      </div>
-      <div className="message-column">
-        <div className="message-label">
-          {assistant ? "AutoCode" : tool ? "Tool output" : "You"}
-        </div>
-        <div className="message-bubble">
-          {tool ? <pre>{message.content}</pre> : <RichText content={message.content} />}
-          {message.attachments?.length > 0 && (
-            <div className="message-attachments">
-              {message.attachments.map((attachment) => (
-                <span key={`${attachment.name}-${attachment.size}`}>
-                  {attachment.media_type.startsWith("image/") ? (
-                    <ImageIcon size={14} />
-                  ) : (
-                    <FileText size={14} />
-                  )}
-                  {attachment.name}
-                </span>
-              ))}
-            </div>
+    <div className="message-attachments">
+      {attachments.map((attachment) => (
+        <span key={`${attachment.name}-${attachment.size}`}>
+          {attachment.media_type.startsWith("image/") ? (
+            <ImageIcon size={14} />
+          ) : (
+            <FileText size={14} />
           )}
-          {message.files?.length > 0 && (
-            <div className="output-files">
-              {message.files.map((file) => (
-                <div className="output-file" key={file.file_id}>
-                  <span className="output-file-icon">
-                    {file.media_type.startsWith("image/") ? (
-                      <ImageIcon size={18} />
-                    ) : (
-                      <FileText size={18} />
-                    )}
-                  </span>
-                  <span className="output-file-copy">
-                    <strong title={file.name}>{file.name}</strong>
-                    <small>{formatFileSize(file.size)}</small>
-                  </span>
-                  <span className="output-file-actions">
-                    {file.can_preview && (
-                      <button
-                        type="button"
-                        title="在新页面查看"
-                        onClick={() => onFileAction(file, true)}
-                        disabled={downloadingFileId === file.file_id}
-                      >
-                        <ExternalLink size={15} />
-                        查看
-                      </button>
-                    )}
-                    <button
-                      type="button"
-                      title="下载到当前设备"
-                      onClick={() => onFileAction(file, false)}
-                      disabled={downloadingFileId === file.file_id}
-                    >
-                      {downloadingFileId === file.file_id ? (
-                        <RefreshCw className="spin" size={15} />
-                      ) : (
-                        <Download size={15} />
-                      )}
-                      下载
-                    </button>
-                  </span>
-                </div>
-              ))}
-            </div>
-          )}
+          {attachment.name}
+        </span>
+      ))}
+    </div>
+  );
+}
+
+function OutputFiles({ files = [], onFileAction, downloadingFileId }) {
+  if (files.length === 0) return null;
+  return (
+    <div className="output-files">
+      {files.map((file) => (
+        <div className="output-file" key={file.file_id}>
+          <span className="output-file-icon">
+            {file.media_type.startsWith("image/") ? (
+              <ImageIcon size={18} />
+            ) : (
+              <FileText size={18} />
+            )}
+          </span>
+          <span className="output-file-copy">
+            <strong title={file.name}>{file.name}</strong>
+            <small>{formatFileSize(file.size)}</small>
+          </span>
+          <span className="output-file-actions">
+            {file.can_preview && (
+              <button
+                type="button"
+                title="在新页面查看"
+                onClick={() => onFileAction(file, true)}
+                disabled={downloadingFileId === file.file_id}
+              >
+                <ExternalLink size={15} />
+                查看
+              </button>
+            )}
+            <button
+              type="button"
+              title="下载到当前设备"
+              onClick={() => onFileAction(file, false)}
+              disabled={downloadingFileId === file.file_id}
+            >
+              {downloadingFileId === file.file_id ? (
+                <RefreshCw className="spin" size={15} />
+              ) : (
+                <Download size={15} />
+              )}
+              下载
+            </button>
+          </span>
         </div>
+      ))}
+    </div>
+  );
+}
+
+function UserMessage({ message }) {
+  if (!message) return null;
+  return (
+    <article className="turn-user">
+      <div className="user-bubble">
+        <RichText content={message.content} />
+        <MessageAttachments attachments={message.attachments} />
       </div>
     </article>
+  );
+}
+
+function WorkItem({ item }) {
+  const title = formatToolTitle(item.toolName, item.arguments);
+  const meta = item.durationMs ? ` · ${formatDuration(item.durationMs)}` : "";
+  if (!item.content) {
+    return (
+      <div className={`work-item-summary ${item.status === "started" ? "is-running" : ""}`}>
+        <TerminalSquare size={16} />
+        <span>{title}{meta}</span>
+        {item.status === "started" && <i className="work-pulse" />}
+      </div>
+    );
+  }
+  return (
+    <details className="work-item">
+      <summary>
+        <TerminalSquare size={16} />
+        <span>{title}{meta}</span>
+        <ChevronDown size={15} />
+      </summary>
+      <pre>{item.content}</pre>
+    </details>
+  );
+}
+
+function WorkBlock({ items, elapsedMs, active = false, liveText = "", stage = "" }) {
+  const hasContent = items.length > 0 || liveText || active;
+  if (!hasContent) return null;
+  const stageText = {
+    queued: "等待本机领取",
+    claimed: "本机已领取",
+    runner_started: "启动 Agent",
+    model_started: "模型思考中",
+    tool_started: "执行工具",
+    persisted: "保存会话",
+  }[stage] || "正在处理";
+  const workLabel = active
+    ? `Working for ${formatDuration(elapsedMs)}`
+    : elapsedMs > 0
+      ? `Worked for ${formatDuration(elapsedMs)}`
+      : "Worked";
+  return (
+    <details className={`work-block ${active ? "is-active" : ""}`} open={active}>
+      <summary>
+        <span>{workLabel}</span>
+        {active && <i className="work-pulse" />}
+        <ChevronDown size={16} />
+      </summary>
+      <div className="work-content">
+        {liveText && (
+          <div className="work-narrative">
+            <RichText content={liveText} />
+          </div>
+        )}
+        {items.map((item) => (
+          item.type === "narrative" ? (
+            <div className="work-narrative" key={item.id}>
+              <RichText content={item.content} />
+            </div>
+          ) : (
+            <WorkItem item={item} key={item.id} />
+          )
+        ))}
+        {active && !liveText && items.length === 0 && (
+          <div className="work-stage">
+            <i /><i /><i />
+            <span>{stageText}</span>
+          </div>
+        )}
+      </div>
+    </details>
+  );
+}
+
+function AssistantAnswer({ message, onFileAction, downloadingFileId }) {
+  if (!message) return null;
+  return (
+    <article className="turn-answer">
+      <RichText content={message.content} />
+      <OutputFiles
+        files={message.files}
+        onFileAction={onFileAction}
+        downloadingFileId={downloadingFileId}
+      />
+    </article>
+  );
+}
+
+function ConversationTurn({
+  turn,
+  active,
+  liveWork,
+  liveText,
+  liveElapsedMs,
+  stage,
+  onFileAction,
+  downloadingFileId,
+}) {
+  return (
+    <section className="conversation-turn">
+      <UserMessage message={turn.user} />
+      <div className="turn-response">
+        <WorkBlock
+          items={active ? liveWork : turn.work}
+          elapsedMs={active ? liveElapsedMs : turn.elapsedMs}
+          active={active}
+          liveText={active ? liveText : ""}
+          stage={stage}
+        />
+        {!active && (
+          <AssistantAnswer
+            message={turn.answer}
+            onFileAction={onFileAction}
+            downloadingFileId={downloadingFileId}
+          />
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -601,6 +726,9 @@ export default function App() {
   const [status, setStatus] = useState("idle");
   const [streamText, setStreamText] = useState("");
   const [runStage, setRunStage] = useState("");
+  const [liveWork, setLiveWork] = useState([]);
+  const [runStartedAt, setRunStartedAt] = useState(0);
+  const [runElapsedMs, setRunElapsedMs] = useState(0);
   const [lastTimings, setLastTimings] = useState(null);
   const [contextUsage, setContextUsage] = useState({
     used_tokens: 0,
@@ -625,6 +753,15 @@ export default function App() {
     [bootstrap.workspaces, selectedId],
   );
   const clientId = selectedWorkspace ? clientIdFor(selectedWorkspace.workspace_id) : "";
+  const conversationTurns = useMemo(() => groupConversation(messages), [messages]);
+
+  useEffect(() => {
+    if (!busy || !runStartedAt) return undefined;
+    const updateElapsed = () => setRunElapsedMs(Date.now() - runStartedAt);
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 250);
+    return () => window.clearInterval(timer);
+  }, [busy, runStartedAt]);
 
   const showToast = useCallback((message) => {
     setToast(message);
@@ -694,6 +831,15 @@ export default function App() {
     );
     setSessions(data.sessions || []);
   }, [runnerOnline, selectedWorkspace, token]);
+
+  const refreshMessages = useCallback(async () => {
+    if (!selectedWorkspace || !runnerOnline) return [];
+    const data = await request(
+      token,
+      `/api/messages/${clientId}?workspace_id=${encodeURIComponent(selectedWorkspace.workspace_id)}`,
+    );
+    return data.messages || [];
+  }, [clientId, runnerOnline, selectedWorkspace, token]);
 
   const refreshGit = useCallback(async () => {
     if (!selectedWorkspace || !runnerOnline) return null;
@@ -856,6 +1002,9 @@ export default function App() {
     setStatus("running");
     setStreamText("");
     setRunStage("queued");
+    setLiveWork([]);
+    setRunStartedAt(Date.now());
+    setRunElapsedMs(0);
     setLastTimings(null);
     try {
       const encodedAttachments = await Promise.all(
@@ -878,6 +1027,8 @@ export default function App() {
             setStreamText(streamed);
           } else if (event.type === "stage") {
             setRunStage(event.stage || "");
+          } else if (event.type === "work") {
+            setLiveWork((items) => mergeWorkEvent(items, event));
           } else if (event.type === "result") {
             result = event.data;
             setLastTimings(event.timings || null);
@@ -889,7 +1040,24 @@ export default function App() {
         },
       );
       if (!result) throw new Error("流式响应结束但没有最终结果。");
-      if (result.text || result.files?.length) {
+      let synchronized = [];
+      try {
+        synchronized = await refreshMessages();
+      } catch (error) {
+        showToast(`操作记录刷新失败：${error.message}`);
+      }
+      if (synchronized.length > 0) {
+        const lastAssistant = synchronized.findLastIndex(
+          (message) => message.role === "assistant" && !(message.tool_calls?.length),
+        );
+        if (lastAssistant >= 0 && result.files?.length) {
+          synchronized[lastAssistant] = {
+            ...synchronized[lastAssistant],
+            files: result.files,
+          };
+        }
+        setMessages(synchronized);
+      } else if (result.text || result.files?.length) {
         setMessages((items) => [
           ...items,
           {
@@ -914,6 +1082,8 @@ export default function App() {
       }
       setStreamText("");
       setRunStage("");
+      setLiveWork([]);
+      setRunStartedAt(0);
       setBusy(false);
       try {
         await refreshSessions();
@@ -932,6 +1102,8 @@ export default function App() {
       setBusy(false);
       setStreamText("");
       setRunStage("");
+      setLiveWork([]);
+      setRunStartedAt(0);
       pendingAttachments.forEach(
         (item) => item.preview && URL.revokeObjectURL(item.preview),
       );
@@ -1112,6 +1284,9 @@ export default function App() {
     setMessages([]);
     setPending(null);
     setStatus("idle");
+    setLiveWork([]);
+    setRunStartedAt(0);
+    setRunElapsedMs(0);
     setContextUsage({
       used_tokens: 0,
       window_tokens: bootstrap.context_window_tokens || 0,
@@ -1461,40 +1636,19 @@ export default function App() {
               <Welcome workspace={selectedWorkspace} onPrompt={submitPrompt} />
             ) : (
               <div className="message-list">
-                {messages.map((message, index) => (
-                  <Message
-                    key={`${message.role}-${index}`}
-                    message={message}
+                {conversationTurns.map((turn, index) => (
+                  <ConversationTurn
+                    key={turn.id}
+                    turn={turn}
+                    active={busy && index === conversationTurns.length - 1}
+                    liveWork={liveWork}
+                    liveText={streamText}
+                    liveElapsedMs={runElapsedMs}
+                    stage={runStage}
                     onFileAction={handleOutputFile}
                     downloadingFileId={downloadingFileId}
                   />
                 ))}
-                {busy && (
-                  <article className="message-row assistant">
-                    <div className="message-avatar"><Bot size={18} /></div>
-                    <div className="message-column">
-                      <div className="message-label">AutoCode</div>
-                      {streamText ? (
-                        <div className="message-bubble streaming-response">
-                          <RichText content={streamText} />
-                          <span className="stream-caret" />
-                        </div>
-                      ) : (
-                        <div className="thinking">
-                          <i /><i /><i />
-                          <span>{{
-                            queued: "等待本机领取",
-                            claimed: "本机已领取",
-                            runner_started: "启动 Agent",
-                            model_started: "模型思考中",
-                            tool_started: "执行工具",
-                            persisted: "保存会话",
-                          }[runStage] || "正在处理"}</span>
-                        </div>
-                      )}
-                    </div>
-                  </article>
-                )}
                 <div ref={messageEndRef} />
               </div>
             )}

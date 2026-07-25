@@ -18,7 +18,7 @@ class _DelegationTool(Tool):
         "required": ["task"],
     }
 
-    def execute(self, task: str) -> str:
+    def execute(self, task: str, content: str | None = None) -> str:
         return f"delegated:{task}"
 
 
@@ -147,6 +147,48 @@ def test_remote_manager_exposes_bounded_conversation_snapshot(tmp_path):
     assert [message["role"] for message in messages] == ["user", "assistant"]
     assert messages[0]["content"] == "hello"
     assert messages[1]["content"] == "finished"
+    assert messages[0]["turn_id"].startswith("task_")
+    assert messages[0]["turn_elapsed_ms"] >= 0
+
+
+def test_remote_manager_exposes_tool_metadata_for_collapsible_work(tmp_path):
+    llm = _FakeLLM([
+        LLMResponse(
+            content="I will delegate this.",
+            tool_calls=[
+                ToolCall(
+                    id="call_1",
+                    name="agent",
+                    arguments={"task": "inspect", "content": "private payload"},
+                ),
+            ],
+        ),
+        LLMResponse(content="finished"),
+    ])
+    manager = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: llm,
+        tools=[_DelegationTool()],
+    )
+
+    manager.submit(909, "inspect")
+    messages = manager.conversation_messages(909)
+
+    intermediate = messages[1]
+    tool_result = messages[2]
+    assert intermediate["tool_calls"] == [
+        {
+            "id": "call_1",
+            "name": "agent",
+            "arguments": {"task": "inspect"},
+        }
+    ]
+    assert tool_result["tool_call_id"] == "call_1"
+    assert tool_result["tool_name"] == "agent"
+    assert tool_result["tool_arguments"] == {"task": "inspect"}
+    assert "content" not in intermediate["tool_calls"][0]["arguments"]
+    assert tool_result["content"] == "delegated:inspect"
+    assert messages[-1]["content"] == "finished"
 
 
 def test_remote_manager_lists_resume_candidates_for_current_workspace(tmp_path, monkeypatch):

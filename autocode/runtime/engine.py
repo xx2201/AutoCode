@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import contextvars
+import time
 
 from ..state import PolicyDecision, TaskState
 from ..tools.base import ToolResult
@@ -130,12 +131,21 @@ class Runtime:
         on_tool=None,
         decision: PolicyDecision | None = None,
     ) -> str | ToolResult:
+        started_at = time.monotonic()
         tool = self.tool_registry.get(tool_call.name)
         if tool is None:
             result = f"Error: unknown tool '{tool_call.name}'"
             self.hooks.emit(
                 "after_tool",
-                self._payload(session_id, task_state, tool_name=tool_call.name, result=result),
+                self._payload(
+                    session_id,
+                    task_state,
+                    tool_call_id=tool_call.id,
+                    tool_name=tool_call.name,
+                    result=result,
+                    duration_ms=round((time.monotonic() - started_at) * 1000, 1),
+                    success=False,
+                ),
             )
             return result
 
@@ -144,7 +154,13 @@ class Runtime:
 
         self.hooks.emit(
             "before_tool",
-            self._payload(session_id, task_state, tool_name=tool_call.name, arguments=tool_call.arguments),
+            self._payload(
+                session_id,
+                task_state,
+                tool_call_id=tool_call.id,
+                tool_name=tool_call.name,
+                arguments=tool_call.arguments,
+            ),
         )
         execute_kwargs = dict(tool_call.arguments)
         if tool_call.name == "start_process":
@@ -165,8 +181,11 @@ class Runtime:
             self._payload(
                 session_id,
                 task_state,
+                tool_call_id=tool_call.id,
                 tool_name=tool_call.name,
-                result=result_text[:500],
+                result=result_text[:4000],
+                duration_ms=round((time.monotonic() - started_at) * 1000, 1),
+                success=not result_text.startswith("Error:"),
                 multimodal=bool(isinstance(result, ToolResult) and result.model_content),
             ),
         )
@@ -208,7 +227,15 @@ class Runtime:
             result = self.recovery.note_tool_result(task_state, tool_name, result)
         self.hooks.emit(
             "after_tool",
-            self._payload(session_id, task_state, tool_name=tool_name, result=result[:500]),
+            self._payload(
+                session_id,
+                task_state,
+                tool_call_id=tool_call.id,
+                tool_name=tool_name,
+                result=result[:4000],
+                duration_ms=0.0,
+                success=False,
+            ),
         )
         return result
 

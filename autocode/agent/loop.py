@@ -276,7 +276,15 @@ class Agent:
 
     def _append_tool_result(self, tool_call: ToolCall, result: str | ToolResult) -> str:
         text = result.text if isinstance(result, ToolResult) else result
-        self._append_message({"role": "tool", "tool_call_id": tool_call.id, "content": text})
+        self._append_message(
+            {
+                "role": "tool",
+                "tool_call_id": tool_call.id,
+                "tool_name": tool_call.name,
+                "tool_arguments": tool_call.arguments,
+                "content": text,
+            }
+        )
         if isinstance(result, ToolResult) and result.model_content:
             self._deferred_model_content.append(
                 (tool_call.name, list(result.model_content))

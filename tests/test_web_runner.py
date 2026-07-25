@@ -125,6 +125,65 @@ def test_runner_executes_chat_and_approval_in_selected_workspace(tmp_path):
     assert ("approval", "web_12345678", True, True) in manager.calls
 
 
+def test_runner_converts_tool_hooks_to_work_events(tmp_path):
+    runner, workspace, managers = _runner(tmp_path)
+    manager = runner._manager(workspace.workspace_id)
+
+    def submit(client_id, prompt, hook_handler=None, on_token=None):
+        manager.calls.append(("chat", client_id, prompt))
+        hook_handler(
+            "before_tool",
+            {
+                "tool_call_id": "call_1",
+                "tool_name": "bash",
+                "arguments": {"command": "git status"},
+            },
+        )
+        hook_handler(
+            "after_tool",
+            {
+                "tool_call_id": "call_1",
+                "tool_name": "bash",
+                "result": "clean",
+                "duration_ms": 1250,
+                "success": True,
+            },
+        )
+        return manager.result
+
+    manager.submit = submit
+    events = []
+    runner.execute(
+        "chat",
+        {
+            "workspace_id": workspace.workspace_id,
+            "client_id": "web_12345678",
+            "prompt": "inspect project",
+        },
+        event_handler=events.append,
+    )
+
+    work_events = [event for event in events if event["type"] == "work"]
+    assert work_events == [
+        {
+            "type": "work",
+            "phase": "started",
+            "tool_call_id": "call_1",
+            "tool_name": "bash",
+            "arguments": {"command": "git status"},
+        },
+        {
+            "type": "work",
+            "phase": "completed",
+            "tool_call_id": "call_1",
+            "tool_name": "bash",
+            "output": "clean",
+            "duration_ms": 1250.0,
+            "success": True,
+        },
+    ]
+
+
 def test_runner_routes_session_delete_to_workspace_manager(tmp_path):
     runner, workspace, managers = _runner(tmp_path)
 

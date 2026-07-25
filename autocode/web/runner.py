@@ -22,7 +22,7 @@ from .. import __version__
 from ..config import Config
 from ..diagnostics import diagnostic_log_dir, get_diagnostic_logger, log_event
 from ..mcp import get_shared_mcp_manager
-from ..remote.manager import RemoteManager
+from ..remote.manager import RemoteManager, presentation_tool_arguments
 from ..tools.factory import build_agent_tools
 from ..workspaces import WorkspaceRegistry
 from .files import WebFileStore, WebSendTool
@@ -177,6 +177,26 @@ class LocalRunner:
             def on_hook(event: str, data: dict) -> None:
                 if event_handler is None:
                     return
+                if event in {"before_tool", "after_tool"}:
+                    work_event = {
+                        "type": "work",
+                        "phase": "started" if event == "before_tool" else "completed",
+                        "tool_call_id": str(data.get("tool_call_id", "")),
+                        "tool_name": str(data.get("tool_name", "")),
+                    }
+                    if event == "before_tool":
+                        work_event["arguments"] = presentation_tool_arguments(
+                            data.get("arguments")
+                        )
+                    else:
+                        work_event.update(
+                            {
+                                "output": str(data.get("result", "")),
+                                "duration_ms": float(data.get("duration_ms", 0) or 0),
+                                "success": bool(data.get("success", False)),
+                            }
+                        )
+                    event_handler(work_event)
                 stage_map = {
                     "before_llm": "model_started",
                     "after_llm": "model_finished",
@@ -188,7 +208,13 @@ class LocalRunner:
                 if stage:
                     details = {
                         key: data[key]
-                        for key in ("step_index", "tool_name", "prompt_tokens", "completion_tokens")
+                        for key in (
+                            "step_index",
+                            "tool_call_id",
+                            "tool_name",
+                            "prompt_tokens",
+                            "completion_tokens",
+                        )
                         if key in data
                     }
                     event_handler({"type": "stage", "stage": stage, "details": details})
