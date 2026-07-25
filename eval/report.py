@@ -26,6 +26,13 @@ class TrialReport:
     turns: int = 0
     duration_seconds: float = 0.0
     tool_calls: int = 0
+    input_tokens_total: int = 0
+    output_tokens_total: int = 0
+    effective_input_tokens: int = 0
+    cache_read_tokens: int = 0
+    cache_miss_tokens: int = 0
+    cache_creation_tokens: int = 0
+    cache_hit_rate: float = 0.0
     human_assist: bool = False
     timeout_abort: bool = False
 
@@ -58,6 +65,13 @@ def build_trial_report(
     turns = int(trace.get("llm_calls") or trace.get("steps") or 0)
     duration_seconds = float(trace.get("duration_seconds") or 0.0)
     tool_calls = int(trace.get("tool_calls") or 0)
+    input_tokens_total = int(trace.get("input_tokens_total") or trace.get("prompt_tokens") or 0)
+    output_tokens_total = int(trace.get("output_tokens_total") or trace.get("completion_tokens") or 0)
+    effective_input_tokens = int(trace.get("effective_input_tokens") or input_tokens_total or 0)
+    cache_read_tokens = int(trace.get("cache_read_tokens") or 0)
+    cache_miss_tokens = int(trace.get("cache_miss_tokens") or 0)
+    cache_creation_tokens = int(trace.get("cache_creation_tokens") or 0)
+    cache_hit_rate = float(trace.get("cache_hit_rate") or 0.0)
     human_assist = bool(trace.get("human_assist") or False)
     timeout_abort = str(trace.get("stop_reason") or "").lower() in {"timeout", "timeout_abort"}
     return TrialReport(
@@ -75,6 +89,13 @@ def build_trial_report(
         turns=turns,
         duration_seconds=duration_seconds,
         tool_calls=tool_calls,
+        input_tokens_total=input_tokens_total,
+        output_tokens_total=output_tokens_total,
+        effective_input_tokens=effective_input_tokens,
+        cache_read_tokens=cache_read_tokens,
+        cache_miss_tokens=cache_miss_tokens,
+        cache_creation_tokens=cache_creation_tokens,
+        cache_hit_rate=cache_hit_rate,
         human_assist=human_assist,
         timeout_abort=timeout_abort,
     )
@@ -108,6 +129,12 @@ def aggregate_reports(reports: list[TrialReport]) -> dict:
                 "turns_count": 0,
                 "duration_sum": 0.0,
                 "duration_count": 0,
+                "input_tokens_sum": 0,
+                "output_tokens_sum": 0,
+                "effective_input_tokens_sum": 0,
+                "cache_read_sum": 0,
+                "cache_miss_sum": 0,
+                "cache_creation_sum": 0,
                 "fallback_count": 0,
             },
         )
@@ -122,6 +149,12 @@ def aggregate_reports(reports: list[TrialReport]) -> dict:
         if report.duration_seconds > 0:
             bucket["duration_sum"] += report.duration_seconds
             bucket["duration_count"] += 1
+        bucket["input_tokens_sum"] += report.input_tokens_total
+        bucket["output_tokens_sum"] += report.output_tokens_total
+        bucket["effective_input_tokens_sum"] += report.effective_input_tokens
+        bucket["cache_read_sum"] += report.cache_read_tokens
+        bucket["cache_miss_sum"] += report.cache_miss_tokens
+        bucket["cache_creation_sum"] += report.cache_creation_tokens
         bucket["fallback_count"] += 1 if report.human_assist or report.timeout_abort else 0
     return {
         "total_trials": len(reports),
@@ -147,6 +180,12 @@ def aggregate_reports(reports: list[TrialReport]) -> dict:
                     if data["duration_count"]
                     else 0.0
                 ),
+                "average_input_tokens_total": data["input_tokens_sum"] / data["total_trials"],
+                "average_output_tokens_total": data["output_tokens_sum"] / data["total_trials"],
+                "average_effective_input_tokens": data["effective_input_tokens_sum"] / data["total_trials"],
+                "average_cache_read_tokens": data["cache_read_sum"] / data["total_trials"],
+                "average_cache_miss_tokens": data["cache_miss_sum"] / data["total_trials"],
+                "average_cache_creation_tokens": data["cache_creation_sum"] / data["total_trials"],
                 "fallback_rate": data["fallback_count"] / data["total_trials"],
             }
             for agent, data in sorted(by_agent.items())
@@ -170,6 +209,13 @@ def serialize_trial_report(report: TrialReport) -> dict:
         "turns": report.turns,
         "duration_seconds": report.duration_seconds,
         "tool_calls": report.tool_calls,
+        "input_tokens_total": report.input_tokens_total,
+        "output_tokens_total": report.output_tokens_total,
+        "effective_input_tokens": report.effective_input_tokens,
+        "cache_read_tokens": report.cache_read_tokens,
+        "cache_miss_tokens": report.cache_miss_tokens,
+        "cache_creation_tokens": report.cache_creation_tokens,
+        "cache_hit_rate": report.cache_hit_rate,
         "human_assist": report.human_assist,
         "timeout_abort": report.timeout_abort,
         "graders": [
@@ -213,6 +259,12 @@ def render_markdown(summary: dict) -> str:
             lines.append(f"- S+A rate: {stats['s_or_a_rate']:.2%}")
             lines.append(f"- Avg turns: {stats['avg_turns']:.1f}")
             lines.append(f"- Avg duration: {stats['avg_duration_seconds']:.1f}s")
+            lines.append(f"- Avg input tokens: {stats['average_input_tokens_total']:.1f}")
+            lines.append(f"- Avg output tokens: {stats['average_output_tokens_total']:.1f}")
+            lines.append(f"- Avg effective input tokens: {stats['average_effective_input_tokens']:.1f}")
+            lines.append(f"- Avg cache read tokens: {stats['average_cache_read_tokens']:.1f}")
+            lines.append(f"- Avg cache miss tokens: {stats['average_cache_miss_tokens']:.1f}")
+            lines.append(f"- Avg cache creation tokens: {stats['average_cache_creation_tokens']:.1f}")
             lines.append(f"- Fallback rate: {stats['fallback_rate']:.2%}")
             lines.append("")
     lines.extend([
@@ -230,6 +282,13 @@ def render_markdown(summary: dict) -> str:
         lines.append(f"- Turns: {report['turns']}")
         lines.append(f"- Duration: {report['duration_seconds']:.1f}s")
         lines.append(f"- Tool calls: {report['tool_calls']}")
+        lines.append(f"- Input tokens: {report['input_tokens_total']}")
+        lines.append(f"- Output tokens: {report['output_tokens_total']}")
+        lines.append(f"- Effective input tokens: {report['effective_input_tokens']}")
+        lines.append(f"- Cache read tokens: {report['cache_read_tokens']}")
+        lines.append(f"- Cache miss tokens: {report['cache_miss_tokens']}")
+        lines.append(f"- Cache creation tokens: {report['cache_creation_tokens']}")
+        lines.append(f"- Cache hit rate: {report['cache_hit_rate']:.2%}")
         for grader in report["graders"]:
             lines.append(
                 f"- `{grader['name']}`: {'pass' if grader['passed'] else 'fail'} "

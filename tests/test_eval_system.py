@@ -8,10 +8,15 @@ import time
 from eval.graders import GradeResult, TrialArtifacts, VerificationCommandResult, VerificationResult, evaluate_cross_agent_trial, evaluate_trial
 from eval.judge import JudgeConfig, LLMJudge
 from eval.harness import (
+    _build_claude_trace,
     _build_claude_eval_prompt,
+    _claude_env,
+    _resolve_claude_base_url,
     _collect_claude_logs,
+    _extract_claude_actual_model,
     _extract_claude_last_assistant_text,
     _filter_platform_artifacts,
+    _normalize_trace,
     _normalize_claude_prompt,
     _parse_claude_project_log,
     _platform_path,
@@ -22,8 +27,9 @@ from eval.harness import (
 )
 from eval.loader import load_tasks
 from eval.report import aggregate_reports, build_trial_report
-from eval.runner import DEFAULT_EVAL_AGENT_MODEL, _resolve_eval_agent_model
+from eval.runner import DEFAULT_EVAL_AGENT_MODEL, _load_eval_config, _resolve_eval_agent_model
 from eval.schema import EvalTaskSpec
+from autocode.config import Config
 
 
 def _make_claude_spec(**overrides) -> EvalTaskSpec:
@@ -44,7 +50,13 @@ def _make_claude_spec(**overrides) -> EvalTaskSpec:
 
 def test_eval_loader_reads_sample_tasks():
     tasks = load_tasks("eval/tasks")
-    assert [task.id for task in tasks] == ["debug-billing-settlement-03"]
+    assert {task.id for task in tasks} == {
+        "debug-billing-settlement-03",
+        "debug-fusion-supply-fintech-04",
+        "implement-spellbrigade-survivor-01",
+        "multi-file-order-pipeline-01",
+        "saga-warehouse-reconciliation-02",
+    }
 
 
 def test_prepare_workspace_copies_fixture(tmp_path):
@@ -114,6 +126,69 @@ def test_eval_runner_uses_m27_by_default():
     assert _resolve_eval_agent_model("MiniMax-M3") == "MiniMax-M3"
 
 
+def test_eval_runner_prefers_dotenv_snapshot_over_process_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AUTOCODE_MODEL", "MiniMax-M3")
+    monkeypatch.setenv("AUTOCODE_BASE_URL", "https://mimimax.cn/v1")
+    monkeypatch.setenv("AUTOCODE_API_KEY", "process-key")
+    (tmp_path / ".env").write_text(
+        "\n".join([
+            "AUTOCODE_MODEL=deepseek-v4-flash",
+            "AUTOCODE_BASE_URL=https://api.deepseek.com",
+            "AUTOCODE_API_KEY=dotenv-key",
+        ]),
+        encoding="utf-8",
+    )
+
+    config = _load_eval_config()
+
+    assert config.model == "deepseek-v4-flash"
+    assert config.base_url == "https://api.deepseek.com"
+    assert config.api_key == "dotenv-key"
+
+
+def test_runtime_config_prefers_dotenv_snapshot_over_process_env(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("AUTOCODE_MODEL", "MiniMax-M3")
+    monkeypatch.setenv("AUTOCODE_BASE_URL", "https://mimimax.cn/v1")
+    monkeypatch.setenv("AUTOCODE_API_KEY", "process-key")
+    (tmp_path / ".env").write_text(
+        "\n".join([
+            "AUTOCODE_MODEL=gpt-5.5",
+            "AUTOCODE_BASE_URL=https://pi-api-cn.macaron.xin",
+            "AUTOCODE_API_KEY=dotenv-key",
+        ]),
+        encoding="utf-8",
+    )
+
+    config = Config.from_env()
+
+    assert config.model == "gpt-5.5"
+    assert config.base_url == "https://pi-api-cn.macaron.xin"
+    assert config.api_key == "dotenv-key"
+
+
+def test_eval_runner_prefers_eval_agent_settings_over_runtime_settings(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / ".env").write_text(
+        "\n".join([
+            "AUTOCODE_MODEL=gpt-5.5",
+            "AUTOCODE_BASE_URL=https://pi-api-cn.macaron.xin",
+            "AUTOCODE_API_KEY=runtime-key",
+            "AUTOCODE_EVAL_AGENT_MODEL=deepseek-v4-flash",
+            "AUTOCODE_EVAL_AGENT_BASE_URL=https://api.deepseek.com",
+            "AUTOCODE_EVAL_AGENT_API_KEY=eval-key",
+        ]),
+        encoding="utf-8",
+    )
+
+    config = _load_eval_config()
+
+    assert config.model == "deepseek-v4-flash"
+    assert config.base_url == "https://api.deepseek.com"
+    assert config.api_key == "eval-key"
+
+
 def test_claude_prompt_normalization_strips_backticks():
     prompt = "Run `python -m unittest` and inspect `.env.local`."
     assert _normalize_claude_prompt(prompt) == "Run python -m unittest and inspect .env.local."
@@ -179,6 +254,99 @@ def test_parse_claude_project_log_extracts_steps_and_tools(tmp_path):
     assert stats["prompt_tokens"] == 120
     assert stats["completion_tokens"] == 17
     assert stats["session_id"] == "s1"
+
+
+def test_build_claude_trace_uses_total_input_and_cache_fields():
+    payload = {
+        "num_turns": 3,
+        "session_id": "claude-session",
+        "usage": {
+            "input_tokens": 1200,
+            "output_tokens": 300,
+            "cache_creation_input_tokens": 400,
+            "cache_read_input_tokens": 800,
+        },
+    }
+    trace = _normalize_trace("claude_code", _build_claude_trace(payload, ""), payload)
+    assert trace["input_tokens_total"] == 2400
+    assert trace["output_tokens_total"] == 300
+    assert trace["cache_miss_tokens"] == 1200
+    assert trace["cache_creation_tokens"] == 400
+    assert trace["cache_read_tokens"] == 800
+    assert trace["effective_input_tokens"] == 1600
+    assert trace["prompt_tokens"] == 2400
+
+
+def test_extract_claude_actual_model_reads_first_assistant_model(tmp_path):
+    log = tmp_path / "session.jsonl"
+    log.write_text(
+        "\n".join([
+            '{"type":"user","message":{"content":[{"type":"text","text":"hi"}]}}',
+            '{"type":"assistant","message":{"model":"deepseek-v4-flash","content":[{"type":"text","text":"done"}]}}',
+            '{"type":"assistant","message":{"model":"MiniMax-M3","content":[{"type":"text","text":"later"}]}}',
+        ]),
+        encoding="utf-8",
+    )
+    assert _extract_claude_actual_model(str(log)) == "deepseek-v4-flash"
+
+
+def test_claude_env_sanitizes_provider_env_and_applies_eval_config(tmp_path, monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_MODEL", "MiniMax-M3")
+    monkeypatch.setenv("ANTHROPIC_BASE_URL", "https://mimimax.cn/")
+    monkeypatch.setenv("MINIMAX_API_KEY", "old-key")
+    monkeypatch.setenv("CLAUDE_CODE_GIT_BASH_PATH", r"C:\Program Files\Git\bin\bash.exe")
+    config = Config(
+        model="deepseek-v4-flash",
+        api_key="eval-key",
+        base_url="https://api.deepseek.com",
+    )
+
+    env = _claude_env(tmp_path, config, model_override="deepseek-v4-flash")
+
+    assert env["ANTHROPIC_MODEL"] == "deepseek-v4-flash"
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
+    assert env["ANTHROPIC_API_KEY"] == "eval-key"
+    assert "MINIMAX_API_KEY" not in env
+    assert env["CLAUDE_CODE_SUBAGENT_MODEL"] == "deepseek-v4-flash"
+    assert env["CLAUDE_CODE_EFFORT_LEVEL"] == "max"
+    assert env["CLAUDE_CODE_GIT_BASH_PATH"].endswith("bash.exe")
+
+
+def test_resolve_claude_base_url_maps_deepseek_openai_endpoint_to_anthropic():
+    assert _resolve_claude_base_url("https://api.deepseek.com") == "https://api.deepseek.com/anthropic"
+    assert _resolve_claude_base_url("https://api.deepseek.com/v1") == "https://api.deepseek.com/v1/anthropic"
+    assert _resolve_claude_base_url("https://api.deepseek.com/anthropic") == "https://api.deepseek.com/anthropic"
+
+
+def test_claude_env_maps_deepseek_eval_endpoint_to_anthropic_and_sets_effort(tmp_path):
+    config = Config(
+        model="deepseek-v4-flash",
+        api_key="eval-key",
+        base_url="https://api.deepseek.com",
+    )
+
+    env = _claude_env(tmp_path, config, model_override="deepseek-v4-flash")
+
+    assert env["ANTHROPIC_BASE_URL"] == "https://api.deepseek.com/anthropic"
+    assert env["CLAUDE_CODE_SUBAGENT_MODEL"] == "deepseek-v4-flash"
+    assert env["CLAUDE_CODE_EFFORT_LEVEL"] == "max"
+
+
+def test_normalize_trace_preserves_autocode_cumulative_totals():
+    trace = _normalize_trace(
+        "autocode",
+        {
+            "prompt_tokens": 900,
+            "completion_tokens": 120,
+            "cache_read_tokens": 300,
+            "cache_miss_tokens": 600,
+        },
+        {},
+    )
+    assert trace["input_tokens_total"] == 900
+    assert trace["output_tokens_total"] == 120
+    assert trace["effective_input_tokens"] == 600
+    assert trace["cache_hit_rate"] == 0.3333
 
 
 def test_platform_path_prefixes_windows_paths(tmp_path):
@@ -320,7 +488,7 @@ def test_eval_graders_on_synthetic_artifacts(tmp_path):
                 "response_must_contain": ["done"]
             },
             "trajectory": {
-                "must_use_tools": ["read_file", "edit_file"],
+                "must_use_tools": ["read", "edit_file"],
                 "require_read_before_edit": ["main.py"]
             },
             "safety": {
@@ -346,7 +514,7 @@ def test_eval_graders_on_synthetic_artifacts(tmp_path):
             "completion_tokens": 5,
         },
         audit=[
-            {"event": "before_tool", "payload": {"tool_name": "read_file", "arguments": {"file_path": "main.py"}}},
+            {"event": "before_tool", "payload": {"tool_name": "read", "arguments": {"file_path": "main.py"}}},
             {"event": "before_tool", "payload": {"tool_name": "edit_file", "arguments": {"file_path": "main.py"}}},
         ],
         task_record=None,
@@ -361,6 +529,8 @@ def test_eval_graders_on_synthetic_artifacts(tmp_path):
     assert summary["total_trials"] == 1
     assert summary["pass_rate"] == 1.0
     assert summary["average_composite"] == 100.0
+    assert summary["by_agent"]["autocode"]["average_input_tokens_total"] == 10.0
+    assert summary["by_agent"]["autocode"]["average_output_tokens_total"] == 5.0
 
 
 def test_cross_agent_gate_uses_weighted_acceptance_and_scope(tmp_path):
@@ -494,6 +664,28 @@ def test_llm_judge_consensus_triggers_arbitration_on_large_dimension_gap():
     assert result.details["judge_total"] == 51.3
 
 
+def test_llm_judge_retries_empty_or_invalid_content_before_parsing():
+    judge = LLMJudge(JudgeConfig(model="gpt-5.5", api_key="secret"))
+
+    class _Resp:
+        def __init__(self, content: str):
+            self.content = content
+
+    replies = iter([
+        _Resp(""),
+        _Resp("not-json"),
+        _Resp('{"judge_total": 54, "dimensions":{"D1":{"score":10},"D2":{"score":9},"D3":{"score":9},"D4":{"score":9},"D5":{"score":9},"D6":{"score":8}}, "summary":"ok"}'),
+    ])
+    judge.llm.chat = lambda messages: next(replies)  # type: ignore[method-assign]
+    spec = EvalTaskSpec.from_dict({"id": "judge-task", "prompt": "do work", "fixture": "none"})
+    artifacts = TrialArtifacts(spec=spec, trial_index=1, workspace=Path("."), final_response="", trace={}, audit=[], task_record=None, verification=None)
+
+    verdict = judge._judge(spec, artifacts)
+
+    assert verdict.judge_total == 54.0
+    assert verdict.passed is True
+
+
 def test_outcome_grader_handles_missing_created_file(tmp_path):
     workspace = tmp_path
     workspace.joinpath("main.py").write_text("from utils import helper\n", encoding="utf-8")
@@ -571,6 +763,7 @@ def test_aggregate_reports_groups_by_agent():
     assert summary["by_agent"]["autocode"]["total_trials"] == 1
     assert summary["by_agent"]["claude_code"]["total_trials"] == 1
     assert "average_composite" in summary["by_agent"]["autocode"]
+    assert "average_input_tokens_total" in summary["by_agent"]["autocode"]
 
 
 def test_build_trial_report_uses_gate_and_judge_composite(tmp_path):
@@ -611,3 +804,4 @@ def test_build_trial_report_uses_gate_and_judge_composite(tmp_path):
     assert report.composite == 92.0
     assert report.grade == "S"
     assert report.turns == 12
+    assert report.input_tokens_total == 0

@@ -11,6 +11,7 @@ from contextlib import contextmanager
 from pathlib import Path
 import os
 import shutil as shutil_lib
+from urllib.parse import urlparse, urlunparse
 
 from autocode.agent import Agent
 from autocode.config import Config
@@ -103,6 +104,7 @@ def run_trial(
 
             trace = load_trace(agent.session_state.session_id) or {}
             trace.setdefault("duration_seconds", duration)
+            trace = _normalize_trace(agent_provider, trace, {"trace": trace})
             audit = load_events(agent.session_state.session_id)
             task_record = SessionStore.load(agent.session_state.session_id)
             verification = run_verification(spec, workspace)
@@ -133,10 +135,17 @@ def run_trial(
             spec,
             workspace,
             run_dir,
+            config=config,
             model_override=model_override or config.model,
         )
     elif agent_provider == "icecoder":
-        response, trace, raw_payload = _run_icecoder(spec, workspace, config, icecoder_root=icecoder_root)
+        response, trace, raw_payload = _run_icecoder(
+            spec,
+            workspace,
+            run_dir,
+            config,
+            icecoder_root=icecoder_root,
+        )
     else:
         raise ValueError(f"unknown agent provider: {agent_provider}")
     duration = time.time() - started
@@ -147,6 +156,7 @@ def run_trial(
             _diff_modified_files(fixture_root, workspace),
         )
     )
+    trace = _normalize_trace(agent_provider, trace, raw_payload)
     verification = run_verification(spec, workspace)
     payload = {
         "agent_provider": agent_provider,
@@ -246,6 +256,7 @@ def _run_claude_code(
     spec: EvalTaskSpec,
     workspace: Path,
     run_dir: Path,
+    config: Config,
     model_override: str | None = None,
 ) -> tuple[str, dict, dict]:
     executable = _resolve_claude_powershell_script()
@@ -275,7 +286,7 @@ def _run_claude_code(
         proc = _run_captured_process(
             command,
             cwd=workspace,
-            env=_claude_env(sandbox_home),
+            env=_claude_env(sandbox_home, config, model_override=model_override),
             timeout=max(spec.max_rounds * 60, 600),
         )
         payload = _parse_json_output(proc.stdout)
@@ -295,6 +306,10 @@ def _run_claude_code(
             payload = {}
     claude_logs = _collect_claude_logs(sandbox_home, str(payload.get("session_id", "")))
     project_log = claude_logs.get("project_log", "")
+    actual_model = _extract_claude_actual_model(project_log)
+    payload["requested_model"] = model_override or ""
+    payload["actual_model"] = actual_model
+    payload["model_mismatch"] = bool(actual_model and model_override and actual_model != model_override)
     trace = _build_claude_trace(payload, project_log)
     payload["sandbox_home"] = str(sandbox_home)
     payload["workspace_settings"] = str(workspace / ".claude" / "settings.local.json")
@@ -321,7 +336,12 @@ def _build_claude_trace(payload: dict, project_log: str) -> dict:
         "tool_calls": 0,
         "prompt_tokens": payload.get("usage", {}).get("input_tokens", 0),
         "completion_tokens": payload.get("usage", {}).get("output_tokens", 0),
+        "cache_read_tokens": payload.get("usage", {}).get("cache_read_input_tokens", 0),
+        "cache_creation_tokens": payload.get("usage", {}).get("cache_creation_input_tokens", 0),
         "session_id": payload.get("session_id", ""),
+        "requested_model": payload.get("requested_model", ""),
+        "actual_model": payload.get("actual_model", ""),
+        "model_mismatch": bool(payload.get("model_mismatch", False)),
     }
     if not project_log:
         return trace
@@ -339,11 +359,12 @@ def _build_claude_trace(payload: dict, project_log: str) -> dict:
 def _run_icecoder(
     spec: EvalTaskSpec,
     workspace: Path,
+    run_dir: Path,
     config: Config,
     icecoder_root: str | None = None,
 ) -> tuple[str, dict, dict]:
     root = Path(icecoder_root or "G:/mycode/iceCoder").resolve()
-    data_dir = _ensure_icecoder_config(root, config)
+    data_dir = _ensure_icecoder_config(run_dir / "icecoder_data", config)
     tsx_cli = root / "node_modules" / "tsx" / "dist" / "cli.mjs"
     if not tsx_cli.exists():
         raise FileNotFoundError(f"iceCoder dependencies missing: {tsx_cli}")
@@ -373,21 +394,112 @@ def _run_icecoder(
         "tool_calls": payload.get("toolCalls", 0),
         "prompt_tokens": tokens.get("input", 0),
         "completion_tokens": tokens.get("output", 0),
+        "cache_read_tokens": tokens.get("cacheRead", 0),
+        "cache_miss_tokens": tokens.get("cacheMiss", 0),
+        "cache_creation_tokens": tokens.get("cacheCreation", 0),
         "stop_reason": payload.get("stopReason", ""),
     }
     return str(payload.get("content", "")).strip(), trace, payload
 
 
-def _ensure_icecoder_config(root: Path, config: Config) -> Path:
-    data_dir = root / "data"
+def _normalize_trace(agent_provider: str, trace: dict, raw_payload: dict | None) -> dict:
+    normalized = dict(trace or {})
+    payload = raw_payload or {}
+
+    if agent_provider == "claude_code":
+        usage = payload.get("usage", {})
+        input_tokens = _to_int(usage.get("input_tokens"))
+        output_tokens = _to_int(usage.get("output_tokens"))
+        cache_read = _to_int(usage.get("cache_read_input_tokens"))
+        cache_creation = _to_int(usage.get("cache_creation_input_tokens"))
+        total_input = input_tokens + cache_read + cache_creation
+        normalized["cache_miss_tokens"] = input_tokens
+        normalized["cache_read_tokens"] = cache_read
+        normalized["cache_creation_tokens"] = cache_creation
+        normalized["input_tokens_total"] = total_input
+        normalized["output_tokens_total"] = output_tokens
+        normalized["token_accounting"] = {
+            "input_tokens_total": "usage.input_tokens + usage.cache_read_input_tokens + usage.cache_creation_input_tokens",
+            "cache_miss_tokens": "usage.input_tokens",
+            "cache_read_tokens": "usage.cache_read_input_tokens",
+            "cache_creation_tokens": "usage.cache_creation_input_tokens",
+            "source": "claude_cli_json",
+        }
+    elif agent_provider == "icecoder":
+        tokens = payload.get("tokens", {})
+        input_tokens = _coalesce_int(tokens.get("input"), normalized.get("prompt_tokens"))
+        output_tokens = _coalesce_int(tokens.get("output"), normalized.get("completion_tokens"))
+        cache_read = _to_int(tokens.get("cacheRead"))
+        cache_miss = _to_int(tokens.get("cacheMiss"))
+        cache_creation = _to_int(tokens.get("cacheCreation"))
+        normalized["cache_read_tokens"] = cache_read
+        normalized["cache_miss_tokens"] = cache_miss
+        normalized["cache_creation_tokens"] = cache_creation
+        normalized["input_tokens_total"] = input_tokens
+        normalized["output_tokens_total"] = output_tokens
+        normalized["token_accounting"] = {
+            "input_tokens_total": "payload.tokens.input",
+            "cache_miss_tokens": "payload.tokens.cacheMiss if present",
+            "cache_read_tokens": "payload.tokens.cacheRead if present",
+            "cache_creation_tokens": "payload.tokens.cacheCreation if present",
+            "source": "icecoder_run_json",
+        }
+    else:
+        input_tokens = _coalesce_int(normalized.get("input_tokens_total"), normalized.get("prompt_tokens"))
+        output_tokens = _coalesce_int(normalized.get("output_tokens_total"), normalized.get("completion_tokens"))
+        cache_read = _to_int(normalized.get("cache_read_tokens"))
+        cache_miss = _to_int(normalized.get("cache_miss_tokens"))
+        cache_creation = _to_int(normalized.get("cache_creation_tokens"))
+        normalized["cache_read_tokens"] = cache_read
+        normalized["cache_miss_tokens"] = cache_miss
+        normalized["cache_creation_tokens"] = cache_creation
+        normalized["input_tokens_total"] = input_tokens
+        normalized["output_tokens_total"] = output_tokens
+        normalized["token_accounting"] = {
+            "input_tokens_total": "runtime trace cumulative prompt_tokens",
+            "cache_miss_tokens": "runtime trace cumulative cache_miss_tokens",
+            "cache_read_tokens": "runtime trace cumulative cache_read_tokens",
+            "cache_creation_tokens": "not currently emitted by runtime trace",
+            "source": "autocode_runtime_trace",
+        }
+
+    normalized["prompt_tokens"] = normalized.get("input_tokens_total", 0)
+    normalized["completion_tokens"] = normalized.get("output_tokens_total", 0)
+
+    cache_read = _to_int(normalized.get("cache_read_tokens"))
+    cache_miss = _to_int(normalized.get("cache_miss_tokens"))
+    cache_creation = _to_int(normalized.get("cache_creation_tokens"))
+    if cache_read or cache_miss:
+        denominator = cache_read + cache_miss
+        normalized["cache_hit_rate"] = round(cache_read / denominator, 4) if denominator else 0.0
+    else:
+        normalized["cache_hit_rate"] = 0.0
+    normalized["effective_input_tokens"] = cache_miss + cache_creation if (cache_miss or cache_creation) else normalized["input_tokens_total"]
+    return normalized
+
+
+def _to_int(value) -> int:
+    try:
+        return int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _coalesce_int(*values) -> int:
+    for value in values:
+        parsed = _to_int(value)
+        if parsed:
+            return parsed
+    return 0
+
+
+def _ensure_icecoder_config(data_dir: Path, config: Config) -> Path:
     data_dir.mkdir(parents=True, exist_ok=True)
     config_path = data_dir / "config.json"
-    if config_path.exists():
-        return data_dir
     payload = {
         "providers": [
             {
-                "id": "minimax-m3",
+                "id": config.model or "eval-provider",
                 "apiUrl": config.base_url,
                 "apiKey": config.api_key,
                 "modelName": config.model,
@@ -474,14 +586,58 @@ def _prepare_claude_home(run_dir: Path) -> Path:
     return sandbox_home
 
 
-def _claude_env(sandbox_home: Path) -> dict[str, str]:
-    return {
-        **os.environ,
+def _claude_env(sandbox_home: Path, config: Config, model_override: str | None = None) -> dict[str, str]:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not _is_claude_provider_env(key)
+    }
+    target_model = model_override or config.model
+    if config.api_key:
+        env["ANTHROPIC_API_KEY"] = config.api_key
+        env["ANTHROPIC_AUTH_TOKEN"] = config.api_key
+    if config.base_url:
+        env["ANTHROPIC_BASE_URL"] = _resolve_claude_base_url(config.base_url)
+    if target_model:
+        env["ANTHROPIC_MODEL"] = target_model
+        env["ANTHROPIC_DEFAULT_HAIKU_MODEL"] = target_model
+        env["ANTHROPIC_DEFAULT_OPUS_MODEL"] = target_model
+        env["ANTHROPIC_DEFAULT_SONNET_MODEL"] = target_model
+        env["ANTHROPIC_SMALL_FAST_MODEL"] = target_model
+        if _is_deepseek_model(target_model):
+            env["CLAUDE_CODE_SUBAGENT_MODEL"] = target_model
+            env["CLAUDE_CODE_EFFORT_LEVEL"] = "max"
+    env.update({
         "HOME": str(sandbox_home),
         "USERPROFILE": str(sandbox_home),
         "APPDATA": str(sandbox_home / "AppData" / "Roaming"),
         "LOCALAPPDATA": str(sandbox_home / "AppData" / "Local"),
-    }
+    })
+    return env
+
+
+def _is_claude_provider_env(name: str) -> bool:
+    prefixes = (
+        "ANTHROPIC_",
+        "MINIMAX_",
+        "OPENAI_",
+        "DEEPSEEK_",
+    )
+    return name.upper().startswith(prefixes)
+
+
+def _resolve_claude_base_url(base_url: str) -> str:
+    parsed = urlparse(base_url)
+    host = parsed.netloc.lower()
+    path = parsed.path.rstrip("/")
+    if host == "api.deepseek.com" and not path.endswith("/anthropic"):
+        return urlunparse(parsed._replace(path=f"{path}/anthropic" if path else "/anthropic"))
+    return base_url
+
+
+def _is_deepseek_model(model: str) -> bool:
+    normalized = (model or "").lower()
+    return normalized.startswith("deepseek-") or normalized.startswith("deepseek/")
 
 
 def _write_claude_workspace_settings(workspace: Path, spec: EvalTaskSpec) -> None:
@@ -629,6 +785,23 @@ def _parse_claude_project_log(path: Path) -> dict[str, int | str]:
         "completion_tokens": completion_tokens,
         "session_id": session_id,
     }
+
+
+def _extract_claude_actual_model(project_log: str) -> str:
+    if not project_log:
+        return ""
+    path = Path(project_log)
+    for raw_line in _read_text(path).splitlines():
+        if not raw_line.strip():
+            continue
+        item = json.loads(raw_line)
+        if item.get("type") != "assistant":
+            continue
+        message = item.get("message", {})
+        model = str(message.get("model", "")).strip()
+        if model:
+            return model
+    return ""
 
 
 def _extract_claude_last_assistant_text(project_log: str) -> str:

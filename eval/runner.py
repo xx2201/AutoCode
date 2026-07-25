@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from autocode.config import Config
@@ -42,6 +43,62 @@ def _resolve_eval_agent_model(args_model: str | None) -> str:
     return args_model or DEFAULT_EVAL_AGENT_MODEL
 
 
+def _load_eval_dotenv() -> dict[str, str]:
+    try:
+        from dotenv import dotenv_values
+    except ImportError:
+        return {}
+
+    cur = Path.cwd()
+    home = Path.home()
+    while True:
+        candidate = cur / ".env"
+        if candidate.exists():
+            values = dotenv_values(candidate)
+            return {
+                key: value
+                for key, value in values.items()
+                if isinstance(key, str) and isinstance(value, str) and value
+            }
+        if cur == home or cur == cur.parent:
+            return {}
+        cur = cur.parent
+
+
+def _resolve_eval_setting(snapshot: dict[str, str], key: str, default: str = "") -> str:
+    return snapshot.get(key) or os.getenv(key, default)
+
+
+def _resolve_eval_agent_setting(
+    snapshot: dict[str, str],
+    eval_key: str,
+    runtime_key: str,
+    default: str = "",
+) -> str:
+    return (
+        snapshot.get(eval_key)
+        or os.getenv(eval_key)
+        or snapshot.get(runtime_key)
+        or os.getenv(runtime_key, default)
+    )
+
+
+def _load_eval_config() -> Config:
+    snapshot = _load_eval_dotenv()
+    return Config(
+        model=_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_MODEL", "AUTOCODE_MODEL"),
+        api_key=_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_API_KEY", "AUTOCODE_API_KEY"),
+        base_url=_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_BASE_URL", "AUTOCODE_BASE_URL") or None,
+        max_tokens=int(_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_MAX_TOKENS", "AUTOCODE_MAX_TOKENS", "4096")),
+        temperature=float(_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_TEMPERATURE", "AUTOCODE_TEMPERATURE", "0")),
+        max_context_tokens=int(_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_MAX_CONTEXT", "AUTOCODE_MAX_CONTEXT", "1000000")),
+        provider=_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_PROVIDER", "AUTOCODE_PROVIDER", "openai"),
+        workspace_root=_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_WORKSPACE_ROOT", "AUTOCODE_WORKSPACE_ROOT", str(Path.cwd())),
+        auto_approve=_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_AUTO_APPROVE", "AUTOCODE_AUTO_APPROVE", "").lower() in {"1", "true", "yes", "on"},
+        mcp_config_path=_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_MCP_CONFIG", "AUTOCODE_MCP_CONFIG"),
+    )
+
+
 def main():
     args = _parse_args()
     tasks = load_tasks(args.tasks_dir, task_ids=args.task, tags=args.tag)
@@ -54,7 +111,7 @@ def main():
     if not tasks:
         raise SystemExit("No tasks selected.")
 
-    config = Config.from_env()
+    config = _load_eval_config()
     eval_agent_model = _resolve_eval_agent_model(args.model)
     if not config.api_key:
         raise SystemExit("No agent API key configured. Set AUTOCODE_API_KEY before running evals.")

@@ -7,7 +7,7 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from autocode.config import _load_dotenv
+from autocode.config import _load_dotenv_values
 from autocode.llm import LLM
 
 from .graders import GradeResult, TrialArtifacts
@@ -25,22 +25,30 @@ class JudgeConfig:
 
     @classmethod
     def from_env(cls, model_override: str | None = None) -> "JudgeConfig | None":
-        _load_dotenv()
-        api_key = os.getenv("AUTOCODE_EVAL_API_KEY") or os.getenv("DASHSCOPE_API_KEY") or ""
-        model = model_override or os.getenv("AUTOCODE_EVAL_MODEL", "")
+        snapshot = _load_dotenv_values()
+        api_key = (
+            snapshot.get("AUTOCODE_EVAL_API_KEY")
+            or os.getenv("AUTOCODE_EVAL_API_KEY")
+            or snapshot.get("DASHSCOPE_API_KEY")
+            or os.getenv("DASHSCOPE_API_KEY")
+            or ""
+        )
+        model = model_override or snapshot.get("AUTOCODE_EVAL_MODEL") or os.getenv("AUTOCODE_EVAL_MODEL", "")
         if not api_key or not model:
             return None
         return cls(
             model=model,
             api_key=api_key,
             base_url=(
-                os.getenv("AUTOCODE_EVAL_BASE_URL")
+                snapshot.get("AUTOCODE_EVAL_BASE_URL")
+                or os.getenv("AUTOCODE_EVAL_BASE_URL")
+                or snapshot.get("DASHSCOPE_BASE_URL")
                 or os.getenv("DASHSCOPE_BASE_URL")
                 or "https://dashscope.aliyuncs.com/compatible-mode/v1"
             ),
-            provider=os.getenv("AUTOCODE_EVAL_PROVIDER", "openai"),
-            temperature=float(os.getenv("AUTOCODE_EVAL_TEMPERATURE", "0")),
-            max_tokens=int(os.getenv("AUTOCODE_EVAL_MAX_TOKENS", "800")),
+            provider=snapshot.get("AUTOCODE_EVAL_PROVIDER") or os.getenv("AUTOCODE_EVAL_PROVIDER", "openai"),
+            temperature=float(snapshot.get("AUTOCODE_EVAL_TEMPERATURE") or os.getenv("AUTOCODE_EVAL_TEMPERATURE", "0")),
+            max_tokens=int(snapshot.get("AUTOCODE_EVAL_MAX_TOKENS") or os.getenv("AUTOCODE_EVAL_MAX_TOKENS", "800")),
         )
 
 
@@ -125,8 +133,18 @@ class LLMJudge:
                 "content": self._build_prompt(spec, artifacts),
             },
         ]
-        response = self.llm.chat(messages)
-        return self._parse_verdict(response.content, spec.judge.min_score)
+        last_error: Exception | None = None
+        for _ in range(3):
+            response = self.llm.chat(messages)
+            content = response.content.strip()
+            if not content:
+                last_error = ValueError("judge returned empty content")
+                continue
+            try:
+                return self._parse_verdict(content, spec.judge.min_score)
+            except ValueError as exc:
+                last_error = exc
+        raise last_error or ValueError("judge did not return a usable verdict")
 
     def _build_prompt(self, spec: EvalTaskSpec, artifacts: TrialArtifacts) -> str:
         changed_files = sorted(_changed_files(artifacts))
@@ -135,8 +153,12 @@ class LLMJudge:
             "turns": int(trace.get("llm_calls") or trace.get("steps") or 0),
             "tool_calls": int(trace.get("tool_calls") or 0),
             "duration_seconds": float(trace.get("duration_seconds") or 0.0),
-            "prompt_tokens": int(trace.get("prompt_tokens") or 0),
-            "completion_tokens": int(trace.get("completion_tokens") or 0),
+            "prompt_tokens": int(trace.get("input_tokens_total") or trace.get("prompt_tokens") or 0),
+            "completion_tokens": int(trace.get("output_tokens_total") or trace.get("completion_tokens") or 0),
+            "effective_input_tokens": int(trace.get("effective_input_tokens") or 0),
+            "cache_read_tokens": int(trace.get("cache_read_tokens") or 0),
+            "cache_miss_tokens": int(trace.get("cache_miss_tokens") or 0),
+            "cache_creation_tokens": int(trace.get("cache_creation_tokens") or 0),
         }
         payload = {
             "task": {

@@ -160,7 +160,7 @@ def grade_trajectory(spec: EvalTaskSpec, artifacts: TrialArtifacts) -> GradeResu
         checks.append((any(e["event"] == "todo_updated" for e in artifacts.audit), "trajectory should update todos"))
     for path in spec.trajectory.require_read_before_edit:
         norm = _norm_path(path)
-        checks.append((_read_before_edit(tools, norm), f"`read_file` should precede edits for {path}"))
+        checks.append((_read_before_edit(tools, norm), f"`read` should precede edits for {path}"))
 
     return _finalize("trajectory", checks)
 
@@ -219,9 +219,13 @@ def grade_efficiency(spec: EvalTaskSpec, artifacts: TrialArtifacts) -> GradeResu
     if limits.max_tool_calls:
         checks.append((trace.get("tool_calls", 0) <= limits.max_tool_calls, f"tool calls should be <= {limits.max_tool_calls}"))
     if limits.max_prompt_tokens:
-        checks.append((trace.get("prompt_tokens", 0) <= limits.max_prompt_tokens, f"prompt tokens should be <= {limits.max_prompt_tokens}"))
+        checks.append(((
+            trace.get("input_tokens_total", trace.get("prompt_tokens", 0)) <= limits.max_prompt_tokens
+        ), f"prompt tokens should be <= {limits.max_prompt_tokens}"))
     if limits.max_completion_tokens:
-        checks.append((trace.get("completion_tokens", 0) <= limits.max_completion_tokens, f"completion tokens should be <= {limits.max_completion_tokens}"))
+        checks.append(((
+            trace.get("output_tokens_total", trace.get("completion_tokens", 0)) <= limits.max_completion_tokens
+        ), f"completion tokens should be <= {limits.max_completion_tokens}"))
     if limits.max_duration_seconds:
         checks.append((trace.get("duration_seconds", 0.0) <= limits.max_duration_seconds, f"duration should be <= {limits.max_duration_seconds}s"))
 
@@ -249,7 +253,7 @@ def _tool_sequence(artifacts: TrialArtifacts) -> list[dict]:
 def _read_before_edit(sequence: list[dict], target: str) -> bool:
     seen_read = False
     for item in sequence:
-        if item["tool"] == "read_file" and item["path"] == target:
+        if item["tool"] == "read" and item["path"] == target:
             seen_read = True
         if item["tool"] in {"edit_file", "write_file"} and item["path"] == target:
             return seen_read
