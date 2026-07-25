@@ -1,303 +1,303 @@
-# AutoCode
+# AutoCoder
 
-> 原名 **AutoCode**（更早叫 **NanoCoder**），这次统一改为 **AutoCode**，让产品名和 CLI 名称保持一致。
+[English](README.md)
 
+AutoCoder 是一个本地优先、支持多模态输入的代码 Agent。当前 Python
+包名和命令行程序名仍然是 `autocode`。
 
-[English](README.md) | [中文](README_CN.md) | [Claude Code 源码深度导读（7 篇）](article/)
-
-[![Python](https://img.shields.io/badge/python-3.10+-blue)](https://python.org)
-[![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
-[![Tests](https://github.com/he-yufeng/AutoCode/actions/workflows/ci.yml/badge.svg)](https://github.com/he-yufeng/AutoCode/actions)
-
-**把 Claude Code 的关键模式，重建成一个轻量级本地 coding agent runtime。**
-
-我逆向了 Claude Code 泄露的全部源码，然后把不承重的部分全扔掉，用 Python 重建核心思想。现在它依然足够紧凑、可以直接通读，但已经不再只是一个玩具级 loop，而是演化成了一个**可本地使用的运行时**：带审批、checkpoint、trace、远程适配层，以及本地评测系统。
-
-AutoCode 不仅是一个 AI 编程工具。它是一份**蓝图**，编程 Agent 领域的 [nanoGPT](https://github.com/karpathy/nanoGPT)。读懂它，fork 它，然后造你自己的。
-
----
-
-```
-$ autocode -m kimi-k2.5
-
-You > 读一下 main.py，修掉拼错的 import
-
-  > read_file(file_path='main.py')
-  > edit_file(file_path='main.py', ...)
-
---- a/main.py
-+++ b/main.py
-@@ -1 +1 @@
--from utils import halper
-+from utils import helper
-
-修好了：halper → helper。
-```
-
-## 你能得到什么
-
-AutoCode 现在同时提供两层价值：
-
-- 一个可读、可 fork、可二次开发的 coding-agent 核心
-- 一个带安全、恢复、可观测、远程控制、评测能力的本地 runtime
-
-它保留的 Claude Code 核心模式仍然是这些：
-
-| 设计模式 | Claude Code | AutoCode |
-|---|---|---|
-| 搜索替换编辑（唯一匹配 + diff） | FileEditTool | `autocode/tools/edit.py` |
-| 并行工具执行 | StreamingToolExecutor | `autocode/runtime/engine.py` |
-| 三层上下文压缩 | HISTORY_SNIP → Microcompact → CONTEXT_COLLAPSE | `autocode/context/manager.py` |
-| 子代理隔离上下文 | AgentTool | `autocode/tools/agent.py` |
-| 危险命令拦截 | BashTool | `autocode/runtime/policy.py` + `autocode/tools/bash.py` |
-| 会话恢复 + 任务状态 | QueryEngine 风格运行态 | `autocode/state/` |
-| 动态系统提示词 | prompts.ts | `autocode/context/prompt.py` |
-
-每个模式都是可运行的实现，不是流程图，不是博客文章。
-
-和最初“极简内核”相比，现在真实情况是：
-
-- 仓库已经不只是一个很小的单包 demo
-- `autocode/` 已经按 `agent / context / infra / runtime / state / tools / remote` 分层
-- 除了核心 agent loop，仓库还包含 Telegram / 飞书远程控制，以及独立的本地评测系统 `eval/`
-
-## 安装
-
-```bash
-pip install -e .
-```
-
-选你的模型。默认读取的是 `AUTOCODE_*` 环境变量，并连接任意 OpenAI-compatible 接口。可以 `export` 环境变量，也可以在项目根目录放一个 `.env` 文件：
-
-```bash
-# Kimi K2.5
-export AUTOCODE_API_KEY=你的key AUTOCODE_BASE_URL=https://api.moonshot.ai/v1
-export AUTOCODE_MODEL=kimi-k2.5
-autocode
-
-# Claude Opus 4.6（通过 OpenRouter）
-export AUTOCODE_API_KEY=你的key AUTOCODE_BASE_URL=https://openrouter.ai/api/v1
-export AUTOCODE_MODEL=anthropic/claude-opus-4-6
-autocode
-
-# OpenAI GPT-5
-export AUTOCODE_API_KEY=sk-...
-export AUTOCODE_MODEL=gpt-5
-autocode
-
-# DeepSeek V3
-export AUTOCODE_API_KEY=sk-... AUTOCODE_BASE_URL=https://api.deepseek.com
-export AUTOCODE_MODEL=deepseek-chat
-autocode
-
-# Qwen 3.5
-export AUTOCODE_API_KEY=sk-... AUTOCODE_BASE_URL=https://dashscope.aliyuncs.com/compatible-mode/v1
-export AUTOCODE_MODEL=qwen-max
-autocode
-
-# Ollama（本地）
-export AUTOCODE_API_KEY=ollama AUTOCODE_BASE_URL=http://localhost:11434/v1
-export AUTOCODE_MODEL=qwen3:32b
-autocode
-
-# 单次模式
-autocode -p "给 parse_config() 加上错误处理"
-```
-
-### Telegram 手机控制（实验性）
-
-如果你想在手机上控制 AutoCode，可以安装可选的 Telegram 适配层：
-
-```bash
-pip install -e '.[telegram]'
-
-export AUTOCODE_MODEL=gpt-5
-export AUTOCODE_API_KEY=sk-...
-export AUTOCODE_TELEGRAM_BOT_TOKEN=123456:telegram-token
-export AUTOCODE_TELEGRAM_ALLOWED_CHATS=123456789
-autocode-telegram
-```
-
-这个 Telegram 控制层刻意保持极简，直接复用现有任务运行时：
-
-- 发送任意文本即可启动或继续代码任务
-- `/task` 查看当前任务状态
-- `/trace` 查看最近一次 trace 摘要
-- `/approve` / `/reject` 处理待审批操作
-- `/approve_all` 批准当前操作，并对同一任务后续的普通确认自动放行
-- `/resume <task_id>` 把保存的 checkpoint 恢复到当前聊天
-
-实现思路参考了 `claw0` 的 channel adapter 模式，但仍保持 AutoCode 单通道、轻量级，不把项目扩成完整 agent gateway。
-
-### 飞书手机控制（实验性）
-
-如果你想在飞书里远程控制 AutoCode，可以安装可选的飞书适配层：
-
-```bash
-pip install -e '.[feishu]'
-
-export AUTOCODE_MODEL=gpt-5
-export AUTOCODE_API_KEY=sk-...
-export AUTOCODE_FEISHU_APP_ID=cli_xxx
-export AUTOCODE_FEISHU_APP_SECRET=xxx
-# 可选白名单
-export AUTOCODE_FEISHU_ALLOWED_OPEN_IDS=ou_xxx
-export AUTOCODE_FEISHU_ALLOWED_CHAT_IDS=oc_xxx
-autocode-feishu
-```
-
-这个飞书控制层采用官方的“应用机器人 + 长连接事件”模式：
-
-- 发送任意文本即可启动或继续代码任务
-- `/task`、`/trace`、`/resume`、`/reset` 支持直接文本输入
-- `/approve`、`/approve_all`、`/reject` 也支持直接文本输入
-- `/resume` 会以交互卡片列出当前项目最近可恢复会话
-- 待审批操作会以交互卡片形式发送，内置 **Approve / Approve All / Reject** 按钮
-- 整个适配层直接复用现有任务运行时和审批状态，不再额外造第二套工作流
-
-这样可以在不暴露公网 webhook 的前提下，实现飞书里的完整双向控制，同时保持代码体量可控。
+Agent 在用户自己的电脑和真实项目目录中运行。可选的 Web Relay
+让用户能从手机访问同一个本地工作区，而不需要把代码仓库复制到公网服务器。
+本机 Runner 主动连接 Relay，在本机执行 Agent，再把 Token 和工具事件流式传回浏览器。
 
 ## 架构
 
-Web Relay、本地 Workspace、多模态输入、Langfuse 观测以及本地状态文件的完整边界，
-见 [架构说明](docs/architecture.md)。
-
-现在的仓库依然不大，但已经不是最初那种单文件教学内核：
-
+```mermaid
+flowchart LR
+    Browser["手机 / 桌面浏览器"] -->|"HTTPS + Bearer Token"| Relay["公网 Web Relay<br/>React + FastAPI"]
+    Runner["本机 Runner"] -->|"主动 HTTPS 轮询"| Relay
+    Runner --> Registry["~/.autocode/workspaces.json"]
+    Registry --> Workspace["本机项目工作区"]
+    Runner --> Agent["AutoCoder Agent"]
+    Agent --> Model["OpenAI 兼容模型"]
+    Agent --> Tools["文件、Shell、进程、图片、<br/>Git、MCP 和子 Agent 工具"]
+    Agent -.-> Langfuse["Langfuse（可选）"]
 ```
+
+公网 Relay 只包含 Web UI、身份验证、内存任务队列和 SSE 转发，本身不能读取本机项目文件。
+工作区由 CLI 注册到 `~/.autocode/workspaces.json`；Web 端只能选择已经注册且仍然存在的工作区，
+不能在浏览器里随意添加新目录。
+
+## 主要能力
+
+- 支持交互式和单次任务的代码 Agent CLI。
+- 支持 OpenAI 兼容模型 API，并可选接入 LiteLLM。
+- 工作区范围内的文件、搜索、Shell、后台进程、图片、任务列表和子 Agent 工具。
+- 将 MCP stdio Server 的能力作为普通 Agent 工具使用。
+- 支持检查点恢复，CLI 和 Web 共用会话标题与历史记录。
+- Web 多模态输入：文字、文件，以及 PNG/JPEG/GIF/WebP 图片。
+- 通过公网 Relay 和仅主动出站连接的本机 Runner 实现手机访问。
+- SSE Token 流式输出和分阶段耗时。
+- 将当前工作区内的本机文件临时发送到手机预览或下载。
+- Web 端查看 Git 状态和 Diff，切换/创建分支，暂存/取消暂存、提交和推送。
+- 可选的 Langfuse Agent、模型 Generation 和工具调用观测。
+- 可选的飞书和 Telegram 入口。
+- 本地评测框架和 pytest 测试套件。
+
+## 环境要求
+
+- Python 3.10 或更高版本。
+- 模型名称、API Key 和 OpenAI 兼容 API 地址。
+- Web Git 面板需要本机已安装 Git。
+- 只有重新构建 React 前端时才需要 Node.js 和 npm。
+- 本机 Runner 连接远程 Relay 时必须使用 HTTPS，并提供可信 CA 证书。
+
+## 安装
+
+Windows PowerShell：
+
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -e ".[web,dev]"
+```
+
+Linux 或 macOS：
+
+```bash
+python -m venv .venv
+source .venv/bin/activate
+python -m pip install -e ".[web,dev]"
+```
+
+按需安装其他集成：
+
+```bash
+python -m pip install -e ".[litellm]"
+python -m pip install -e ".[telegram]"
+python -m pip install -e ".[feishu]"
+```
+
+## 模型配置
+
+AutoCoder 会从当前目录开始向上查找最近的 `.env`。可以在启动 Agent
+的项目中创建：
+
+```dotenv
+AUTOCODE_MODEL=gpt-5
+AUTOCODE_API_KEY=your-api-key
+AUTOCODE_BASE_URL=https://api.openai.com/v1
+
+# 可选
+AUTOCODE_PROVIDER=openai
+AUTOCODE_MAX_TOKENS=4096
+AUTOCODE_TEMPERATURE=0
+AUTOCODE_MAX_CONTEXT=1000000
+```
+
+设置 `AUTOCODE_PROVIDER=litellm` 会启用可选的 LiteLLM 适配器。
+
+## CLI 使用
+
+在项目目录中启动交互式会话：
+
+```bash
+cd path/to/project
+autocode
+```
+
+这条命令也会把当前目录注册成 Web 端可以选择的工作区。
+
+执行单次任务后退出：
+
+```bash
+autocode -p "解释这个项目的架构，并指出风险最高的模块。"
+```
+
+恢复历史会话：
+
+```bash
+autocode --resume SESSION_ID
+```
+
+主要交互命令包括 `/help`、`/reset`、`/model`、`/tokens`、`/compact`、
+`/diff`、`/resume`、`/task`、`/todo`、`/trace`、`/mcp`、`/approve`、
+`/approve_all` 和 `/reject`。
+
+## 从手机访问 Web
+
+Web 架构由两个进程组成：
+
+1. `autocode-web` 运行在公网服务器，提供 React 页面和 Relay。
+2. `autocode-web-runner` 运行在拥有真实工作区的电脑上。
+
+Runner 主动发起 HTTPS 连接，因此开发电脑不需要暴露入站端口。
+
+### 1. 构建前端
+
+构建产物写入 `autocode/web/static`：
+
+```bash
+cd frontend
+npm ci
+npm run check
+npm run build
+```
+
+### 2. 启动公网 Relay
+
+配置两个不同且至少 24 个字符的随机 Token：
+
+```dotenv
+AUTOCODE_WEB_TOKEN=browser-access-token-at-least-24-characters
+AUTOCODE_RUNNER_TOKEN=runner-access-token-at-least-24-characters
+AUTOCODE_WEB_HOST=0.0.0.0
+AUTOCODE_WEB_PORT=8765
+AUTOCODE_WEB_SSL_CERTFILE=/path/to/fullchain.pem
+AUTOCODE_WEB_SSL_KEYFILE=/path/to/private-key.pem
+```
+
+启动：
+
+```bash
+autocode-web
+```
+
+仓库中的 `deploy/corecoder-web.service` 是 systemd 服务示例。Relay
+必须通过 HTTPS 对外提供服务，并且浏览器 Token 和 Runner Token 不能相同。
+
+### 3. 启动本机 Runner
+
+Runner 默认读取 `~/.autocode/web-runner.env`，也可以通过
+`AUTOCODE_RUNNER_ENV_FILE` 指定其他文件：
+
+```dotenv
+AUTOCODE_RELAY_URL=https://your-relay.example.com
+AUTOCODE_RUNNER_TOKEN=runner-access-token-at-least-24-characters
+AUTOCODE_RELAY_CA_CERT=C:/path/to/trusted-relay-ca.pem
+
+AUTOCODE_MODEL=gpt-5
+AUTOCODE_API_KEY=your-api-key
+AUTOCODE_BASE_URL=https://api.openai.com/v1
+```
+
+在拥有工作区的电脑上启动：
+
+```bash
+autocode-web-runner
+```
+
+在浏览器使用某个项目之前，需要先在该项目目录运行一次 `autocode`，由 CLI
+完成工作区注册。
+
+### 上传与下载限制
+
+- 每次请求最多上传 5 个附件。
+- 每个上传附件最大 10 MiB。
+- 单次请求的上传数据总计最大 25 MiB。
+- 多模态图片支持 GIF、JPEG、PNG 和 WebP。
+- Agent 发送到 Web 的文件必须位于当前工作区内，且不超过 25 MiB。
+- `.git`、`.autocode` 和 `.env*` 路径不能通过 Web 下载工具发送。
+- 文件下载凭据是短期的，并只保存在本机 Runner 中。
+
+## Langfuse 可观测性
+
+在 Agent 的运行环境中配置 Langfuse 官方 SDK 凭据：
+
+```dotenv
+LANGFUSE_PUBLIC_KEY=pk-lf-...
+LANGFUSE_SECRET_KEY=sk-lf-...
+LANGFUSE_BASE_URL=https://cloud.langfuse.com
+```
+
+启用后，AutoCoder 会记录 Agent Turn、模型 Generation 和工具 Observation
+之间的父子关系、耗时和 Token 用量。SDK 会在后台批量发送观测数据。
+Langfuse 负责可观测性，不负责恢复会话；恢复对话仍以本地会话文件为准。
+
+## MCP
+
+通过 `AUTOCODE_MCP_CONFIG` 指定一个包含 stdio Server 的 JSON 文件：
+
+```json
+{
+  "mcpServers": {
+    "example": {
+      "command": "example-mcp-server",
+      "args": ["--stdio"],
+      "env": {}
+    }
+  }
+}
+```
+
+执行 MCP 工具前需要经过策略审批。目前不支持需要追加交互输入的 MCP 工具。
+
+## 本地数据
+
+AutoCoder 当前不依赖数据库，本地状态保存在 `~/.autocode`：
+
+```text
+~/.autocode/
+├── workspaces.json
+├── logs/
+└── sessions/
+    └── <session_id>/
+        ├── checkpoint.json
+        ├── session.json
+        ├── current_task.json
+        ├── transcript.jsonl
+        ├── audit.jsonl
+        └── trace.json
+```
+
+- `checkpoint.json`：用于恢复 Agent 的当前状态。
+- `session.json`：会话摘要和元数据。
+- `transcript.jsonl`：按顺序保存的完整对话记录。
+- `audit.jsonl`：审批、拒绝和安全相关操作。
+- `trace.json`：供本地诊断查看的执行链路。
+- `~/.autocode/logs/*.jsonl`：轮转的运行诊断日志。
+
+Web 上传文件保存在 `<workspace>/.autocode/uploads/`，并由工作区内的
+`.autocode/.gitignore` 忽略。
+
+## 安全边界
+
+策略层会把内置文件工具限制在当前工作区，保护 `.env` 和 `.git`，拒绝部分
+破坏性 Shell 命令，并要求用户确认删除操作和外部 MCP 调用。
+
+当前名为 `Sandbox` 的类**不是操作系统级沙箱**。它只负责设置工作目录、
+过滤环境变量、限制执行时间和截断命令输出；子进程仍然拥有启动 AutoCoder
+的系统用户权限。处理不可信仓库或模型时，应使用容器、虚拟机、WSL 隔离环境
+或专门的低权限账号。
+
+## 开发与验证
+
+```bash
+python -m pytest -q
+python -m eval.runner --list
+
+cd frontend
+npm run check
+npm run build
+```
+
+主要目录：
+
+```text
 autocode/
-├── cli.py              REPL + 本地命令
-├── llm.py              OpenAI-compatible / LiteLLM 客户端
-├── config.py           环境变量与工作区配置
-├── agent/
-│   └── loop.py         主 agent 循环
-├── context/
-│   ├── manager.py      三层上下文压缩
-│   ├── prompt.py       动态系统提示词
-│   └── memory.py       项目记忆管理
-├── infra/
-│   ├── filesystem.py   工作区边界文件系统
-│   ├── sandbox.py      Shell 执行
-│   └── processes.py    受控后台进程
-├── runtime/
-│   ├── engine.py       LLM / tool 执行运行时
-│   ├── policy.py       审批与安全策略
-│   └── hooks.py        事件总线
-├── state/
-│   ├── checkpoint.py   会话/任务持久化
-│   ├── trace.py        trace 聚合
-│   └── transcript.py   原始消息日志
-├── tools/
-│   ├── read.py / write.py / edit.py / grep.py / glob_tool.py
-│   ├── bash.py         shell 工具
-│   ├── process.py      后台进程 start/read/wait/stop
-│   ├── todo_write.py   显式计划状态
-│   └── agent.py        子 agent 工具
-└── remote/
-    ├── telegram_bot.py
-    ├── feishu_bot.py
-    └── manager.py
-eval/
-└── ...                 本地评测 harness
+├── agent/       # Agent 循环与编排
+├── context/     # 上下文和压缩
+├── infra/       # 命令执行
+├── remote/      # 飞书、Telegram 和远程会话管理
+├── runtime/     # 策略与运行时协调
+├── state/       # 会话、检查点、对话、审计和 Trace
+├── tools/       # 内置工具
+└── web/         # FastAPI Relay、本机 Runner 和构建后的前端
+frontend/        # React + Vite 源码
+deploy/          # 部署示例
+docs/            # 架构文档
+eval/            # 评测框架与任务
+tests/           # 自动化测试
 ```
-
-## 当库用
-
-```python
-from autocode import Agent, LLM
-
-llm = LLM(model="kimi-k2.5", api_key="your-key", base_url="https://api.moonshot.ai/v1")
-agent = Agent(llm=llm)
-response = agent.chat("找出项目里所有 TODO 注释并列出来")
-```
-
-## 加自定义工具（约 20 行）
-
-```python
-from autocode.tools.base import Tool
-
-class HttpTool(Tool):
-    name = "http"
-    description = "请求一个 URL。"
-    parameters = {"type": "object", "properties": {"url": {"type": "string"}}, "required": ["url"]}
-
-    def execute(self, url: str) -> str:
-        import urllib.request
-        return urllib.request.urlopen(url).read().decode()[:5000]
-```
-
-## 命令
-
-```
-/model           查看当前模型
-/model <名称>    切换模型
-/compact         压缩上下文（对标 Claude Code 的 /compact）
-/tokens          查看 token 用量 + 费用估算
-/diff            查看本次会话修改的文件
-/resume          列出当前项目可恢复会话
-/resume <id>     按 id 恢复会话
-/task            查看当前任务状态
-/todo            查看当前 todo 列表
-/trace           查看当前会话 trace
-/approve         批准待执行的工具调用
-/approve_all     批准当前操作，并自动放行后续普通确认
-/reject          拒绝待执行的工具调用
-/reset           清空历史
-quit             退出
-```
-
-Telegram 命令：
-
-```
-/start           显示 Telegram 帮助
-/task            查看当前任务状态
-/tasks           列出最近的 checkpoint
-/trace           查看当前任务的 trace
-/approve         批准待执行的工具调用
-/approve_all     批准当前操作，并自动放行后续普通确认
-/reject          拒绝待执行的工具调用
-/resume <id>     把保存的任务 checkpoint 恢复到当前聊天
-/reset           清空当前聊天对应的内存会话
-```
-
-飞书命令：
-
-```
-/start           显示飞书帮助
-/task            查看当前任务状态
-/trace           查看当前任务的 trace
-/approve         批准待执行的工具调用
-/approve_all     批准当前操作，并自动放行后续普通确认
-/reject          拒绝待执行的工具调用
-/resume          列出当前项目可恢复会话
-/reset           清空当前聊天对应的内存会话
-```
-
-## 对比
-
-|  | Claude Code | Claw-Code | Aider | AutoCode |
-|---|---|---|---|---|
-| 代码量 | 51万行（闭源） | 10万+行 | 5万+行 | **5k+ 行核心包** |
-| 模型 | 仅 Anthropic | 多模型 | 多模型 | **任意 OpenAI 兼容** |
-| 能通读吗？ | 不能 | 很难 | 有点费劲 | **一个下午** |
-| 适合 | 直接用 | 直接用 | 直接用 | **先看懂，再造自己的** |
-
-## 源码导读
-
-我还写了 [7 篇 Claude Code 架构深度导读](article/)：Agent 循环、工具系统、上下文压缩、流式执行、多 Agent、隐藏功能。想知道 AutoCode 为什么这样设计，从那里开始。
-
-## FAQ
-
-**AutoCode 支持 Skill / Subagent / MCP 吗？**
-
-部分支持。
-
-- Subagent：支持。内置了 `agent` 工具，会生成一个隔离上下文的子 agent。
-- MCP 和 Skills：还不支持原生框架，这两层目前仍然刻意缺席。
-
-所以旧版 README 里“只保留最小核心、不支持 Subagent”的说法，已经和当前实现不完全一致。更准确地说，AutoCode 已经长成了一个轻量 runtime，但还没有继续扩成完整的 plugin / MCP 平台。
-
-如果你只是想要 Skill，配方很简单：启动时扫 `~/.claude/skills/*.md`，把标题列进 system prompt，让 agent 按名字请求某个 skill，再把那个文件的内容 inline 进对话就行了。
 
 ## 开发机部署
 
@@ -305,13 +305,6 @@ Telegram 命令：
 阅读[开发机部署手册](docs/development-deployment.md)，不要在
 `/home/dev/corecoder-web` 中执行 `git pull`。
 
-## License
+## 开源协议
 
-MIT。Fork，然后拿去造更好的东西，如果能标注此出处就更好了。
-
----
-
-作者 **[何宇峰](https://github.com/he-yufeng)** · Agentic AI Researcher @ Moonshot AI (Kimi)
-
-[Claude Code 源码分析（知乎 17 万阅读，6000收藏）](https://zhuanlan.zhihu.com/p/1898797658343862272)
-
+[MIT](LICENSE)

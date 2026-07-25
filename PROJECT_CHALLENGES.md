@@ -520,3 +520,23 @@
 - 面试表达：我做协议兼容时不会只停在“能 parse 一个完整包”，而是会把半包、分帧和 Windows 流行为当成第一等边界，因为真正的线上卡死往往就出在这里。
 - 更新时间：2026-06-16
 
+### C052：同一套 eval 模型配置不能直接复用到 Claude Code，因为协议面不是 OpenAI 而是 Anthropic Messages
+- 场景：cross-agent eval 里 `autocode/icecoder` 能直接跑 `https://api.deepseek.com`，但 `claude_code` 同样配置下会报 404。
+- 问题：表面看像模型或 key 错误，实际是 Claude Code 固定走 Anthropic Messages 协议，请求的是 `/v1/messages`，而 DeepSeek 的 OpenAI 入口只提供 chat completions。
+- 根因：评测层把“模型供应商配置”和“agent 协议入口”混成了一层，导致 Claude provider 误吃 OpenAI base URL。
+- 方案：在 `eval/harness.py` 给 Claude provider 单独做 base URL 归一化：命中 `api.deepseek.com` 时自动切到 `https://api.deepseek.com/anthropic`，并补上 DeepSeek 官方建议的 `CLAUDE_CODE_SUBAGENT_MODEL` 与 `CLAUDE_CODE_EFFORT_LEVEL=max`。
+- 取舍：没有引入额外代理层，也没有把 eval 配置体系继续做重；先只修正已知 provider 的协议分流，保持实现短而稳。
+- 验证：`tests/test_eval_system.py` 新增 DeepSeek Claude env 回归并通过；手工 smoke 跑 `claude -p` 直连 `https://api.deepseek.com/anthropic` 后，`result` 从 404/空结果恢复为正常文本输出。
+- 面试表达：我处理多 agent 评测时，会把“模型是谁”和“这个 agent 说哪种 API 协议”拆开看；很多 404 不是模型不可用，而是协议入口用错了。
+- 更新时间：2026-06-17
+
+### C053：正式评测里的 LLM judge 不能假设每次都稳定返回可解析 JSON，外部模型抖动需要在评测层吸收
+- 场景：同一份 trial 在正式跑分时，judge 模型偶发返回空内容或坏 JSON，导致整个 cross-agent eval 中途失败。
+- 问题：agent 本体已经完成并产出 trial，但评分阶段因为一次空响应直接抛异常，最终没有 summary，跑分结果不可复现。
+- 根因：`eval/judge.py` 早期把 judge 当成“必然稳定的函数”，没有对空内容、格式漂移或瞬时供应商波动做最小重试。
+- 方案：在 `_judge()` 内加入 3 次轻量重试；只有拿到非空且可解析的 verdict 才返回，否则最终再抛出最后一次错误。
+- 取舍：没有继续引入复杂 repair parser 或第二套 judge 协议，只做同 prompt 原样重试，避免把评分逻辑做重。
+- 验证：`tests/test_eval_system.py` 新增“空内容 + 坏 JSON + 第三次成功”回归；随后正式 cross-agent eval 成功产出 `summary.json` 与 `report.md`。
+- 面试表达：做评测系统时，我不会把外部 judge 当成绝对可靠组件，而是把它当成有抖动的依赖，在评测层做最小吸震，保证正式跑分能稳定落盘。
+- 更新时间：2026-06-17
+
