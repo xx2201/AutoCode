@@ -325,6 +325,10 @@ The repository includes
 [deploy/corecoder-web.service](deploy/corecoder-web.service) as a hardened
 systemd service example.
 
+The development Relay uses a versioned wheel release directory rather than a
+Git checkout. See the [development deployment runbook](docs/development-deployment.md)
+before updating that server.
+
 ### 2. Start the Local Runner
 
 Create `~/.autocode/web-runner.env`:

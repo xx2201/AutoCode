@@ -299,6 +299,12 @@ Telegram 命令：
 
 如果你只是想要 Skill，配方很简单：启动时扫 `~/.claude/skills/*.md`，把标题列进 system prompt，让 agent 按名字请求某个 skill，再把那个文件的内容 inline 进对话就行了。
 
+## 开发机部署
+
+开发机 Relay 使用版本化 wheel 发布目录，不是 Git 工作树。更新服务器前请先
+阅读[开发机部署手册](docs/development-deployment.md)，不要在
+`/home/dev/corecoder-web` 中执行 `git pull`。
+
 ## License
 
 MIT。Fork，然后拿去造更好的东西，如果能标注此出处就更好了。
