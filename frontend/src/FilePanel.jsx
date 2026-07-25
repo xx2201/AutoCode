@@ -1,15 +1,15 @@
 import {
   ChevronDown,
   ChevronRight,
+  ExternalLink,
   FileCode2,
   Folder,
   FolderOpen,
   Search,
-  Settings2,
   X,
 } from "lucide-react";
 import { useMemo, useState } from "react";
-import { parseDiff } from "./diff";
+import { parseDiffHunks } from "./diff";
 
 function buildTree(paths) {
   const root = { folders: new Map(), files: [] };
@@ -71,19 +71,43 @@ function TreeFolder({ name, node, depth, onSelect }) {
 }
 
 function DiffContent({ diff }) {
-  const lines = useMemo(() => parseDiff(diff?.diff), [diff?.diff]);
+  const hunks = useMemo(() => parseDiffHunks(diff?.diff), [diff?.diff]);
   if (!diff?.diff) {
     return <div className="file-panel-empty">选择一个已修改文件查看内容。</div>;
   }
+  const changedFile = diff.files?.[0] || {};
   return (
-    <div className="file-diff-code">
-      {lines.map((line, index) => (
-        <div className={`file-diff-line ${line.kind}`} key={`${index}-${line.old}-${line.next}`}>
-          <span>{line.old}</span>
-          <span>{line.next}</span>
-          <code>{line.text || " "}</code>
-        </div>
-      ))}
+    <div className="file-diff-view">
+      <header className="file-diff-header">
+        <strong title={diff.path}>{diff.path}</strong>
+        <span>
+          <b>+{changedFile.additions || 0}</b>
+          <i>−{changedFile.deletions || 0}</i>
+        </span>
+      </header>
+      <div className="file-diff-code">
+        {hunks.map((hunk) => {
+          const end = Math.max(hunk.newStart, hunk.newStart + hunk.newCount - 1);
+          return (
+            <section className="file-diff-hunk" key={`${hunk.oldStart}-${hunk.newStart}`}>
+              <header>
+                <span><ChevronDown size={16} /> 第 {hunk.newStart}-{end} 行</span>
+                <span><b>+{hunk.additions}</b><i>−{hunk.deletions}</i></span>
+              </header>
+              {hunk.lines.map((line, index) => (
+                <div
+                  className={`file-diff-line ${line.kind}`}
+                  key={`${index}-${line.old}-${line.next}`}
+                >
+                  <span>{line.next || line.old}</span>
+                  <i>{line.marker}</i>
+                  <code>{line.text || " "}</code>
+                </div>
+              ))}
+            </section>
+          );
+        })}
+      </div>
       {diff.truncated && <p>Diff 过大，当前仅显示前 2 MB。</p>}
     </div>
   );
@@ -116,6 +140,14 @@ export default function FilePanel({
   const title = mode === "changed"
     ? `已更改 ${changedFiles.length} 个文件`
     : selectedPath || "文件";
+  const additions = changedFiles.reduce(
+    (total, item) => total + Number(item.additions || 0),
+    0,
+  );
+  const deletions = changedFiles.reduce(
+    (total, item) => total + Number(item.deletions || 0),
+    0,
+  );
 
   return (
     <div className="file-panel-layer" role="dialog" aria-modal="true" aria-label="项目文件">
@@ -123,9 +155,14 @@ export default function FilePanel({
       <section className="file-panel">
         <header>
           <button type="button" onClick={onClose} aria-label="关闭"><X size={21} /></button>
-          <strong title={title}>{title}</strong>
+          <div className="file-panel-heading">
+            <strong title={title}>{title}</strong>
+            {mode === "changed" && (
+              <span><b>+{additions}</b><i>−{deletions}</i></span>
+            )}
+          </div>
           <button type="button" onClick={onOpenGit} aria-label="打开 Git 管理" title="Git 管理">
-            <Settings2 size={19} />
+            <ExternalLink size={19} />
           </button>
         </header>
         <nav>
