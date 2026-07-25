@@ -18,7 +18,7 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    assert len(ALL_TOOLS) == 14
+    assert len(ALL_TOOLS) == 15
 
 
 def test_config_from_env(monkeypatch):
@@ -562,9 +562,11 @@ def test_cost_estimation_unknown_model():
 def test_edit_tracks_changed_files(tmp_path):
     from autocode.tools.edit import _changed_files
     _changed_files.clear()
+    read = get_tool("read")
     edit = get_tool("edit_file")
     path = tmp_path / "sample.py"
     path.write_text("aaa\nbbb\n")
+    read.execute(file_path=str(path))
     edit.execute(file_path=str(path), old_string="aaa", new_string="zzz")
     assert any(str(path) in p for p in _changed_files)
     _changed_files.clear()

@@ -17,14 +17,14 @@ export function formatToolTitle(name, argumentsValue = {}) {
   );
   const labels = {
     bash: "Ran command",
-    read_file: "Read file",
+    read: "Read file",
     write_file: "Wrote file",
     edit_file: "Edited file",
     list_files: "Listed files",
-    read_image: "Viewed image",
     start_process: "Started background process",
     stop_process: "Stopped background process",
     web_search: "Searched the web",
+    web_fetch: "Fetched URL",
   };
   const label = labels[name] || (name ? `Used ${name.replaceAll("_", " ")}` : "Ran tool");
   if (!target) return label;

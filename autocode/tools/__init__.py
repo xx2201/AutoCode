@@ -1,8 +1,7 @@
 """Tool registry."""
 
 from .bash import BashTool
-from .read import ReadFileTool
-from .image import ReadImageTool
+from .read import ReadTool
 from .write import WriteFileTool
 from .edit import EditFileTool
 from .delete import DeletePathTool
@@ -11,12 +10,13 @@ from .grep import GrepTool
 from .agent import AgentTool
 from .todo_write import TodoWriteTool
 from .process import StartProcessTool, ReadProcessOutputTool, WaitForProcessOutputTool, StopProcessTool
+from .skill import SkillTool
 from .web_search import WebSearchTool
+from .web_fetch import WebFetchTool
 
 ALL_TOOLS = [
     BashTool(),
-    ReadFileTool(),
-    ReadImageTool(),
+    ReadTool(),
     WriteFileTool(),
     EditFileTool(),
     DeletePathTool(),
@@ -27,7 +27,9 @@ ALL_TOOLS = [
     WaitForProcessOutputTool(),
     StopProcessTool(),
     TodoWriteTool(),
+    SkillTool(),
     AgentTool(),
+    WebFetchTool(),
 ]
 
 

@@ -82,10 +82,11 @@ def test_agent_approve_all_allows_workspace_local_risk_but_denies_outside_worksp
     )
     reply = agent.chat("run commands", approval_handler=approval_handler)
     assert reply == "done"
-    assert calls == [("bash", False, "python app.py")]
+    assert calls == []
     tool_outputs = [m.get("content") for m in agent.messages if m.get("role") == "tool"]
     assert "python app.py|confirmed=False" in tool_outputs
     assert "echo ok|confirmed=False" in tool_outputs
-    assert "rm -rf build|confirmed=False" in tool_outputs
-    assert any("dangerous command target must stay inside workspace" in item for item in tool_outputs)
+    blocked = [item for item in tool_outputs if "delete via shell is not allowed" in item]
+    assert len(blocked) == 2
+    assert all("use delete_path instead" in item for item in blocked)
 

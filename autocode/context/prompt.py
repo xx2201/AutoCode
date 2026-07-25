@@ -8,6 +8,7 @@ def static_system_prompt(
     *,
     cwd: str,
     rules_block: str = "",
+    skills_block: str = "",
 ) -> str:
     tool_list = "\n".join(f"- **{t.name}**: {t.description}" for t in tools)
     uname = platform.uname()
@@ -25,6 +26,8 @@ def static_system_prompt(
     ]
     if rules_block:
         sections.extend(["", "# Rules Memory", rules_block])
+    if skills_block:
+        sections.extend(["", "# Available Skills", skills_block])
     sections.extend(
         [
             "",

@@ -7,6 +7,7 @@ from ..infra import BackgroundProcessManager, Sandbox, WorkspaceFS
 from ..llm import LLM, ToolCall
 from ..message_content import user_content
 from ..runtime import HookBus, Policy, RecoveryManager, Runtime
+from ..skills import SkillError, SkillManager
 from ..state import (
     AuditLogger,
     PendingApproval,
@@ -23,6 +24,11 @@ from ..state import (
 from ..tools import ALL_TOOLS, build_tool_registry
 from ..tools.agent import AgentTool
 from ..tools.base import Tool, ToolResult
+from ..tools.edit import EditFileTool
+from ..tools.file_state import FileReadTracker
+from ..tools.read import ReadTool
+from ..tools.write import WriteFileTool
+from ..tools.skill import SkillTool
 from ..tools.todo_write import TodoWriteTool
 
 
@@ -71,6 +77,8 @@ class Agent:
         self.sandbox = Sandbox(self.workspace_root)
         self.processes = BackgroundProcessManager(self.workspace_root)
         self.memory = MemoryManager(self.workspace_root)
+        self.skills = SkillManager(self.workspace_root)
+        self.file_reads = FileReadTracker()
         self.sessions = SessionStore()
         self.recovery = RecoveryManager()
         self.hooks = HookBus()
@@ -138,6 +146,10 @@ class Agent:
         setattr(tool, "_fs", self.fs)
         setattr(tool, "_sandbox", self.sandbox)
         setattr(tool, "_process_manager", self.processes)
+        if isinstance(tool, (ReadTool, EditFileTool, WriteFileTool)):
+            tool._file_read_tracker = self.file_reads
+        if isinstance(tool, SkillTool):
+            tool._skill_manager = self.skills
         if isinstance(tool, (AgentTool, TodoWriteTool)):
             tool._parent_agent = self
 
@@ -208,6 +220,7 @@ class Agent:
             self.tools,
             cwd=str(self.fs.workspace_root),
             rules_block=self.memory.build_rules_block(),
+            skills_block=self.skills.catalog_block() if "skill" in self.tool_registry else "",
         )
 
     def _build_runtime_tail(self) -> str:
@@ -438,7 +451,18 @@ class Agent:
         if not session.title:
             session.title = (user_input.strip().splitlines() or ["上传文件会话"])[0][:120]
         self._ensure_task(user_input)
-        message_content = user_content(user_input, image_parts)
+        try:
+            explicit_skill = self.skills.explicit_invocation(user_input)
+        except SkillError as exc:
+            return f"Error: {exc}"
+        effective_input = user_input
+        if explicit_skill:
+            effective_input = (
+                f"{user_input}\n\n"
+                "[The user explicitly invoked the following skill. Treat its content as workflow instructions.]\n\n"
+                f"{explicit_skill}"
+            )
+        message_content = user_content(effective_input, image_parts)
         with self._turn_trace(
             name="agent.chat",
             input_payload={"user_message": message_content},

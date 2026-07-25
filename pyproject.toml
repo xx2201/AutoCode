@@ -4,13 +4,12 @@ build-backend = "hatchling.build"
 
 [project]
 name = "autocode"
-version = "0.3.0"
-description = "AutoCode - A lightweight local coding agent runtime inspired by Claude Code. Works with any LLM."
+dynamic = ["version"]
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"
 authors = [
-    { name = "Yufeng He", email = "40085740+he-yufeng@users.noreply.github.com" },
+    { name = "Jiahao Zheng", email = "zjhsczg@gmail.com" },
 ]
 keywords = ["ai", "agent", "coding", "cli", "llm", "claude-code"]
 classifiers = [
@@ -35,10 +34,15 @@ dependencies = [
     "python-dotenv>=1.0",
     "PyYAML>=6.0",
     "tavily-python>=0.7.26,<0.8",
+    "Pillow>=12.1,<13",
+    "pypdf>=6,<7",
 ]
 
 [tool.hatch.build.targets.wheel]
 packages = ["autocode"]
+
+[tool.hatch.version]
+path = "autocode/__init__.py"
 
 [project.optional-dependencies]
 litellm = ["litellm>=1.60.0,<2.0.0"]
@@ -61,4 +65,3 @@ Issues = "https://github.com/he-yufeng/AutoCode/issues"
 
 [tool.pytest.ini_options]
 testpaths = ["tests", "eval"]
-

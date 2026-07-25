@@ -102,7 +102,7 @@ def prepare_attachments(
     instruction = (
         "\n\n[Uploaded files are available in the local workspace]\n"
         f"{file_lines}\n"
-        "Use read_file for text/code files and read_image for workspace images when needed."
+        "Use read for text, code, image, PDF, or notebook files when needed."
     )
     effective_prompt = (prompt.strip() or "请分析我上传的文件。") + instruction
     return PreparedAttachments(

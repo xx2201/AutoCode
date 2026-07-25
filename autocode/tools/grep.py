@@ -1,85 +1,146 @@
-"""Content search with regex support."""
+"""Workspace-bound content search powered by ripgrep."""
 
-import re
+from __future__ import annotations
+
+import os
+import shutil
+import subprocess
 from pathlib import Path
+
 from .base import Tool
 
-# skip these dirs to avoid noise
-_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "dist", "build"}
+_MAX_HEAD_LIMIT = 200
+_MAX_COLLECTED_LINES = 10_000
+_SEARCH_TIMEOUT_SECONDS = 30
+_SKIP_DIRS = (".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "dist", "build")
+_OUTPUT_MODES = {"files_with_matches", "content", "count"}
 
 
 class GrepTool(Tool):
     name = "grep"
     description = (
-        "Search file contents with regex. "
-        "Returns matching lines with file path and line number."
+        "Search with ripgrep regular expressions. Supports files_with_matches, content, and count "
+        "output modes plus glob/type filters, multiline matching, and pagination."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "pattern": {
+            "pattern": {"type": "string", "description": "ripgrep regular expression"},
+            "path": {"type": "string", "description": "File or directory (default workspace)"},
+            "output_mode": {
                 "type": "string",
-                "description": "Regex pattern to search for",
+                "enum": sorted(_OUTPUT_MODES),
+                "description": "Default files_with_matches.",
             },
-            "path": {
-                "type": "string",
-                "description": "File or directory to search (default: cwd)",
-            },
-            "include": {
-                "type": "string",
-                "description": "Only search files matching this glob (e.g. '*.py')",
+            "glob": {"type": "string", "description": "Filter files with a glob, e.g. '*.py'"},
+            "type": {"type": "string", "description": "ripgrep file type, e.g. 'py' or 'js'"},
+            "multiline": {"type": "boolean", "description": "Enable multiline matching"},
+            "offset": {"type": "integer", "minimum": 0, "description": "Entries to skip"},
+            "head_limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": _MAX_HEAD_LIMIT,
+                "description": "Maximum entries to return. Default 100.",
             },
         },
         "required": ["pattern"],
     }
 
-    def execute(self, pattern: str, path: str = ".", include: str | None = None) -> str:
+    def execute(
+        self,
+        pattern: str,
+        path: str = ".",
+        output_mode: str = "files_with_matches",
+        glob: str | None = None,
+        type: str | None = None,
+        multiline: bool = False,
+        offset: int = 0,
+        head_limit: int = 100,
+        include: str | None = None,
+    ) -> str:
+        if output_mode not in _OUTPUT_MODES:
+            return f"Error: output_mode must be one of {', '.join(sorted(_OUTPUT_MODES))}"
+        if offset < 0 or not 1 <= head_limit <= _MAX_HEAD_LIMIT:
+            return f"Error: offset must be >= 0 and head_limit must be 1-{_MAX_HEAD_LIMIT}"
+        if include and not glob:
+            glob = include
+        executable = shutil.which("rg")
+        if executable is None:
+            return "Error: ripgrep executable 'rg' is required but was not found on PATH"
         try:
-            regex = re.compile(pattern)
-        except re.error as e:
-            return f"Invalid regex: {e}"
+            target = self._resolve_target(path)
+        except ValueError as exc:
+            return f"Error: {exc}"
+        if not target.exists():
+            return f"Error: {path} not found"
 
-        fs = getattr(self, "_fs", None)
-        if fs:
-            try:
-                files = fs.walk_files(path=path, include=include)
-            except ValueError as e:
-                return f"Error: {e}"
+        arguments = [executable, "--no-heading", "--color=never", "--with-filename"]
+        if output_mode == "files_with_matches":
+            arguments.append("--files-with-matches")
+        elif output_mode == "content":
+            arguments.extend(("--line-number", "--max-columns=2000", "--max-columns-preview"))
         else:
-            from pathlib import Path
-            base = Path(path).expanduser().resolve()
-            if not base.exists():
-                return f"Error: {path} not found"
-            if base.is_file():
-                files = [base]
-            else:
-                files = self._walk(base, include)
+            arguments.append("--count-matches")
+        if multiline:
+            arguments.append("--multiline")
+        if glob:
+            arguments.extend(("--glob", glob))
+        if type:
+            arguments.extend(("--type", type))
+        for directory in _SKIP_DIRS:
+            arguments.extend(("--glob", f"!**/{directory}/**"))
+        arguments.extend(("--", str(pattern), str(target)))
 
-        matches = []
-        for fp in files:
-            try:
-                text = fp.read_text(errors="ignore")
-            except OSError:
-                continue
-            for lineno, line in enumerate(text.splitlines(), 1):
-                if regex.search(line):
-                    matches.append(f"{fp}:{lineno}: {line.rstrip()}")
-                    if len(matches) >= 200:
-                        matches.append("... (200 match limit reached)")
-                        return "\n".join(matches)
+        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        try:
+            completed = subprocess.run(
+                arguments,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                timeout=_SEARCH_TIMEOUT_SECONDS,
+                creationflags=creationflags,
+            )
+        except subprocess.TimeoutExpired:
+            return f"Error: search timed out after {_SEARCH_TIMEOUT_SECONDS}s"
+        except OSError as exc:
+            return f"Error: failed to start ripgrep: {exc}"
 
-        return "\n".join(matches) if matches else "No matches found."
+        output = completed.stdout.strip()
+        if completed.returncode == 1:
+            return "No matches found."
+        if completed.returncode != 0:
+            diagnostic = (completed.stderr or output).strip()
+            return f"Invalid regex or ripgrep error: {diagnostic or f'exit code {completed.returncode}'}"
+        lines = output.splitlines()
+        collection_truncated = len(lines) > _MAX_COLLECTED_LINES
+        lines = lines[:_MAX_COLLECTED_LINES]
+        total_entries = len(lines)
+        shown = lines[offset:offset + head_limit]
+        if not shown:
+            return f"No entries at offset {offset}. Total entries: {total_entries}."
+        result = "\n".join(shown)
+        if output_mode == "count":
+            total_matches = 0
+            for line in lines:
+                try:
+                    total_matches += int(line.rsplit(":", 1)[1])
+                except (IndexError, ValueError):
+                    continue
+            result += f"\n\nTotal matches: {total_matches}"
+        if collection_truncated or offset + len(shown) < total_entries:
+            known_total = f"at least {total_entries}" if collection_truncated else str(total_entries)
+            result += (
+                f"\n\nPARTIAL results: {known_total} entries, showing {offset + 1}-"
+                f"{offset + len(shown)}; next_offset={offset + len(shown)}."
+            )
+        return result
 
-    @staticmethod
-    def _walk(root: Path, include: str | None) -> list[Path]:
-        """Walk dir tree, skipping junk dirs."""
-        results = []
-        for item in root.rglob(include or "*"):
-            # skip hidden/junk directories
-            if any(part in _SKIP_DIRS for part in item.parts):
-                continue
-            if item.is_file():
-                results.append(item)
-            if len(results) >= 5000:
-                break
-        return results
+    def _resolve_target(self, path: str) -> Path:
+        fs = getattr(self, "_fs", None)
+        if fs is not None:
+            target = fs.resolve_path(path)
+            fs.ensure_within_workspace(target)
+            return target
+        return Path(path).expanduser().resolve()

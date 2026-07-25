@@ -38,8 +38,14 @@ class Policy:
             return PolicyDecision("confirm", "external MCP tool call", requires_manual=False)
         if tool_name == "bash":
             return self._evaluate_bash(arguments.get("command", ""))
-        if tool_name in {"read_file", "write_file", "edit_file"}:
+        if tool_name in {"read", "write_file", "edit_file"}:
             return self._evaluate_path(arguments.get("file_path"))
+        if tool_name == "web_fetch":
+            return PolicyDecision(
+                "confirm",
+                "fetching content from an external website",
+                requires_manual=True,
+            )
         if tool_name == "delete_path":
             decision = self._evaluate_path(arguments.get("path"))
             if decision.action == "deny":

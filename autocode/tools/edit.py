@@ -9,6 +9,7 @@ and makes edits safe and reviewable.
 import difflib
 
 from .base import Tool
+from .file_state import DEFAULT_FILE_READ_TRACKER
 
 # track files changed this session for /diff
 _changed_files: set[str] = set()
@@ -18,8 +19,9 @@ class EditFileTool(Tool):
     name = "edit_file"
     description = (
         "Edit a file by replacing an exact string match. "
-        "old_string must appear exactly once in the file for safety. "
-        "Include enough surrounding context to ensure uniqueness."
+        "You must call read on the complete file first. If the file later changes, the edit is "
+        "still allowed only when old_string remains exact and unambiguous. old_string must be "
+        "unique unless replace_all is true."
     )
     parameters = {
         "type": "object",
@@ -36,11 +38,22 @@ class EditFileTool(Tool):
                 "type": "string",
                 "description": "Replacement text",
             },
+            "replace_all": {
+                "type": "boolean",
+                "description": "Replace every occurrence of old_string instead of requiring one unique match",
+                "default": False,
+            },
         },
         "required": ["file_path", "old_string", "new_string"],
     }
 
-    def execute(self, file_path: str, old_string: str, new_string: str) -> str:
+    def execute(
+        self,
+        file_path: str,
+        old_string: str,
+        new_string: str,
+        replace_all: bool = False,
+    ) -> str:
         try:
             fs = getattr(self, "_fs", None)
             if fs:
@@ -54,6 +67,12 @@ class EditFileTool(Tool):
                 if not p.exists():
                     return f"Error: {file_path} not found"
                 content = p.read_text()
+            tracker = getattr(self, "_file_read_tracker", DEFAULT_FILE_READ_TRACKER)
+            read_status = tracker.status(p, content)
+            if read_status == "unread":
+                return f"Error: read must be called on the complete {file_path} before edit_file"
+            if not old_string:
+                return "Error: old_string must not be empty"
             occurrences = content.count(old_string)
 
             if occurrences == 0:
@@ -62,22 +81,33 @@ class EditFileTool(Tool):
                     f"Error: old_string not found in {file_path}.\n"
                     f"File starts with:\n{preview}"
                 )
-            if occurrences > 1:
+            if occurrences > 1 and not replace_all:
                 return (
                     f"Error: old_string appears {occurrences} times in {file_path}. "
-                    f"Include more surrounding lines to make it unique."
+                    "Include more surrounding lines to make it unique or set replace_all=true."
                 )
 
-            new_content = content.replace(old_string, new_string, 1)
+            replacement_count = occurrences if replace_all else 1
+            new_content = content.replace(old_string, new_string, replacement_count)
             if fs:
                 fs.write_text(file_path, new_content)
             else:
                 p.write_text(new_content)
+            if read_status == "changed":
+                tracker.forget(p)
+            else:
+                tracker.record(p, new_content)
             _changed_files.add(str(p))
 
-            # generate a unified diff so the user/LLM can see exactly what changed
+            # The tool result remains machine-readable for the model; the web UI renders its own diff.
             diff = _unified_diff(content, new_content, str(p))
-            return f"Edited {file_path}\n{diff}"
+            warning = ""
+            if read_status == "changed":
+                warning = (
+                    "Warning: the file had other changes after it was read. The exact edit was "
+                    "applied; call read again before another edit.\n"
+                )
+            return f"Edited {file_path} ({replacement_count} replacement(s))\n{warning}{diff}"
         except Exception as e:
             return f"Error: {e}"
 

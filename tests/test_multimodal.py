@@ -1,11 +1,12 @@
 import base64
 import types
 
+from PIL import Image
+
 from autocode.agent import Agent
 from autocode.attachments import prepare_attachments
 from autocode.llm import LLM, LLMResponse, ToolCall
-from autocode.tools.image import ReadImageTool
-from autocode.tools.read import ReadFileTool
+from autocode.tools.read import ReadTool
 
 
 def _content_chunk(content: str):
@@ -73,9 +74,9 @@ def test_uploaded_image_reaches_the_model_and_workspace(tmp_path):
     assert user_message["content"][1]["type"] == "image_url"
 
 
-def test_read_image_tool_feeds_workspace_image_into_next_model_round(tmp_path):
+def test_read_tool_feeds_workspace_image_into_next_model_round(tmp_path):
     image_path = tmp_path / "diagram.png"
-    image_path.write_bytes(b"\x89PNG\r\n\x1a\nworkspace-image")
+    Image.new("RGB", (4, 4), "red").save(image_path)
     captured = []
     llm = LLM(model="vision-model", api_key="sk-test")
 
@@ -84,7 +85,7 @@ def test_read_image_tool_feeds_workspace_image_into_next_model_round(tmp_path):
         if len(captured) == 1:
             return iter(
                 [
-                    _tool_chunk("call_image", "read_image", '{"file_path":"diagram.png"}'),
+                    _tool_chunk("call_image", "read", '{"file_path":"diagram.png"}'),
                     _usage_chunk(),
                 ]
             )
@@ -105,12 +106,12 @@ def test_read_image_tool_feeds_workspace_image_into_next_model_round(tmp_path):
     )
     assert visual_message["content"][1]["type"] == "image_url"
     assert visual_message["content"][1]["image_url"]["url"].startswith(
-        "data:image/png;base64,"
+        "data:image/jpeg;base64,"
     )
 
 
 def test_all_parallel_tool_results_precede_visual_user_message(tmp_path):
-    (tmp_path / "diagram.png").write_bytes(b"\x89PNG\r\n\x1a\nworkspace-image")
+    Image.new("RGB", (4, 4), "red").save(tmp_path / "diagram.png")
     (tmp_path / "note.txt").write_text("hello", encoding="utf-8")
 
     class RecordingLLM:
@@ -131,12 +132,12 @@ def test_all_parallel_tool_results_precede_visual_user_message(tmp_path):
                     tool_calls=[
                         ToolCall(
                             id="image",
-                            name="read_image",
+                            name="read",
                             arguments={"file_path": "diagram.png"},
                         ),
                         ToolCall(
                             id="text",
-                            name="read_file",
+                            name="read",
                             arguments={"file_path": "note.txt"},
                         ),
                     ],
@@ -146,7 +147,7 @@ def test_all_parallel_tool_results_precede_visual_user_message(tmp_path):
     llm = RecordingLLM()
     agent = Agent(
         llm=llm,
-        tools=[ReadImageTool(), ReadFileTool()],
+        tools=[ReadTool()],
         workspace_root=str(tmp_path),
     )
     agent.memory.schedule_project_memory_refresh = lambda *args, **kwargs: None

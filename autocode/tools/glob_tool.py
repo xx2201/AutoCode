@@ -1,50 +1,88 @@
-"""File pattern matching."""
+"""File pattern matching with brace expansion and explicit pagination."""
+
+from __future__ import annotations
+
+import re
+from pathlib import Path
 
 from .base import Tool
+
+_MAX_RESULTS = 100
 
 
 class GlobTool(Tool):
     name = "glob"
     description = (
-        "Find files matching a glob pattern. "
-        "Supports ** for recursive matching (e.g. '**/*.py')."
+        "Find files matching a glob pattern. Supports ** recursion and brace alternatives such "
+        "as '*.{json,yaml}'. Results are sorted by modification time, newest first."
     )
     parameters = {
         "type": "object",
         "properties": {
-            "pattern": {
-                "type": "string",
-                "description": "Glob pattern, e.g. '**/*.py' or 'src/**/*.ts'",
+            "pattern": {"type": "string", "description": "Glob pattern"},
+            "path": {"type": "string", "description": "Directory to search (default workspace)"},
+            "offset": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Number of matching files to skip. Default 0.",
             },
-            "path": {
-                "type": "string",
-                "description": "Directory to search in (default: cwd)",
+            "limit": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": _MAX_RESULTS,
+                "description": "Maximum results to return. Default 100.",
             },
         },
         "required": ["pattern"],
     }
 
-    def execute(self, pattern: str, path: str = ".") -> str:
+    def execute(self, pattern: str, path: str = ".", offset: int = 0, limit: int = 100) -> str:
         try:
+            if offset < 0 or not 1 <= limit <= _MAX_RESULTS:
+                return f"Error: offset must be >= 0 and limit must be 1-{_MAX_RESULTS}"
+            patterns = _expand_braces(pattern)
             fs = getattr(self, "_fs", None)
+            hits: dict[str, Path] = {}
             if fs:
-                hits = fs.glob(pattern, path=path)
+                for expanded in patterns:
+                    for hit in fs.glob(expanded, path=path):
+                        hits[str(hit)] = hit
             else:
-                from pathlib import Path
                 base = Path(path).expanduser().resolve()
                 if not base.is_dir():
                     return f"Error: {path} is not a directory"
-                hits = list(base.glob(pattern))
-            # sort by mtime, newest first
-            hits.sort(key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True)
+                for expanded in patterns:
+                    for hit in base.glob(expanded):
+                        hits[str(hit.resolve())] = hit.resolve()
+            ordered = sorted(
+                hits.values(),
+                key=lambda item: item.stat().st_mtime if item.exists() else 0,
+                reverse=True,
+            )
+            total = len(ordered)
+            shown = ordered[offset:offset + limit]
+            if not shown:
+                return "No files matched." if total == 0 else f"No results at offset {offset}. Total: {total}."
+            result = "\n".join(str(item) for item in shown)
+            if offset + len(shown) < total:
+                result += (
+                    f"\n\nPARTIAL results: {total} matches, showing {offset + 1}-"
+                    f"{offset + len(shown)}; next_offset={offset + len(shown)}."
+                )
+            return result
+        except Exception as exc:
+            return f"Error: {exc}"
 
-            total = len(hits)
-            shown = hits[:100]
-            lines = [str(h) for h in shown]
-            result = "\n".join(lines)
 
-            if total > 100:
-                result += f"\n... ({total} matches, showing first 100)"
-            return result or "No files matched."
-        except Exception as e:
-            return f"Error: {e}"
+def _expand_braces(pattern: str) -> list[str]:
+    match = re.search(r"\{([^{}]+)\}", pattern)
+    if match is None:
+        return [pattern]
+    choices = match.group(1).split(",")
+    if not choices or any(choice == "" for choice in choices):
+        raise ValueError("brace glob alternatives must not be empty")
+    expanded: list[str] = []
+    for choice in choices:
+        replaced = pattern[:match.start()] + choice + pattern[match.end():]
+        expanded.extend(_expand_braces(replaced))
+    return expanded

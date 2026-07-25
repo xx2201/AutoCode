@@ -55,6 +55,16 @@ def test_policy_requires_manual_confirmation_for_delete_tool(tmp_path):
     assert decision.requires_manual is True
 
 
+def test_policy_requires_manual_confirmation_for_web_fetch(tmp_path):
+    policy = Policy(workspace_root=str(tmp_path))
+    decision = policy.evaluate_tool_call(
+        "web_fetch",
+        {"url": "https://example.com", "prompt": "summarize"},
+    )
+    assert decision.action == "confirm"
+    assert decision.requires_manual is True
+
+
 def test_policy_does_not_mistake_embedded_del_text_for_shell_delete(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
     decision = policy.evaluate_tool_call(

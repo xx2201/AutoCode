@@ -34,8 +34,8 @@ flowchart LR
 5. `prepare_attachments()` 把附件写入所选项目的
    `.autocode/uploads/<client>/<batch>/`；该目录自动加入 `.autocode/.gitignore`。
 6. 图片同时转换为 Chat Completions 兼容的 `image_url` Data URL，直接进入用户消息；
-   普通文件把本地相对路径告诉 Agent，由 `read_file` 读取。
-7. `RemoteManager` 驱动 Agent 循环。模型还可以调用 `read_image`，把工作区已有的
+   普通文件把本地相对路径告诉 Agent，由统一的 `read` 工具读取。
+7. `RemoteManager` 驱动 Agent 循环。模型还可以调用 `read`，把工作区已有的
    PNG、JPEG、WEBP 或 GIF 作为视觉内容送回下一轮模型。
 8. 首 Token、后续 Token、工具开始/结束和持久化等事件从 Runner 回传 Relay，
    再由 SSE 实时推送到手机。
@@ -49,7 +49,7 @@ flowchart LR
 这两种能力互相独立：
 
 - Agent 多模态决定模型能否看到图片。入口有两条：
-  Web 上传图片直接进入当前用户消息；`read_image` 工具读取工作区中的已有图片，
+  Web 上传图片直接进入当前用户消息；`read` 工具读取工作区中的已有图片，
   再把视觉内容加入下一轮模型消息。
 - Langfuse 多模态只负责观测。它以 `agent`、`generation` 和 `tool` observation
   记录 Agent turn、模型调用、工具调用、输入、输出、Token 用量、首 Token 时间和
