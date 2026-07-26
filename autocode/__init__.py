@@ -3,9 +3,16 @@
 __version__ = "0.3.0"
 
 from autocode.agent import Agent
-from autocode.llm import LLM
+from autocode.llm import AnthropicMessagesLLM, LLM
 from autocode.config import Config
 from autocode.tools import ALL_TOOLS
 
-__all__ = ["Agent", "LLM", "Config", "ALL_TOOLS", "__version__"]
+__all__ = [
+    "Agent",
+    "AnthropicMessagesLLM",
+    "LLM",
+    "Config",
+    "ALL_TOOLS",
+    "__version__",
+]
 

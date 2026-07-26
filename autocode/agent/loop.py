@@ -6,6 +6,7 @@ from ..context import ContextManager, MemoryManager, estimate_tokens, render_tod
 from ..infra import BackgroundProcessManager, Sandbox, WorkspaceFS
 from ..llm import LLM, ToolCall
 from ..message_content import content_text, is_internal_visual_context, user_content
+from ..message_projection import serialize_anthropic_messages, serialize_chat_completions
 from ..runtime import HookBus, Policy, RecoveryManager, Runtime
 from ..skills import SkillError, SkillManager
 from ..state import (
@@ -170,32 +171,11 @@ class Agent:
 
     def _request_messages(self) -> list[dict]:
         self._sync_mcp_tools()
-        messages = [
-            {"role": "system", "content": self._build_static_system_prompt()},
-            *self._project_model_history(self.messages),
-        ]
+        system_prompt = self._build_static_system_prompt()
         runtime_tail = self._build_runtime_tail()
-        if runtime_tail:
-            final_message = messages[-1]
-            final_content = final_message.get("content")
-            has_visual_content = (
-                final_message.get("role") == "user"
-                and isinstance(final_content, list)
-                and any(
-                    isinstance(part, dict)
-                    and part.get("type") in {"image_url", "input_image"}
-                    for part in final_content
-                )
-            )
-            if has_visual_content:
-                # 保持图片为最后一个用户输入的一部分，避免兼容网关忽略较早的视觉消息。
-                final_message["content"] = [
-                    {"type": "text", "text": runtime_tail},
-                    *final_content,
-                ]
-            else:
-                messages.append({"role": "user", "content": runtime_tail})
-        return messages
+        if getattr(self.llm, "api_format", "chat_completions") == "messages":
+            return serialize_anthropic_messages(system_prompt, self.messages, runtime_tail)
+        return serialize_chat_completions(system_prompt, self.messages, runtime_tail)
 
     @classmethod
     def _project_model_history(cls, history: list[dict]) -> list[dict]:
@@ -203,67 +183,11 @@ class Agent:
 
         Canonical tool results retain their typed visual content and call id, matching
         Claude's tool_use/tool_result history. Chat Completions cannot place images in
-        a tool message, so the compatibility user carrier is produced only in this
-        request projection and never enters checkpoints, transcripts, CLI, or Web UI.
+        a tool message, so the compatibility user carrier is produced only while
+        serializing an explicit Chat Completions request. It never enters Messages
+        requests, checkpoints, transcripts, CLI, or Web UI.
         """
-        projected: list[dict] = []
-        pending_media: list[tuple[str, dict]] = []
-
-        def flush_tool_media() -> None:
-            if not pending_media:
-                return
-            labels = ", ".join(dict.fromkeys(source for source, _ in pending_media))
-            unique: list[dict] = []
-            identities: set[tuple[str, str]] = set()
-            for _, item in pending_media:
-                identity = cls._model_content_identity(item)
-                if identity in identities:
-                    continue
-                identities.add(identity)
-                unique.append(dict(item))
-            projected.append(
-                {
-                    "role": "user",
-                    "content": user_content(
-                        f"Visual content returned by tools: {labels}.",
-                        unique,
-                    ),
-                }
-            )
-            pending_media.clear()
-
-        for message in history:
-            if is_internal_visual_context(message.get("content")):
-                continue
-            role = message.get("role")
-            if role not in {"system", "user", "assistant", "tool"}:
-                continue
-            if role != "tool":
-                flush_tool_media()
-
-            allowed = {
-                "system": ("role", "content", "name"),
-                "user": ("role", "content", "name"),
-                "assistant": ("role", "content", "name", "tool_calls"),
-                "tool": ("role", "content", "tool_call_id"),
-            }[role]
-            wire_message = {key: message[key] for key in allowed if key in message}
-            wire_message.setdefault("content", "")
-
-            model_content = message.get("model_content") or []
-            if role == "user" and model_content:
-                wire_message["content"] = user_content(
-                    str(message.get("content", "")),
-                    [dict(item) for item in model_content],
-                )
-            projected.append(wire_message)
-
-            if role == "tool" and model_content:
-                source = str(message.get("tool_name") or "tool")
-                pending_media.extend((source, dict(item)) for item in model_content)
-
-        flush_tool_media()
-        return projected
+        return serialize_chat_completions("", history)[1:]
 
     @staticmethod
     def _serialize_tool_call(tool_call: ToolCall) -> dict:
@@ -409,16 +333,6 @@ class Agent:
             message["model_content"] = [dict(item) for item in result.model_content]
         self._append_message(message)
         return text
-
-    @staticmethod
-    def _model_content_identity(item: dict) -> tuple[str, str]:
-        part_type = item.get("type")
-        image = item.get("image_url")
-        if isinstance(image, dict):
-            return str(part_type), str(image.get("url", ""))
-        if part_type in {"image_url", "input_image"}:
-            return str(part_type), str(image or item.get("url", ""))
-        return str(part_type), repr(item)
 
     def _maybe_compress_messages(self):
         effective_used = self.context.effective_used(

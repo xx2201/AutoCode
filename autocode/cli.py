@@ -20,7 +20,7 @@ from prompt_toolkit.shortcuts import CompleteStyle
 from .agent import Agent
 from .config import Config
 from .context import render_todos
-from .llm import LLM, LiteLLM
+from .llm import llm_class_for_provider
 from .message_content import content_text, is_internal_visual_context
 from .mcp import get_shared_mcp_manager
 from .tools.factory import build_agent_tools
@@ -236,11 +236,16 @@ class _ApprovalCompleter(Completer):
 def _parse_args():
     p = argparse.ArgumentParser(
         prog="autocode",
-        description="Minimal AI coding agent. Works with any OpenAI-compatible LLM.",
+        description="Local coding agent with Anthropic Messages and Chat Completions support.",
     )
     p.add_argument("-m", "--model", help="Model name (default: current configured model)")
     p.add_argument("--base-url", help="API base URL (default: current configured base URL)")
     p.add_argument("--api-key", help="API key (default: current configured API key)")
+    p.add_argument(
+        "--provider",
+        choices=("anthropic", "openai", "litellm"),
+        help="API provider/protocol (default: anthropic Messages)",
+    )
     p.add_argument("-p", "--prompt", help="One-shot prompt (non-interactive mode)")
     p.add_argument("-r", "--resume", metavar="ID", help="Resume a session")
     p.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
@@ -258,6 +263,8 @@ def main():
         config.base_url = args.base_url
     if args.api_key:
         config.api_key = args.api_key
+    if args.provider:
+        config.provider = args.provider
 
     if not config.model:
         console.print("[red bold]No model configured.[/]")
@@ -272,27 +279,30 @@ def main():
         console.print(
             "Set `AUTOCODE_API_KEY` for the agent runtime.\n"
             "\nExamples:\n"
-            "  # OpenAI-compatible runtime\n"
+            "  # Anthropic Messages (default)\n"
             "  export AUTOCODE_API_KEY=sk-...\n"
-            "  export AUTOCODE_BASE_URL=https://api.openai.com/v1\n"
-            "  export AUTOCODE_MODEL=gpt-4o\n"
+            "  export AUTOCODE_BASE_URL=https://api.anthropic.com\n"
+            "  export AUTOCODE_MODEL=claude-sonnet-4-6\n"
+            "  export AUTOCODE_PROVIDER=anthropic\n"
             "\n"
-            "  # DeepSeek\n"
+            "  # OpenAI-compatible Chat Completions\n"
             "  export AUTOCODE_API_KEY=sk-...\n"
             "  export AUTOCODE_BASE_URL=https://api.deepseek.com\n"
             "  export AUTOCODE_MODEL=deepseek-chat\n"
+            "  export AUTOCODE_PROVIDER=openai\n"
             "\n"
             "  # Ollama (local)\n"
             "  export AUTOCODE_API_KEY=ollama\n"
             "  export AUTOCODE_BASE_URL=http://localhost:11434/v1\n"
             "  export AUTOCODE_MODEL=qwen2.5-coder\n"
+            "  export AUTOCODE_PROVIDER=openai\n"
         )
         sys.exit(1)
 
     # CLI 是 Workspace 的唯一注册入口；Web 只读取这份本机注册表。
     WorkspaceRegistry().register(config.workspace_root)
 
-    llm_cls = LiteLLM if config.provider == "litellm" else LLM
+    llm_cls = llm_class_for_provider(config.provider)
     llm = llm_cls(
         model=config.model,
         api_key=config.api_key,

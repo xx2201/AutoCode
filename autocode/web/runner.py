@@ -21,6 +21,7 @@ from dotenv import dotenv_values
 
 from .. import __version__
 from ..config import Config
+from ..llm import api_format_for_provider
 from ..diagnostics import diagnostic_log_dir, get_diagnostic_logger, log_event
 from ..mcp import get_shared_mcp_manager
 from ..remote.manager import RemoteManager, presentation_tool_arguments
@@ -194,6 +195,8 @@ class LocalRunner:
         if action == "bootstrap":
             return {
                 "model": self._base_config.model,
+                "provider": self._base_config.provider,
+                "api_format": api_format_for_provider(self._base_config.provider),
                 "context_window_tokens": self._base_config.max_context_tokens,
                 "workspaces": self.registry.list_workspaces(),
                 "version": __version__,

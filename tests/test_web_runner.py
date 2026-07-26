@@ -100,6 +100,8 @@ def test_runner_bootstrap_lists_only_cli_registered_workspaces(tmp_path):
     result = runner.execute("bootstrap", {})
 
     assert result["model"] == "fake-model"
+    assert result["provider"] == "anthropic"
+    assert result["api_format"] == "messages"
     assert result["context_window_tokens"] == 1_000_000
     assert result["capabilities"]["file_download"] is True
     assert result["capabilities"]["git_workspace"] is True

@@ -17,7 +17,7 @@ flowchart LR
     R -->|"本地 Runner 主动轮询"| L["本机 Runner"]
     L --> W["CLI 已登记的 Workspace"]
     L --> A["Agent Runtime"]
-    A --> M["OpenAI-compatible 多模态模型"]
+    A --> M["Anthropic Messages（默认）或<br/>Chat Completions 多模态模型"]
     A -. "后台批量上报" .-> F["Langfuse"]
     L -. "轮转 JSONL" .-> D["本地诊断日志"]
 ```
@@ -33,10 +33,14 @@ flowchart LR
 4. Runner 用 `workspace_id` 调用 `WorkspaceRegistry.resolve()`，只允许 CLI 已登记且仍存在的目录。
 5. `prepare_attachments()` 把附件写入所选项目的
    `.autocode/uploads/<client>/<batch>/`；该目录自动加入 `.autocode/.gitignore`。
-6. 图片同时转换为 Chat Completions 兼容的 `image_url` Data URL，直接进入用户消息；
-   普通文件把本地相对路径告诉 Agent，由统一的 `read` 工具读取。
+6. 图片进入规范化会话后按当前 Provider 序列化：默认 Messages 协议使用原生
+   `image` block；Chat Completions 兼容模式使用 `image_url` Data URL。普通文件
+   把本地相对路径告诉 Agent，由统一的 `read` 工具读取。
 7. `RemoteManager` 驱动 Agent 循环。模型还可以调用 `read`，把工作区已有的
-   PNG、JPEG、WEBP 或 GIF 作为视觉内容送回下一轮模型。
+   PNG、JPEG、WEBP 或 GIF 作为视觉内容送回下一轮模型。Messages 模式把图片直接
+   放入对应的 `tool_result`；Chat Completions 因 `tool` 消息不能携带图片，才生成
+   临时的兼容 user carrier。该兼容结构只属于显式 Chat Completions 请求，既不会
+   出现在 Messages 请求中，也不会写入会话、CLI 或 Web UI。
 8. 首 Token、后续 Token、工具开始/结束和持久化等事件从 Runner 回传 Relay，
    再由 SSE 实时推送到手机。
 9. 官方 Langfuse Python SDK 按 `agent → (generation / tool / generation …)` 层级记录一次
