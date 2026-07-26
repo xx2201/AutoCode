@@ -68,10 +68,6 @@ class Agent:
         self.tools: list[Tool] = []
         self.tool_registry: dict[str, Tool] = {}
         self.messages: list[dict] = []
-        # Multimodal tool results belong to the active turn only. Persisting the
-        # base64 payloads pollutes later turns and makes presentation clients
-        # render model-only image carriers as user messages.
-        self._active_model_content: list[tuple[str, dict]] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
         self._last_prompt_tokens = 0
         self.max_rounds = max_rounds
@@ -167,22 +163,82 @@ class Agent:
 
     def _request_messages(self) -> list[dict]:
         self._sync_mcp_tools()
-        messages = [{"role": "system", "content": self._build_static_system_prompt()}] + self.messages
+        messages = [
+            {"role": "system", "content": self._build_static_system_prompt()},
+            *self._project_model_history(self.messages),
+        ]
         runtime_tail = self._build_runtime_tail()
         if runtime_tail:
             messages.append({"role": "user", "content": runtime_tail})
-        if self._active_model_content:
-            labels = ", ".join(dict.fromkeys(name for name, _ in self._active_model_content))
-            messages.append(
+        return messages
+
+    @classmethod
+    def _project_model_history(cls, history: list[dict]) -> list[dict]:
+        """Translate canonical history into strict Chat Completions messages.
+
+        Canonical tool results retain their typed visual content and call id, matching
+        Claude's tool_use/tool_result history. Chat Completions cannot place images in
+        a tool message, so the compatibility user carrier is produced only in this
+        request projection and never enters checkpoints, transcripts, CLI, or Web UI.
+        """
+        projected: list[dict] = []
+        pending_media: list[tuple[str, dict]] = []
+
+        def flush_tool_media() -> None:
+            if not pending_media:
+                return
+            labels = ", ".join(dict.fromkeys(source for source, _ in pending_media))
+            unique: list[dict] = []
+            identities: set[tuple[str, str]] = set()
+            for _, item in pending_media:
+                identity = cls._model_content_identity(item)
+                if identity in identities:
+                    continue
+                identities.add(identity)
+                unique.append(dict(item))
+            projected.append(
                 {
                     "role": "user",
                     "content": user_content(
-                        f"Visual content available for the current turn: {labels}.",
-                        [item for _, item in self._active_model_content],
+                        f"Visual content returned by tools: {labels}.",
+                        unique,
                     ),
                 }
             )
-        return messages
+            pending_media.clear()
+
+        for message in history:
+            if is_internal_visual_context(message.get("content")):
+                continue
+            role = message.get("role")
+            if role not in {"system", "user", "assistant", "tool"}:
+                continue
+            if role != "tool":
+                flush_tool_media()
+
+            allowed = {
+                "system": ("role", "content", "name"),
+                "user": ("role", "content", "name"),
+                "assistant": ("role", "content", "name", "tool_calls"),
+                "tool": ("role", "content", "tool_call_id"),
+            }[role]
+            wire_message = {key: message[key] for key in allowed if key in message}
+            wire_message.setdefault("content", "")
+
+            model_content = message.get("model_content") or []
+            if role == "user" and model_content:
+                wire_message["content"] = user_content(
+                    str(message.get("content", "")),
+                    [dict(item) for item in model_content],
+                )
+            projected.append(wire_message)
+
+            if role == "tool" and model_content:
+                source = str(message.get("tool_name") or "tool")
+                pending_media.extend((source, dict(item)) for item in model_content)
+
+        flush_tool_media()
+        return projected
 
     @staticmethod
     def _serialize_tool_call(tool_call: ToolCall) -> dict:
@@ -303,39 +359,27 @@ class Agent:
 
     def _append_tool_result(self, tool_call: ToolCall, result: str | ToolResult) -> str:
         text = result.text if isinstance(result, ToolResult) else result
-        self._append_message(
-            {
-                "role": "tool",
-                "tool_call_id": tool_call.id,
-                "tool_name": tool_call.name,
-                "tool_arguments": tool_call.arguments,
-                "content": text,
-            }
-        )
+        message = {
+            "role": "tool",
+            "tool_call_id": tool_call.id,
+            "tool_name": tool_call.name,
+            "tool_arguments": tool_call.arguments,
+            "content": text,
+        }
         if isinstance(result, ToolResult) and result.model_content:
-            self._remember_model_content(tool_call.name, result.model_content)
+            message["model_content"] = [dict(item) for item in result.model_content]
+        self._append_message(message)
         return text
 
-    def _remember_model_content(self, source: str, items: list[dict]) -> None:
-        """Keep unique visual parts in memory for the current turn only."""
-        for item in items:
-            identity = self._model_content_identity(item)
-            if any(
-                self._model_content_identity(existing) == identity
-                for _, existing in self._active_model_content
-            ):
-                continue
-            self._active_model_content.append((source, dict(item)))
-
     @staticmethod
-    def _model_content_identity(item: dict):
+    def _model_content_identity(item: dict) -> tuple[str, str]:
         part_type = item.get("type")
         image = item.get("image_url")
         if isinstance(image, dict):
-            return part_type, image.get("url")
+            return str(part_type), str(image.get("url", ""))
         if part_type in {"image_url", "input_image"}:
-            return part_type, image or item.get("url")
-        return item
+            return str(part_type), str(image or item.get("url", ""))
+        return str(part_type), repr(item)
 
     def _maybe_compress_messages(self):
         effective_used = self.context.effective_used(
@@ -460,9 +504,6 @@ class Agent:
                 f"{pending.tool_name} - use /approve or /reject first)"
             )
 
-        self._active_model_content.clear()
-        if image_parts:
-            self._remember_model_content("user upload", image_parts)
         session = self._ensure_session()
         if not session.title:
             session.title = (user_input.strip().splitlines() or ["上传文件会话"])[0][:120]
@@ -489,13 +530,14 @@ class Agent:
                 user_message = {"role": "user", "content": message_content}
                 if attachments:
                     user_message["attachments"] = list(attachments)
+                if image_parts:
+                    user_message["model_content"] = [dict(item) for item in image_parts]
                 self._append_message(user_message)
                 self.hooks.emit("user_message", self._event_payload(content_preview=user_input[:200]))
                 self._maybe_compress_messages()
                 self.persist_session()
                 response = self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
             except Exception as exc:
-                self._active_model_content.clear()
                 self._record_turn_error(observation, exc)
                 raise
             self._finalize_turn_trace(observation, response)
@@ -573,7 +615,6 @@ class Agent:
             for message in messages
             if not is_internal_visual_context(message.get("content"))
         ]
-        self._active_model_content.clear()
         self._last_prompt_tokens = max(0, session_state.context_used_tokens)
         if model:
             self.llm.model = model
@@ -598,7 +639,6 @@ class Agent:
 
             if not resp.tool_calls:
                 self._append_message(resp.message)
-                self._active_model_content.clear()
                 if hasattr(self.llm, "_call_with_retry"):
                     self.memory.schedule_project_memory_refresh(self.messages, self.llm, force=True)
                 self.task_state.mark_completed()
@@ -617,7 +657,6 @@ class Agent:
             self.persist_session()
 
         summary = self._summarize_round_limit(on_token=on_token)
-        self._active_model_content.clear()
         self._append_message({"role": "assistant", "content": summary})
         self.task_state.mark_failed("reached maximum tool-call rounds")
         self.hooks.emit(
@@ -763,11 +802,9 @@ class Agent:
     def reset(self):
         self.close(shutdown_observability=False)
         self.messages.clear()
-        self._active_model_content.clear()
         self.session_state = None
 
     def close(self, *, shutdown_observability: bool = True):
-        self._active_model_content.clear()
         try:
             self.processes.cleanup_all(include_persistent=True)
         except Exception:

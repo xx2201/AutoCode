@@ -1,4 +1,5 @@
 import base64
+import io
 import types
 
 from PIL import Image
@@ -77,7 +78,7 @@ def test_uploaded_image_reaches_the_model_and_workspace(tmp_path):
     assert user_message["content"][1]["type"] == "image_url"
     assert agent.messages[0]["content"] == prepared.prompt
     assert not any(isinstance(message.get("content"), list) for message in agent.messages)
-    assert captured[0]["messages"][-1] is user_message
+    assert captured[0]["messages"].index(user_message) < len(captured[0]["messages"]) - 1
 
 
 def test_read_tool_feeds_workspace_image_into_next_model_round(tmp_path):
@@ -111,10 +112,39 @@ def test_read_tool_feeds_workspace_image_into_next_model_round(tmp_path):
         if item.get("role") == "user" and isinstance(item.get("content"), list)
     )
     assert visual_message["content"][1]["type"] == "image_url"
-    assert visual_message["content"][1]["image_url"]["url"].startswith(
-        "data:image/jpeg;base64,"
+    image_url = visual_message["content"][1]["image_url"]["url"]
+    assert image_url.startswith(
+        "data:image/png;base64,"
     )
-    assert not any(isinstance(message.get("content"), list) for message in agent.messages)
+    assert base64.b64decode(image_url.split(",", 1)[1]) == image_path.read_bytes()
+    stored_tool_result = next(
+        message
+        for message in agent.messages
+        if message.get("role") == "tool" and message.get("tool_call_id") == "call_image"
+    )
+    assert stored_tool_result["model_content"][0]["type"] == "image_url"
+    assert not any(
+        message.get("role") == "user" and isinstance(message.get("content"), list)
+        for message in agent.messages
+    )
+
+
+def test_read_tool_downscales_oversized_image(tmp_path):
+    image_path = tmp_path / "wide.png"
+    Image.new("RGB", (2_400, 100), "red").save(image_path)
+    agent = Agent(
+        llm=LLM(model="vision-model", api_key="sk-test"),
+        tools=[ReadTool()],
+        workspace_root=str(tmp_path),
+    )
+
+    result = agent.tool_registry["read"].execute(file_path="wide.png", detail="high")
+
+    assert hasattr(result, "model_content")
+    image_url = result.model_content[0]["image_url"]["url"]
+    with Image.open(io.BytesIO(base64.b64decode(image_url.split(",", 1)[1]))) as resized:
+        assert resized.width == 2_000
+        assert resized.height < 100
 
 
 def test_all_parallel_tool_results_precede_visual_user_message(tmp_path):
@@ -182,7 +212,7 @@ def test_all_parallel_tool_results_precede_visual_user_message(tmp_path):
     assert text_tool_index < visual_user_index
 
 
-def test_repeated_read_keeps_one_ephemeral_image_for_current_turn(tmp_path):
+def test_repeated_read_keeps_tool_identity_and_one_image_per_wire_result(tmp_path):
     Image.new("RGB", (4, 4), "red").save(tmp_path / "diagram.png")
 
     class RepeatingReadLLM:
@@ -220,9 +250,89 @@ def test_repeated_read_keeps_one_ephemeral_image_for_current_turn(tmp_path):
         for message in llm.calls[-1]
         if isinstance(message.get("content"), list)
     ]
-    assert len(final_visual) == 1
-    assert len(final_visual[0]["content"]) == 2
-    assert not any(isinstance(message.get("content"), list) for message in agent.messages)
+    assert len(final_visual) == 2
+    assert all(len(message["content"]) == 2 for message in final_visual)
+    stored_results = [
+        message
+        for message in agent.messages
+        if message.get("role") == "tool" and message.get("model_content")
+    ]
+    assert [message["tool_call_id"] for message in stored_results] == ["image-1", "image-2"]
+
+
+def test_completed_turn_image_remains_available_to_follow_up(tmp_path):
+    Image.new("RGB", (4, 4), "red").save(tmp_path / "diagram.png")
+
+    class FollowUpLLM:
+        model = "vision-model"
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_cache_read_tokens = 0
+        total_cache_miss_tokens = 0
+
+        def __init__(self):
+            self.calls = []
+
+        def chat(self, messages, tools=None, on_token=None):
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                return LLMResponse(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            id="image-1",
+                            name="read",
+                            arguments={"file_path": "diagram.png"},
+                        )
+                    ],
+                )
+            if len(self.calls) == 2:
+                return LLMResponse(content="first answer")
+            return LLMResponse(content="follow-up answer")
+
+    llm = FollowUpLLM()
+    agent = Agent(llm=llm, tools=[ReadTool()], workspace_root=str(tmp_path))
+    agent.memory.schedule_project_memory_refresh = lambda *args, **kwargs: None
+
+    assert agent.chat("inspect image") == "first answer"
+    assert agent.chat("look at the same image again") == "follow-up answer"
+
+    follow_up_images = [
+        part
+        for message in llm.calls[-1]
+        if isinstance(message.get("content"), list)
+        for part in message["content"]
+        if part.get("type") == "image_url"
+    ]
+    assert len(follow_up_images) == 1
+
+
+def test_model_projection_strips_presentation_metadata(tmp_path):
+    agent = Agent(
+        llm=LLM(model="vision-model", api_key="sk-test"),
+        tools=[],
+        workspace_root=str(tmp_path),
+    )
+    agent.messages = [
+        {
+            "role": "user",
+            "content": "describe upload",
+            "attachments": [{"name": "screen.png", "media_type": "image/png", "size": 3}],
+            "turn_id": "turn-1",
+            "model_content": [
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc", "detail": "auto"},
+                }
+            ],
+        }
+    ]
+
+    request_user = agent._request_messages()[1]
+
+    assert set(request_user) == {"role", "content"}
+    assert request_user["content"][0] == {"type": "text", "text": "describe upload"}
+    assert request_user["content"][1]["type"] == "image_url"
 
 
 def test_restore_removes_legacy_tool_visual_carriers(tmp_path):
