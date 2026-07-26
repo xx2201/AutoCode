@@ -74,11 +74,14 @@ def test_uploaded_image_reaches_the_model_and_workspace(tmp_path):
         for item in captured[0]["messages"]
         if item.get("role") == "user" and isinstance(item.get("content"), list)
     )
-    assert user_message["content"][0]["type"] == "text"
-    assert user_message["content"][1]["type"] == "image_url"
+    assert any(
+        part.get("type") == "text" and part.get("text") == prepared.prompt
+        for part in user_message["content"]
+    )
+    assert user_message["content"][-1]["type"] == "image_url"
     assert agent.messages[0]["content"] == prepared.prompt
     assert not any(isinstance(message.get("content"), list) for message in agent.messages)
-    assert captured[0]["messages"].index(user_message) < len(captured[0]["messages"]) - 1
+    assert captured[0]["messages"].index(user_message) == len(captured[0]["messages"]) - 1
 
 
 def test_read_tool_feeds_workspace_image_into_next_model_round(tmp_path):
@@ -111,8 +114,8 @@ def test_read_tool_feeds_workspace_image_into_next_model_round(tmp_path):
         for item in second_round
         if item.get("role") == "user" and isinstance(item.get("content"), list)
     )
-    assert visual_message["content"][1]["type"] == "image_url"
-    image_url = visual_message["content"][1]["image_url"]["url"]
+    assert visual_message["content"][-1]["type"] == "image_url"
+    image_url = visual_message["content"][-1]["image_url"]["url"]
     assert image_url.startswith(
         "data:image/png;base64,"
     )
@@ -251,7 +254,11 @@ def test_repeated_read_keeps_tool_identity_and_one_image_per_wire_result(tmp_pat
         if isinstance(message.get("content"), list)
     ]
     assert len(final_visual) == 2
-    assert all(len(message["content"]) == 2 for message in final_visual)
+    assert all(
+        sum(part.get("type") == "image_url" for part in message["content"]) == 1
+        for message in final_visual
+    )
+    assert final_visual[-1]["content"][-1]["type"] == "image_url"
     stored_results = [
         message
         for message in agent.messages
@@ -333,6 +340,51 @@ def test_model_projection_strips_presentation_metadata(tmp_path):
     assert set(request_user) == {"role", "content"}
     assert request_user["content"][0] == {"type": "text", "text": "describe upload"}
     assert request_user["content"][1]["type"] == "image_url"
+
+
+def test_runtime_state_stays_inside_the_final_multimodal_message(tmp_path):
+    agent = Agent(
+        llm=LLM(model="vision-model", api_key="sk-test"),
+        tools=[],
+        workspace_root=str(tmp_path),
+    )
+    agent._ensure_task("inspect image")
+    agent.messages = [
+        {"role": "user", "content": "inspect the image"},
+        {
+            "role": "tool",
+            "tool_call_id": "image-1",
+            "tool_name": "read",
+            "content": "Loaded image",
+            "model_content": [
+                {
+                    "type": "image_url",
+                    "image_url": {
+                        "url": "data:image/png;base64,abc",
+                        "detail": "high",
+                    },
+                }
+            ],
+        },
+    ]
+
+    request_messages = agent._request_messages()
+
+    final_message = request_messages[-1]
+    assert final_message["role"] == "user"
+    assert isinstance(final_message["content"], list)
+    assert final_message["content"][0]["type"] == "text"
+    assert "[Runtime state for this turn." in final_message["content"][0]["text"]
+    assert final_message["content"][1] == {
+        "type": "text",
+        "text": "Visual content returned by tools: read.",
+    }
+    assert final_message["content"][-1]["type"] == "image_url"
+    assert not any(
+        isinstance(message.get("content"), str)
+        and "[Runtime state for this turn." in message["content"]
+        for message in request_messages[:-1]
+    )
 
 
 def test_restore_removes_legacy_tool_visual_carriers(tmp_path):

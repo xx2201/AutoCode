@@ -176,7 +176,25 @@ class Agent:
         ]
         runtime_tail = self._build_runtime_tail()
         if runtime_tail:
-            messages.append({"role": "user", "content": runtime_tail})
+            final_message = messages[-1]
+            final_content = final_message.get("content")
+            has_visual_content = (
+                final_message.get("role") == "user"
+                and isinstance(final_content, list)
+                and any(
+                    isinstance(part, dict)
+                    and part.get("type") in {"image_url", "input_image"}
+                    for part in final_content
+                )
+            )
+            if has_visual_content:
+                # 保持图片为最后一个用户输入的一部分，避免兼容网关忽略较早的视觉消息。
+                final_message["content"] = [
+                    {"type": "text", "text": runtime_tail},
+                    *final_content,
+                ]
+            else:
+                messages.append({"role": "user", "content": runtime_tail})
         return messages
 
     @classmethod
