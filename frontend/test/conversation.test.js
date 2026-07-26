@@ -83,3 +83,26 @@ test("shows the web search query in the work item title", () => {
     "Searched the web · latest Python release",
   );
 });
+
+test("does not render legacy model-only visual context as a user turn", () => {
+  const turns = groupConversation([
+    { role: "user", content: "这张图是什么？" },
+    {
+      role: "assistant",
+      content: "我来读取图片。",
+      tool_calls: [{ id: "read-1", name: "read", arguments: { file_path: "screen.png" } }],
+    },
+    {
+      role: "tool",
+      content: "Loaded image for visual inspection",
+      tool_call_id: "read-1",
+      tool_name: "read",
+    },
+    { role: "user", content: "Visual content loaded by tools: read.\n[image]" },
+    { role: "assistant", content: "图片里是 Apple Gift Card。" },
+  ]);
+
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].user.content, "这张图是什么？");
+  assert.equal(turns[0].answer.content, "图片里是 Apple Gift Card。");
+});

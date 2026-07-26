@@ -13,10 +13,17 @@ from ..agent import Agent
 from ..attachments import prepare_attachments
 from ..config import Config
 from ..llm import LLM, LiteLLM
-from ..message_content import content_text
+from ..message_content import content_text, is_internal_visual_context
 from ..mcp import get_shared_mcp_manager
 from ..observability import LangfuseTracer
-from ..state import delete_session, format_trace, list_sessions, load_checkpoint, load_trace
+from ..state import (
+    delete_session,
+    format_trace,
+    list_sessions,
+    load_checkpoint,
+    load_trace,
+    load_transcript_messages,
+)
 from ..tools.factory import build_agent_tools
 
 _PRESENTATION_ARGUMENT_KEYS = (
@@ -127,6 +134,7 @@ class RemoteManager:
                     on_token=on_token,
                     on_tool=on_tool,
                     image_parts=prepared.image_parts,
+                    attachments=prepared.files,
                 )
             self._annotate_turn(
                 runtime.agent,
@@ -178,16 +186,21 @@ class RemoteManager:
             self._shared_tracer.shutdown()
         self._mcp_manager.close()
 
-    def conversation_messages(self, chat_id: Hashable, limit: int = 100) -> list[dict]:
+    def conversation_messages(self, chat_id: Hashable, limit: int | None = None) -> list[dict]:
         """Return a presentation-safe snapshot of the current conversation."""
         runtime = self._require_runtime(chat_id)
         with runtime.lock:
             messages = []
             tool_calls: dict[str, dict] = {}
-            for message in runtime.agent.messages[-max(1, limit):]:
+            source_messages = self._presentation_source_messages(runtime.agent)
+            if limit is not None:
+                source_messages = source_messages[-max(1, limit):]
+            for message in source_messages:
                 role = message.get("role", "")
                 raw_content = message.get("content", "")
                 if role not in {"user", "assistant", "tool"}:
+                    continue
+                if is_internal_visual_context(raw_content):
                     continue
                 safe_tool_calls = []
                 if role == "assistant":
@@ -231,9 +244,58 @@ class RemoteManager:
                         "changed_files": self._presentation_changed_files(
                             message.get("changed_files")
                         ),
+                        "attachments": self._presentation_attachments(
+                            message.get("attachments")
+                        ),
                     }
                 )
             return messages
+
+    @staticmethod
+    def _presentation_source_messages(agent: Agent) -> list[dict]:
+        """Use the raw transcript for UI history, retaining checkpoint metadata."""
+        current = list(agent.messages)
+        if agent.session_state is None:
+            return current
+        transcript = load_transcript_messages(agent.session_state.session_id)
+        if len(transcript) <= len(current):
+            return current
+
+        metadata_by_content: dict[str, list[dict]] = {}
+        for message in current:
+            if message.get("role") != "user":
+                continue
+            key = content_text(message.get("content", ""), include_media_labels=False)
+            metadata_by_content.setdefault(key, []).append(message)
+
+        restored = [dict(message) for message in transcript]
+        for message in reversed(restored):
+            if message.get("role") != "user":
+                continue
+            key = content_text(message.get("content", ""), include_media_labels=False)
+            matches = metadata_by_content.get(key)
+            if not matches:
+                continue
+            current_message = matches.pop()
+            for field in ("turn_id", "turn_elapsed_ms", "changed_files", "attachments"):
+                if field in current_message:
+                    message[field] = current_message[field]
+        return restored
+
+    @staticmethod
+    def _presentation_attachments(items) -> list[dict]:
+        safe = []
+        for item in items or []:
+            if not isinstance(item, dict):
+                continue
+            safe.append(
+                {
+                    "name": str(item.get("name", ""))[:180],
+                    "media_type": str(item.get("media_type", "application/octet-stream"))[:120],
+                    "size": max(0, int(item.get("size", 0) or 0)),
+                }
+            )
+        return safe
 
     def annotate_turn_changes(self, chat_id: Hashable, changed_files: list[dict]) -> None:
         """Persist Git changes on the latest user turn for presentation clients."""
