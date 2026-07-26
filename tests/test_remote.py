@@ -92,6 +92,31 @@ def test_remote_manager_can_resume_checkpoint(tmp_path, monkeypatch):
     assert resumed.context_used_tokens == 125
 
 
+def test_remote_manager_resume_uses_current_configured_model(tmp_path, monkeypatch):
+    sessions_dir = tmp_path / "sessions"
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", sessions_dir)
+    checkpoint_module.save_checkpoint(
+        SessionState(session_id="session_legacy_model", title="legacy conversation"),
+        [{"role": "user", "content": "earlier message"}],
+        "gpt-5.5",
+        workspace_root=str(tmp_path),
+    )
+    llm = _FakeLLM([LLMResponse(content="continued with current model")])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
+
+    resumed = manager.resume_session(202, "session_legacy_model")
+    continued = manager.submit(202, "continue the old conversation")
+
+    assert resumed.session_id == "session_legacy_model"
+    assert llm.model == "fake-model"
+    assert continued.text == "continued with current model"
+    loaded = checkpoint_module.load_checkpoint("session_legacy_model")
+    assert loaded is not None
+    _, messages, saved_model = loaded
+    assert messages[-1]["content"] == "continued with current model"
+    assert saved_model == "fake-model"
+
+
 def test_remote_manager_deletes_saved_and_active_session(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
     manager = RemoteManager(

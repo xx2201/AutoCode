@@ -386,11 +386,11 @@ class RemoteManager:
         if loaded is None:
             raise ValueError(f"Session '{session_id}' not found.")
 
-        session_state, messages, model = loaded
+        session_state, messages, _saved_model = loaded
         runtime = self._get_or_create_runtime(chat_id, replace=True)
         with runtime.lock:
-            runtime.agent.restore_session(session_state, messages, model)
-            runtime.agent.llm.model = model
+            # 远程会话恢复历史上下文，但始终使用当前 Runner 配置的模型。
+            runtime.agent.restore_session(session_state, messages)
             current_task = session_state.current_task
             status = current_task.status if current_task else "idle"
             return self._result_from_agent(
