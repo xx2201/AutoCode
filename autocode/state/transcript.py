@@ -25,6 +25,13 @@ class TranscriptLogger:
     def append_compaction(self, session_id: str, payload: dict):
         self._append_entry(session_id, {"timestamp": _now(), "kind": "compact", "payload": payload})
 
+    def append_turn_superseded(self, session_id: str, payload: dict):
+        """Record an edit without mutating the original transcript messages."""
+        self._append_entry(
+            session_id,
+            {"timestamp": _now(), "kind": "turn_superseded", "payload": payload},
+        )
+
     def _append_entry(self, session_id: str, entry: dict):
         directory = session_dir(session_id)
         directory.mkdir(parents=True, exist_ok=True)

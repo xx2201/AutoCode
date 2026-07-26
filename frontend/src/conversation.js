@@ -152,3 +152,36 @@ export function mergeWorkEvent(items, event) {
       : item
   ));
 }
+
+export function latestCompletedTurnId(turns, busy = false) {
+  if (busy) return "";
+  for (let index = turns.length - 1; index >= 0; index -= 1) {
+    const turn = turns[index];
+    if (turn.user && turn.answer) return turn.id;
+  }
+  return "";
+}
+
+export function createPendingInput(prompt, mode, id) {
+  return {
+    id,
+    prompt: String(prompt || "").trim(),
+    mode: mode === "queue" ? "queue" : "steer",
+    status: "sending",
+  };
+}
+
+export function settlePendingInput(items, id, status, detail = "") {
+  return items.map((item) => (
+    item.id === id ? { ...item, status, detail } : item
+  ));
+}
+
+export function normalizeChangeAction(result, action) {
+  const state = result.state || result.status || (action === "undo" ? "undone" : "applied");
+  return {
+    state,
+    conflict: Boolean(result.conflict),
+    detail: result.conflict_reason || result.detail || result.message || "",
+  };
+}

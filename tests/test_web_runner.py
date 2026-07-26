@@ -1,4 +1,5 @@
 import base64
+import subprocess
 from dataclasses import replace
 
 import pytest
@@ -30,7 +31,7 @@ class _FakeManager:
     def list_resume_candidates(self, limit=10):
         return [{"session_id": "session_1"}][:limit]
 
-    def submit(self, client_id, prompt):
+    def submit(self, client_id, prompt, hook_handler=None, on_token=None, attachments=None):
         self.calls.append(("chat", client_id, prompt))
         return self.result
 
@@ -206,6 +207,76 @@ def test_runner_executes_chat_and_approval_in_selected_workspace(tmp_path):
     assert approval["text"] == "approved"
     assert ("chat", "web_12345678", "inspect project") in manager.calls
     assert ("approval", "web_12345678", True, True) in manager.calls
+
+
+def test_runner_captures_undo_and_reapply_for_one_turn(tmp_path, monkeypatch):
+    from autocode.state.changes import ChangeSetStore as RealChangeSetStore
+
+    runner, workspace, _ = _runner(tmp_path)
+    project = tmp_path / "project-a"
+    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+    (project / "seed.txt").write_text("seed\n", encoding="utf-8")
+    subprocess.run(["git", "add", "seed.txt"], cwd=project, check=True)
+    subprocess.run(
+        [
+            "git",
+            "-c",
+            "user.name=AutoCode Test",
+            "-c",
+            "user.email=autocode@example.invalid",
+            "commit",
+            "-m",
+            "seed",
+        ],
+        cwd=project,
+        check=True,
+        capture_output=True,
+    )
+    changes_root = tmp_path / "turn-changes"
+    monkeypatch.setattr(
+        "autocode.web.runner.ChangeSetStore",
+        lambda root, session_id: RealChangeSetStore(
+            root,
+            session_id,
+            changes_root=changes_root,
+        ),
+    )
+    manager = runner._manager(workspace.workspace_id)
+    manager.current_session_id = lambda client_id: "session_1"
+
+    def submit(client_id, prompt, hook_handler=None, on_token=None):
+        hook_handler(
+            "turn_started",
+            {
+                "session_id": "session_1",
+                "task_id": "task_1",
+                "revision_id": "revision_1",
+            },
+        )
+        (project / "created.txt").write_text("created\n", encoding="utf-8")
+        return manager.result
+
+    manager.submit = submit
+    payload = {
+        "workspace_id": workspace.workspace_id,
+        "client_id": "web_12345678",
+    }
+    chat = runner.execute("chat", {**payload, "prompt": "create it"})
+
+    assert chat["changed_files"][0]["turn_id"] == "task_1"
+    assert chat["changed_files"][0]["can_undo"] is True
+    undone = runner.execute(
+        "change_action",
+        {**payload, "turn_id": "task_1", "change_action": "undo"},
+    )
+    assert undone["state"] == "undone"
+    assert not (project / "created.txt").exists()
+    reapplied = runner.execute(
+        "change_action",
+        {**payload, "turn_id": "task_1", "change_action": "reapply"},
+    )
+    assert reapplied["state"] == "applied"
+    assert (project / "created.txt").read_text(encoding="utf-8") == "created\n"
 
 
 def test_runner_converts_tool_hooks_to_work_events(tmp_path):

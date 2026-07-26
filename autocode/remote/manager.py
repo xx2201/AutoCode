@@ -22,7 +22,8 @@ from ..state import (
     list_sessions,
     load_checkpoint,
     load_trace,
-    load_transcript_messages,
+    load_transcript_entries,
+    save_turn_queue,
 )
 from ..tools.factory import build_agent_tools
 
@@ -77,6 +78,7 @@ class RemoteManager:
     """Owns one in-memory agent session per remote chat."""
 
     _HOOK_EVENTS = (
+        "turn_started",
         "before_llm",
         "after_llm",
         "context_compaction",
@@ -135,6 +137,7 @@ class RemoteManager:
                     on_tool=on_tool,
                     image_parts=prepared.image_parts,
                     attachments=prepared.files,
+                    raw_user_prompt=prompt,
                 )
             self._annotate_turn(
                 runtime.agent,
@@ -142,6 +145,106 @@ class RemoteManager:
                 round((time.monotonic() - started_at) * 1000, 1),
             )
             return self._result_from_agent(runtime.agent, reply)
+
+    def edit_last_turn(
+        self,
+        chat_id: Hashable,
+        turn_id: str,
+        prompt: str,
+        hook_handler=None,
+        attachments: list[dict] | None = None,
+        on_token=None,
+        on_tool=None,
+    ) -> RemoteTurnResult:
+        """Edit and rerun only the last completed turn in the same session."""
+        runtime = self._require_runtime(chat_id)
+        with runtime.lock:
+            started_at = time.monotonic()
+            prepared = prepare_attachments(
+                self.config.workspace_root,
+                str(chat_id),
+                prompt,
+                attachments,
+            )
+            with self._temporary_hook(runtime.agent, hook_handler):
+                reply = runtime.agent.edit_last_turn(
+                    turn_id,
+                    prepared.prompt,
+                    on_token=on_token,
+                    on_tool=on_tool,
+                    approval_handler=None,
+                    image_parts=prepared.image_parts,
+                    attachments=prepared.files,
+                    raw_user_prompt=prompt,
+                )
+            self._annotate_turn(
+                runtime.agent,
+                0,
+                round((time.monotonic() - started_at) * 1000, 1),
+            )
+            return self._result_from_agent(runtime.agent, reply)
+
+    def steer(
+        self,
+        chat_id: Hashable,
+        expected_turn_id: str,
+        prompt: str,
+        message_id: str | None = None,
+    ) -> dict:
+        """Inject guidance into an active turn without waiting for the agent lock."""
+        runtime = self._require_runtime(chat_id)
+        item = runtime.agent.turn_controller.steer(
+            prompt,
+            expected_turn_id=expected_turn_id,
+            message_id=message_id,
+        )
+        return {"mode": "steer", **item.to_dict()}
+
+    def enqueue_followup(
+        self,
+        chat_id: Hashable,
+        expected_turn_id: str,
+        prompt: str,
+        message_id: str | None = None,
+    ) -> dict:
+        """Add one FIFO follow-up while an expected turn is active."""
+        runtime = self._require_runtime(chat_id)
+        item = runtime.agent.turn_controller.queue(
+            prompt,
+            expected_turn_id=expected_turn_id,
+            message_id=message_id,
+        )
+        self._persist_turn_queue(runtime)
+        return {"mode": "queue", **item.to_dict()}
+
+    def queued_followups(self, chat_id: Hashable) -> list[dict]:
+        runtime = self._require_runtime(chat_id)
+        return [item.to_dict() for item in runtime.agent.turn_controller.queued()]
+
+    def update_queued_followup(self, chat_id: Hashable, message_id: str, prompt: str) -> dict:
+        runtime = self._require_runtime(chat_id)
+        item = runtime.agent.turn_controller.update_queued(message_id, prompt)
+        self._persist_turn_queue(runtime)
+        return item.to_dict()
+
+    def delete_queued_followup(self, chat_id: Hashable, message_id: str) -> None:
+        runtime = self._require_runtime(chat_id)
+        runtime.agent.turn_controller.delete_queued(message_id)
+        self._persist_turn_queue(runtime)
+
+    def pop_queued_followup(self, chat_id: Hashable):
+        runtime = self._require_runtime(chat_id)
+        item = runtime.agent.turn_controller.pop_queued()
+        self._persist_turn_queue(runtime)
+        return item
+
+    @staticmethod
+    def _persist_turn_queue(runtime: _ChatRuntime) -> None:
+        session = runtime.agent.session_state
+        if session is None:
+            raise ValueError("No active session.")
+        queued_inputs = [item.to_dict() for item in runtime.agent.turn_controller.queued()]
+        save_turn_queue(session.session_id, queued_inputs)
 
     def resolve_approval(
         self,
@@ -220,13 +323,16 @@ class RemoteManager:
                         safe_tool_calls.append(tool_call)
                         if tool_call_id:
                             tool_calls[tool_call_id] = tool_call
-                content = content_text(raw_content)
+                content = content_text(message.get("raw_prompt", raw_content))
                 tool_call_id = str(message.get("tool_call_id", ""))
                 known_tool = tool_calls.get(tool_call_id, {})
                 messages.append(
                     {
                         "role": role,
                         "content": content[:20_000],
+                        "message_id": str(message.get("message_id", "")),
+                        "message_kind": str(message.get("message_kind", role)),
+                        "revision_id": str(message.get("revision_id", "")),
                         "tool_call_id": tool_call_id,
                         "tool_name": str(
                             message.get("tool_name")
@@ -257,7 +363,25 @@ class RemoteManager:
         current = list(agent.messages)
         if agent.session_state is None:
             return current
-        transcript = load_transcript_messages(agent.session_state.session_id)
+        entries = load_transcript_entries(agent.session_state.session_id)
+        superseded_turns = {
+            str(entry.get("payload", {}).get("superseded_turn_id", ""))
+            for entry in entries
+            if entry.get("kind") == "turn_superseded"
+        }
+        transcript = [
+            entry["message"]
+            for entry in entries
+            if entry.get("kind") == "message"
+            and "message" in entry
+            and str(entry["message"].get("turn_id", "")) not in superseded_turns
+        ]
+        if superseded_turns and any(
+            not str(entry["message"].get("turn_id", ""))
+            for entry in entries
+            if entry.get("kind") == "message" and "message" in entry
+        ):
+            return current
         if len(transcript) <= len(current):
             return current
 
@@ -309,6 +433,11 @@ class RemoteManager:
                     message
                     for message in reversed(runtime.agent.messages)
                     if message.get("role") == "user"
+                    and message.get("message_kind", "prompt") == "prompt"
+                    and (
+                        runtime.agent.task_state is None
+                        or message.get("turn_id") == runtime.agent.task_state.task_id
+                    )
                 ),
                 None,
             )
@@ -323,6 +452,14 @@ class RemoteManager:
             merged.update({item["path"]: item for item in safe_changes})
             user_message["changed_files"] = list(merged.values())[:200]
             runtime.agent.persist_session()
+
+    def current_session_id(self, chat_id: Hashable) -> str:
+        """Return the active session identity used by persisted per-turn artifacts."""
+        runtime = self._require_runtime(chat_id)
+        with runtime.lock:
+            if runtime.agent.session_state is None:
+                raise ValueError("No active session.")
+            return runtime.agent.session_state.session_id
 
     @staticmethod
     def _presentation_changed_files(value: object) -> list[dict]:
@@ -341,14 +478,19 @@ class RemoteManager:
             except (TypeError, ValueError):
                 additions = 0
                 deletions = 0
-            files.append(
-                {
-                    "path": path,
-                    "status": str(item.get("status", "modified"))[:32],
-                    "additions": additions,
-                    "deletions": deletions,
-                }
-            )
+            presented = {
+                "path": path,
+                "status": str(item.get("status", "modified"))[:32],
+                "additions": additions,
+                "deletions": deletions,
+            }
+            for key in ("turn_id", "state", "blocked_reason"):
+                if key in item:
+                    presented[key] = str(item.get(key, ""))[:1000]
+            for key in ("can_undo", "can_reapply"):
+                if key in item:
+                    presented[key] = bool(item[key])
+            files.append(presented)
         return files
 
     @staticmethod
@@ -357,19 +499,20 @@ class RemoteManager:
         messages = agent.messages
         if not messages:
             return
+        task_id = agent.task_state.task_id if agent.task_state is not None else ""
         user_index = next(
             (
-                index
-                for index in range(min(message_start, len(messages) - 1), -1, -1)
+                index for index in range(len(messages) - 1, -1, -1)
                 if messages[index].get("role") == "user"
+                and messages[index].get("message_kind", "prompt") == "prompt"
+                and (not task_id or messages[index].get("turn_id") == task_id)
             ),
             None,
         )
         if user_index is None:
             return
-        task_id = agent.task_state.task_id if agent.task_state is not None else ""
         for message in messages[user_index:]:
-            message["turn_id"] = task_id
+            message.setdefault("turn_id", task_id)
         user_message = messages[user_index]
         user_message["turn_elapsed_ms"] = round(
             float(user_message.get("turn_elapsed_ms", 0) or 0) + elapsed_ms,
@@ -453,6 +596,8 @@ class RemoteManager:
         with runtime.lock:
             # 远程会话恢复历史上下文，但始终使用当前 Runner 配置的模型。
             runtime.agent.restore_session(session_state, messages)
+            # 首次恢复旧 checkpoint 时立即固化补齐的 message/turn/revision ID。
+            runtime.agent.persist_session()
             current_task = session_state.current_task
             status = current_task.status if current_task else "idle"
             return self._result_from_agent(

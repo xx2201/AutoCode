@@ -1,3 +1,4 @@
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -5,10 +6,13 @@ from rich.console import Console
 
 from autocode.config import Config
 from autocode.cli import (
+    _AgentWorker,
+    _apply_changeset_action,
     _clear_terminal,
     _context_toolbar,
     _format_token_count,
     _load_resumable_session,
+    _last_editable_prompt,
     _prompt_approval,
     _render_conversation_history,
     _resume_candidates,
@@ -16,8 +20,6 @@ from autocode.cli import (
     _welcome_panel,
     main,
 )
-
-
 def test_render_conversation_history_hides_legacy_visual_carrier(monkeypatch):
     console = Console(record=True, width=120)
     monkeypatch.setattr("autocode.cli.console", console)
@@ -44,6 +46,10 @@ def test_render_conversation_history_hides_legacy_visual_carrier(monkeypatch):
     assert "真实回答" in output
     assert "Visual content loaded by tools" not in output
     assert "[image]" not in output
+
+
+from autocode.config import Config
+from autocode.state.turn_control import TurnController
 
 
 class _Pending:
@@ -161,6 +167,122 @@ def test_help_mentions_mcp_command(monkeypatch):
 
     text = console.export_text(styles=False)
     assert "/mcp" in text
+    assert "/edit-last" in text
+    assert "/undo" in text
+    assert "Tab" in text
+
+
+def test_agent_worker_steers_active_turn_with_expected_id(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _Agent:
+        def __init__(self):
+            self.turn_controller = TurnController()
+            self.session_state = SimpleNamespace(session_id="session-cli")
+            self.task_state = SimpleNamespace(pending_approval=None)
+
+        def chat(self, prompt, **kwargs):
+            self.turn_controller.start_turn("turn-active")
+            entered.set()
+            assert release.wait(2)
+            steers = self.turn_controller.drain_steer("turn-active")
+            self.turn_controller.finish_turn("turn-active")
+            assert [item.content for item in steers] == ["focus tests"]
+            return "done"
+
+    monkeypatch.setattr("autocode.cli.save_turn_queue", lambda *args: None)
+    worker = _AgentWorker(_Agent())
+    assert worker.start_chat("implement") is True
+    assert entered.wait(2)
+
+    assert worker.deliver("focus tests", "steer") == "steer"
+    release.set()
+    worker.wait(2)
+
+    assert worker.is_running is False
+
+
+def test_agent_worker_runs_queued_followup_after_current_turn(monkeypatch):
+    entered = threading.Event()
+    release = threading.Event()
+    persisted = []
+
+    class _Agent:
+        def __init__(self):
+            self.turn_controller = TurnController()
+            self.session_state = SimpleNamespace(session_id="session-cli")
+            self.task_state = SimpleNamespace(pending_approval=None)
+            self.prompts = []
+
+        def chat(self, prompt, **kwargs):
+            turn_id = f"turn-{len(self.prompts) + 1}"
+            self.prompts.append(prompt)
+            self.turn_controller.start_turn(turn_id)
+            if len(self.prompts) == 1:
+                entered.set()
+                assert release.wait(2)
+            self.turn_controller.finish_turn(turn_id)
+            return f"done: {prompt}"
+
+    monkeypatch.setattr(
+        "autocode.cli.save_turn_queue",
+        lambda session_id, items: persisted.append((session_id, items)),
+    )
+    agent = _Agent()
+    worker = _AgentWorker(agent)
+    worker.start_chat("first")
+    assert entered.wait(2)
+
+    assert worker.deliver("second", "queue") == "queue"
+    release.set()
+    worker.wait(2)
+
+    assert agent.prompts == ["first", "second"]
+    assert persisted[0][0] == "session-cli"
+    assert persisted[0][1][0]["content"] == "second"
+    assert persisted[-1][1] == []
+
+
+def test_last_editable_prompt_returns_raw_prompt():
+    agent = SimpleNamespace(
+        task_state=SimpleNamespace(task_id="turn-1", status="completed"),
+        messages=[
+            {
+                "role": "user",
+                "message_kind": "prompt",
+                "turn_id": "turn-1",
+                "content": "effective prompt plus hidden instructions",
+                "raw_prompt": "visible prompt",
+            },
+            {"role": "assistant", "turn_id": "turn-1", "content": "answer"},
+        ],
+    )
+
+    assert _last_editable_prompt(agent) == ("turn-1", "visible prompt")
+
+
+def test_changeset_command_uses_current_turn_by_default(monkeypatch, tmp_path):
+    calls = []
+    manifest = SimpleNamespace(changed_paths=("a.py", "b.py"))
+
+    class _Store:
+        def __init__(self, workspace_root, session_id):
+            calls.append((workspace_root, session_id))
+
+        def undo(self, turn_id):
+            calls.append(("undo", turn_id))
+            return manifest
+
+    monkeypatch.setattr("autocode.cli.ChangeSetStore", _Store)
+    agent = SimpleNamespace(
+        workspace_root=str(tmp_path),
+        session_state=SimpleNamespace(session_id="session-cli"),
+        task_state=SimpleNamespace(task_id="turn-current"),
+    )
+
+    assert _apply_changeset_action(agent, "undo") is manifest
+    assert calls == [(str(tmp_path), "session-cli"), ("undo", "turn-current")]
 
 
 def test_cli_registers_current_workspace_before_running_agent(monkeypatch, tmp_path):

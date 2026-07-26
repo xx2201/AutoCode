@@ -98,3 +98,68 @@ def test_checkpoint_and_task_record_publish_transcript_file(tmp_path, monkeypatc
         "transcript.jsonl",
     }
 
+
+def test_edit_last_completed_turn_supersedes_context_but_not_workspace(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    llm = type(
+        "TwoRepliesLLM",
+        (),
+        {
+            "model": "fake-model",
+            "total_prompt_tokens": 0,
+            "total_completion_tokens": 0,
+            "responses": ["original answer", "edited answer"],
+            "chat": lambda self, messages, tools=None, on_token=None: LLMResponse(
+                content=self.responses.pop(0)
+            ),
+        },
+    )()
+    agent = Agent(llm=llm, workspace_root=str(tmp_path), auto_approve=True)
+
+    assert agent.chat("original prompt") == "original answer"
+    original_turn_id = agent.task_state.task_id
+    original_message_id = agent.messages[0]["message_id"]
+    untouched = tmp_path / "already-changed.txt"
+    untouched.write_text("keep this workspace state", encoding="utf-8")
+
+    assert agent.edit_last_turn(original_turn_id, "edited prompt") == "edited answer"
+
+    assert untouched.read_text(encoding="utf-8") == "keep this workspace state"
+    assert [message["content"] for message in agent.messages] == [
+        "edited prompt",
+        "edited answer",
+    ]
+    assert agent.messages[0]["raw_prompt"] == "edited prompt"
+    assert agent.messages[0]["message_kind"] == "prompt"
+    assert agent.messages[0]["message_id"] != original_message_id
+    assert agent.task_state.supersedes_turn_id == original_turn_id
+    assert agent.task_state.parent_revision_id
+    marker = next(
+        entry
+        for entry in load_transcript_entries(agent.session_state.session_id)
+        if entry.get("kind") == "turn_superseded"
+    )
+    assert marker["payload"]["superseded_message_id"] == original_message_id
+    assert marker["payload"]["replacement_turn_id"] == agent.task_state.task_id
+
+
+def test_edit_rejects_non_latest_or_incomplete_turn(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    agent = Agent(llm=_DoneLLM(), workspace_root=str(tmp_path), auto_approve=True)
+    agent.chat("hello")
+
+    try:
+        agent.edit_last_turn("older-turn", "edited")
+    except ValueError as exc:
+        assert "not the last completed turn" in str(exc)
+    else:
+        raise AssertionError("expected stale turn edit to fail")
+
+    agent.task_state.touch("running")
+    try:
+        agent.edit_last_turn(agent.task_state.task_id, "edited")
+    except ValueError as exc:
+        assert "last completed turn" in str(exc)
+    else:
+        raise AssertionError("expected active turn edit to fail")
+

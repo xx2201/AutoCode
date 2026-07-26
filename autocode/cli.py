@@ -3,6 +3,7 @@
 import sys
 import os
 import argparse
+import threading
 
 from rich.console import Console
 from rich.markdown import Markdown
@@ -13,6 +14,7 @@ from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit import prompt as pt_prompt
 from prompt_toolkit.history import FileHistory
 from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.patch_stdout import patch_stdout
 from prompt_toolkit.shortcuts import CompleteStyle
 
 from .agent import Agent
@@ -27,7 +29,9 @@ from .state import (
     list_sessions,
     load_checkpoint,
     load_trace,
+    save_turn_queue,
 )
+from .state.changes import ChangeSetStore
 from .workspaces import WorkspaceRegistry
 from . import __version__
 
@@ -40,6 +44,179 @@ _APPROVAL_OPTIONS = [
     ("/reject", "Reject the pending tool call"),
     ("/later", "Keep approval pending and return"),
 ]
+
+
+class _AgentWorker:
+    """Run Agent turns serially while the terminal remains interactive."""
+
+    def __init__(self, agent: Agent):
+        self.agent = agent
+        self._lock = threading.RLock()
+        self._thread: threading.Thread | None = None
+        self._running = False
+        self._pending_changes = None
+
+    @property
+    def is_running(self) -> bool:
+        with self._lock:
+            return self._running
+
+    def start_chat(self, prompt: str) -> bool:
+        return self._start("chat", prompt=prompt)
+
+    def start_edit(self, turn_id: str, prompt: str) -> bool:
+        return self._start("edit", turn_id=turn_id, prompt=prompt)
+
+    def start_approval(self, approved: bool, *, enable_auto_approve: bool = False) -> bool:
+        return self._start(
+            "approval",
+            approved=approved,
+            enable_auto_approve=enable_auto_approve,
+        )
+
+    def deliver(self, content: str, mode: str) -> str:
+        """Deliver input atomically with worker completion/queue draining."""
+        with self._lock:
+            if not self._running:
+                return "idle"
+            active_turn_id = self.agent.turn_controller.active_turn_id
+            if mode == "steer" and active_turn_id:
+                self.agent.turn_controller.steer(
+                    content,
+                    expected_turn_id=active_turn_id,
+                )
+                return "steer"
+            self.agent.turn_controller.queue(
+                content,
+                expected_turn_id=active_turn_id,
+            )
+            self._persist_queue()
+            return "queue"
+
+    def wait(self, timeout: float | None = None) -> None:
+        with self._lock:
+            thread = self._thread
+        if thread is not None:
+            thread.join(timeout)
+
+    def _start(self, action: str, **kwargs) -> bool:
+        with self._lock:
+            if self._running:
+                return False
+            self._running = True
+            self._thread = threading.Thread(
+                target=self._run,
+                args=(action, kwargs),
+                name="autocode-cli-agent",
+                daemon=True,
+            )
+            self._thread.start()
+            return True
+
+    def _run(self, action: str, kwargs: dict) -> None:
+        try:
+            self._run_action(action, **kwargs)
+            while True:
+                with self._lock:
+                    if self._has_pending_approval():
+                        self._running = False
+                        return
+                    queued = self.agent.turn_controller.pop_queued()
+                    self._persist_queue()
+                    if queued is None:
+                        self._running = False
+                        return
+                console.print("\n[dim]Starting queued follow-up.[/dim]")
+                self._run_action("chat", prompt=queued.content)
+        except Exception as exc:
+            console.print(f"\n[red]Error: {exc}[/red]")
+            with self._lock:
+                self._running = False
+
+    def _run_action(self, action: str, **kwargs) -> None:
+        streamed: list[str] = []
+        change_store = None
+        change_before = None
+        change_turn_id = ""
+        if action == "approval" and self._pending_changes is not None:
+            change_store, change_before, change_turn_id = self._pending_changes
+
+        def on_token(token):
+            streamed.append(token)
+            print(token, end="", flush=True)
+
+        def on_tool(name, arguments):
+            console.print(f"\n[dim]> {name}({_brief(arguments)})[/dim]")
+
+        common = {
+            "on_token": on_token,
+            "on_tool": on_tool,
+            "approval_handler": None,
+        }
+
+        def capture_turn(event: str, data: dict) -> None:
+            nonlocal change_store, change_before, change_turn_id
+            if event != "turn_started":
+                return
+            change_turn_id = str(data.get("task_id", ""))
+            try:
+                change_store = ChangeSetStore(
+                    self.agent.workspace_root,
+                    str(data.get("session_id", "")),
+                )
+                change_before = change_store.capture_before(change_turn_id)
+                self._pending_changes = (change_store, change_before, change_turn_id)
+            except (ValueError, RuntimeError) as exc:
+                change_store = None
+                change_before = None
+                console.print(f"[yellow]Per-turn Undo unavailable: {exc}[/yellow]")
+
+        hooks = getattr(self.agent, "hooks", None)
+        if hooks is not None and action in {"chat", "edit"}:
+            hooks.on("turn_started", capture_turn)
+        try:
+            if action == "chat":
+                response = self.agent.chat(kwargs["prompt"], **common)
+            elif action == "edit":
+                response = self.agent.edit_last_turn(
+                    kwargs["turn_id"],
+                    kwargs["prompt"],
+                    **common,
+                )
+            elif action == "approval":
+                response = self.agent.approve_pending(
+                    approved=kwargs["approved"],
+                    enable_auto_approve=kwargs.get("enable_auto_approve", False),
+                    **common,
+                )
+            else:
+                raise ValueError(f"Unknown worker action: {action}")
+        finally:
+            if hooks is not None and action in {"chat", "edit"}:
+                hooks.off("turn_started", capture_turn)
+            if (
+                change_store is not None
+                and change_before is not None
+                and not self._has_pending_approval()
+            ):
+                change_store.capture_after(change_turn_id, change_before)
+                self._pending_changes = None
+
+        if streamed:
+            print()
+        elif response:
+            console.print(Markdown(response))
+
+    def _persist_queue(self) -> None:
+        session = self.agent.session_state
+        if session is None:
+            return
+        queued = [item.to_dict() for item in self.agent.turn_controller.queued()]
+        save_turn_queue(session.session_id, queued)
+
+    def _has_pending_approval(self) -> bool:
+        task = self.agent.task_state
+        return task is not None and task.pending_approval is not None
 
 
 class _ApprovalCompleter(Completer):
@@ -210,7 +387,7 @@ def _welcome_panel(config: Config, current_model: str) -> Panel:
         + f"[dim]{config.workspace_root}[/dim]\n\n"
         + "[bold]Tips[/bold]\n"
         + "Type [bold]/help[/bold] for commands.\n"
-        + "Press [bold]Ctrl+C[/bold] to cancel, [bold]quit[/bold] to exit."
+        + "Press [bold]Ctrl+C[/bold] to clear input, [bold]quit[/bold] to exit."
     )
     grid = Table.grid(expand=True, padding=(0, 3))
     grid.add_column(ratio=2)
@@ -234,286 +411,340 @@ def _repl(agent: Agent, config: Config):
     console.print(_welcome_panel(config, current_model))
     hist_path = os.path.expanduser("~/.autocode_history")
     history = FileHistory(hist_path)
+    worker = _AgentWorker(agent)
+    submit_mode = {"value": "steer"}
 
     # Enter submits, Escape+Enter inserts a newline (for pasting code blocks etc.)
     kb = KeyBindings()
 
     @kb.add("enter")
     def _submit(event):
+        submit_mode["value"] = "steer"
+        event.current_buffer.validate_and_handle()
+
+    @kb.add("tab")
+    def _queue(event):
+        submit_mode["value"] = "queue"
         event.current_buffer.validate_and_handle()
 
     @kb.add("escape", "enter")
     def _newline(event):
         event.current_buffer.insert_text("\n")
 
-    def _run_pending_approval(approved: bool, enable_auto_approve: bool = False):
-        streamed: list[str] = []
-
-        def on_token(tok):
-            streamed.append(tok)
-            print(tok, end="", flush=True)
-
-        def on_tool(name, kwargs):
-            console.print(f"\n[dim]> {name}({_brief(kwargs)})[/dim]")
-
-        response = agent.approve_pending(
-            approved=approved,
-            on_token=on_token,
-            on_tool=on_tool,
-            approval_handler=None if config.auto_approve else _prompt_approval,
-            enable_auto_approve=enable_auto_approve,
-        )
-        if streamed:
-            print()
-        else:
-            console.print(Markdown(response))
-
     def _prompt_pending_approval() -> bool:
-        handled = False
-        while agent.task_state is not None and agent.task_state.pending_approval is not None:
-            choice = _prompt_approval(agent.task_state.pending_approval)
-            if choice is None:
-                console.print(
-                    "[yellow]Approval is still pending. "
-                    "Choose Approve, Approve All, or Reject to continue.[/yellow]"
-                )
-                return handled
-            _run_pending_approval(
-                approved=choice in {"approve", "approve_all"},
-                enable_auto_approve=choice == "approve_all",
-            )
-            handled = True
-        return handled
-
-    while True:
-        if agent.task_state is not None and agent.task_state.pending_approval is not None:
-            if _prompt_pending_approval():
-                continue
-        try:
-            user_input = pt_prompt(
-                _PROMPT_MESSAGE,
-                history=history,
-                multiline=True,
-                key_bindings=kb,
-                prompt_continuation="...  ",
-                bottom_toolbar=lambda: _context_toolbar(agent),
-            ).strip()
-        except (EOFError, KeyboardInterrupt):
-            agent.close()
-            console.print("\nBye!")
-            break
-
-        if not user_input:
-            continue
-
-        if (
-            agent.task_state is not None
-            and agent.task_state.pending_approval is not None
-            and not user_input.startswith("/")
-        ):
+        choice = _prompt_approval(agent.task_state.pending_approval)
+        if choice is None:
             console.print(
-                "[yellow]Approval is pending. Choose an action in the dialog or use "
-                "/approve, /approve_all, or /reject.[/yellow]"
+                "[yellow]Approval is still pending. "
+                "Choose Approve, Approve All, or Reject to continue.[/yellow]"
             )
-            continue
+            return False
+        return worker.start_approval(
+            approved=choice in {"approve", "approve_all"},
+            enable_auto_approve=choice == "approve_all",
+        )
 
-        # built-in commands
-        if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
-            agent.close()
-            break
-        if user_input == "/help":
-            _show_help()
-            continue
-        if user_input == "/reset":
-            agent.reset()
-            console.print("[yellow]Conversation reset.[/yellow]")
-            continue
-        if user_input == "/tokens":
-            p = agent.llm.total_prompt_tokens
-            c = agent.llm.total_completion_tokens
-            cache_read = getattr(agent.llm, "total_cache_read_tokens", 0)
-            cache_miss = getattr(agent.llm, "total_cache_miss_tokens", 0)
-            line = f"Tokens: [cyan]{p}[/cyan] prompt + [cyan]{c}[/cyan] completion = [bold]{p+c}[/bold] total"
-            cost = agent.llm.estimated_cost
-            if cost is not None:
-                line += f"  (~${cost:.4f})"
-            console.print(line)
-            cache_total = cache_read + cache_miss
-            cache_rate = f"{(cache_read / cache_total * 100):.1f}%" if cache_total else "n/a"
-            console.print(
-                "Prompt cache: "
-                f"[cyan]{cache_read}[/cyan] hit + [cyan]{cache_miss}[/cyan] miss = [bold]{cache_total}[/bold] total  "
-                f"(hit rate {cache_rate})"
-            )
-            usage = agent.context_usage()
-            console.print(
-                "Context window: "
-                f"[bold]{usage['used_percent']:.1f}% used[/bold] "
-                f"([cyan]{_format_token_count(usage['used_tokens'])}[/cyan] / "
-                f"{_format_token_count(usage['window_tokens'])} tokens, "
-                f"{_format_token_count(usage['remaining_tokens'])} left)"
-            )
-            continue
-        if user_input == "/model" or user_input.startswith("/model "):
-            new_model = user_input[7:].strip() if user_input.startswith("/model ") else ""
-            if new_model:
-                agent.llm.model = new_model
-                config.model = new_model
-                console.print(f"Switched to [cyan]{new_model}[/cyan]")
-            else:
-                console.print(f"Current model: [cyan]{config.model}[/cyan]")
-            continue
-        if user_input == "/compact":
-            from .context import estimate_tokens
-            before = estimate_tokens(agent.messages)
-            compressed = agent.compact_context()
-            after = estimate_tokens(agent.messages)
-            if compressed.compressed:
-                layers = ", ".join(compressed.layers)
-                console.print(
-                    f"[green]Compressed: {before} → {after} tokens ({len(agent.messages)} messages) "
-                    f"[dim]layers={layers}[/dim][/green]"
-                )
-            else:
-                console.print(f"[dim]Nothing to compress ({before} tokens, {len(agent.messages)} messages)[/dim]")
-            continue
-        if user_input == "/diff":
-            from .tools.edit import _changed_files
-            if not _changed_files:
-                console.print("[dim]No files modified this session.[/dim]")
-            else:
-                console.print(f"[bold]Files modified this session ({len(_changed_files)}):[/bold]")
-                for f in sorted(_changed_files):
-                    console.print(f"  [cyan]{f}[/cyan]")
-            continue
-        if user_input == "/task":
-            if agent.session_state is None:
-                console.print("[dim]No active session.[/dim]")
-            else:
-                if agent.task_state is None:
-                    console.print(f"Session: [cyan]{agent.session_state.session_id}[/cyan]  current task: [dim](none)[/dim]")
+    with patch_stdout(raw=True):
+        while True:
+            if (
+                not worker.is_running
+                and agent.task_state is not None
+                and agent.task_state.pending_approval is not None
+            ):
+                if _prompt_pending_approval():
                     continue
-                pending = ""
-                if agent.task_state.pending_approval:
-                    pending = f"  pending: {agent.task_state.pending_approval.tool_name}"
-                auto = "on" if agent.task_state.auto_approve_for_task else "off"
-                console.print(
-                    f"Session: [cyan]{agent.session_state.session_id}[/cyan]  "
-                    f"Task: [cyan]{agent.task_state.task_id}[/cyan]  "
-                    f"title: [bold]{agent.task_state.title or '(untitled)'}[/bold]  "
-                    f"status: [yellow]{agent.task_state.status}[/yellow]  "
-                    f"steps: [bold]{agent.task_state.step_index}[/bold]  "
-                    f"approve_all: [bold]{auto}[/bold]{pending}"
-                )
-            continue
-        if user_input == "/todo":
-            if agent.task_state is None:
-                console.print("[dim]No active task.[/dim]")
-            else:
-                console.print(Panel(render_todos(agent.task_state.todos), title="Todo", border_style="dim"))
-            continue
-        if user_input == "/resume" or user_input.startswith("/resume "):
-            target = user_input[8:].strip() if user_input.startswith("/resume ") else ""
-            if target:
-                loaded = _load_resumable_session(target, config.workspace_root)
-                if loaded is None:
-                    console.print(f"[red]Session '{target}' not found.[/red]")
+            try:
+                user_input = pt_prompt(
+                    _PROMPT_MESSAGE,
+                    history=history,
+                    multiline=True,
+                    key_bindings=kb,
+                    prompt_continuation="...  ",
+                    bottom_toolbar=lambda: _context_toolbar(agent, worker.is_running),
+                ).strip()
+            except EOFError:
+                if worker.is_running:
+                    console.print("\n[yellow]Agent is still running; wait for it before exiting.[/yellow]")
                     continue
-                session_state, messages, loaded_model = loaded
-                agent.restore_session(session_state, messages, loaded_model)
-                agent.llm.model = loaded_model
-                config.model = loaded_model
-                current_task = session_state.current_task
-                status = current_task.status if current_task else "idle"
-                console.print(
-                    f"[green]Resumed session: {session_state.session_id} "
-                    f"(status: {status}, model: {agent.llm.model})[/green]"
-                )
-                _render_conversation_history(messages)
+                agent.close()
+                console.print("\nBye!")
+                break
+            except KeyboardInterrupt:
+                if worker.is_running:
+                    console.print("\n[yellow]Input cleared; the active Agent turn is still running.[/yellow]")
+                    continue
+                agent.close()
+                console.print("\nBye!")
+                break
+
+            if not user_input:
                 continue
-            sessions = _resume_candidates(config.workspace_root, limit=10)
-            if not sessions:
-                console.print("[dim]No resumable sessions for the current project.[/dim]")
-            else:
-                for session in sessions:
-                    title = session["title"] or session["session_id"]
+
+            if (
+                agent.task_state is not None
+                and agent.task_state.pending_approval is not None
+                and not worker.is_running
+                and not user_input.startswith("/")
+            ):
+                console.print(
+                    "[yellow]Approval is pending. Choose an action in the dialog or use "
+                    "/approve, /approve_all, or /reject.[/yellow]"
+                )
+                continue
+
+            if worker.is_running and not user_input.startswith("/"):
+                delivered = worker.deliver(user_input, submit_mode["value"])
+                if delivered == "steer":
+                    console.print("[dim]Guidance sent to the active turn.[/dim]")
+                elif delivered == "queue":
+                    console.print("[dim]Queued for the next turn.[/dim]")
+                else:
+                    worker.start_chat(user_input)
+                continue
+
+            # built-in commands
+            if user_input.lower() in ("quit", "exit", "/quit", "/exit"):
+                if worker.is_running:
+                    console.print("[yellow]Agent is still running; wait for it before exiting.[/yellow]")
+                    continue
+                agent.close()
+                break
+            if user_input == "/help":
+                _show_help()
+                continue
+            if worker.is_running:
+                console.print(
+                    "[yellow]This command waits for the active turn. "
+                    "Use Enter to steer or Tab to queue a follow-up.[/yellow]"
+                )
+                continue
+            if user_input == "/reset":
+                agent.reset()
+                console.print("[yellow]Conversation reset.[/yellow]")
+                continue
+            if user_input == "/tokens":
+                p = agent.llm.total_prompt_tokens
+                c = agent.llm.total_completion_tokens
+                cache_read = getattr(agent.llm, "total_cache_read_tokens", 0)
+                cache_miss = getattr(agent.llm, "total_cache_miss_tokens", 0)
+                line = f"Tokens: [cyan]{p}[/cyan] prompt + [cyan]{c}[/cyan] completion = [bold]{p+c}[/bold] total"
+                cost = agent.llm.estimated_cost
+                if cost is not None:
+                    line += f"  (~${cost:.4f})"
+                console.print(line)
+                cache_total = cache_read + cache_miss
+                cache_rate = f"{(cache_read / cache_total * 100):.1f}%" if cache_total else "n/a"
+                console.print(
+                    "Prompt cache: "
+                    f"[cyan]{cache_read}[/cyan] hit + [cyan]{cache_miss}[/cyan] miss = [bold]{cache_total}[/bold] total  "
+                    f"(hit rate {cache_rate})"
+                )
+                usage = agent.context_usage()
+                console.print(
+                    "Context window: "
+                    f"[bold]{usage['used_percent']:.1f}% used[/bold] "
+                    f"([cyan]{_format_token_count(usage['used_tokens'])}[/cyan] / "
+                    f"{_format_token_count(usage['window_tokens'])} tokens, "
+                    f"{_format_token_count(usage['remaining_tokens'])} left)"
+                )
+                continue
+            if user_input == "/model" or user_input.startswith("/model "):
+                new_model = user_input[7:].strip() if user_input.startswith("/model ") else ""
+                if new_model:
+                    agent.llm.model = new_model
+                    config.model = new_model
+                    console.print(f"Switched to [cyan]{new_model}[/cyan]")
+                else:
+                    console.print(f"Current model: [cyan]{config.model}[/cyan]")
+                continue
+            if user_input == "/compact":
+                from .context import estimate_tokens
+                before = estimate_tokens(agent.messages)
+                compressed = agent.compact_context()
+                after = estimate_tokens(agent.messages)
+                if compressed.compressed:
+                    layers = ", ".join(compressed.layers)
                     console.print(
-                        f"  [bold]{title}[/bold]\n"
-                        f"    [cyan]{session['session_id']}[/cyan] ({session['status']}, step {session['step_index']}, "
-                        f"{session['model']}, {session['saved_at']})"
+                        f"[green]Compressed: {before} → {after} tokens ({len(agent.messages)} messages) "
+                        f"[dim]layers={layers}[/dim][/green]"
                     )
-            continue
-        if user_input == "/trace":
-            if agent.session_state is None:
-                console.print("[dim]No active session.[/dim]")
+                else:
+                    console.print(f"[dim]Nothing to compress ({before} tokens, {len(agent.messages)} messages)[/dim]")
                 continue
-            trace = load_trace(agent.session_state.session_id)
-            if trace is None:
-                console.print("[dim]No trace recorded yet.[/dim]")
-            else:
-                console.print(Panel(format_trace(trace), title="Trace", border_style="dim"))
-            continue
-        if user_input == "/mcp":
-            infos = agent.mcp_manager.get_server_infos() if agent.mcp_manager is not None else []
-            if not infos:
-                console.print("[dim]No MCP servers configured.[/dim]")
+            if user_input == "/diff":
+                from .tools.edit import _changed_files
+                if not _changed_files:
+                    console.print("[dim]No files modified this session.[/dim]")
+                else:
+                    console.print(f"[bold]Files modified this session ({len(_changed_files)}):[/bold]")
+                    for f in sorted(_changed_files):
+                        console.print(f"  [cyan]{f}[/cyan]")
                 continue
-            table = Table(title="MCP Servers", show_header=True, header_style="bold")
-            table.add_column("Server")
-            table.add_column("Status")
-            table.add_column("Tools", justify="right")
-            table.add_column("Error")
-            for info in infos:
-                table.add_row(info.name, info.status, str(info.tool_count), info.error or "-")
-            console.print(table)
-            for info in infos:
-                tool_names = [
-                    tool.name for tool in agent.mcp_manager.snapshot_tools()
-                    if getattr(tool, "server_name", "") == info.name
-                ]
-                if tool_names:
-                    console.print(f"[bold]{info.name}[/bold]: " + ", ".join(tool_names))
-            continue
-        if user_input == "/approve":
-            _run_pending_approval(True)
-            continue
-        if user_input == "/approve_all":
-            _run_pending_approval(True, enable_auto_approve=True)
-            continue
-        if user_input == "/reject":
-            _run_pending_approval(False)
-            continue
+            if user_input == "/task":
+                if agent.session_state is None:
+                    console.print("[dim]No active session.[/dim]")
+                else:
+                    if agent.task_state is None:
+                        console.print(f"Session: [cyan]{agent.session_state.session_id}[/cyan]  current task: [dim](none)[/dim]")
+                        continue
+                    pending = ""
+                    if agent.task_state.pending_approval:
+                        pending = f"  pending: {agent.task_state.pending_approval.tool_name}"
+                    auto = "on" if agent.task_state.auto_approve_for_task else "off"
+                    console.print(
+                        f"Session: [cyan]{agent.session_state.session_id}[/cyan]  "
+                        f"Task: [cyan]{agent.task_state.task_id}[/cyan]  "
+                        f"title: [bold]{agent.task_state.title or '(untitled)'}[/bold]  "
+                        f"status: [yellow]{agent.task_state.status}[/yellow]  "
+                        f"steps: [bold]{agent.task_state.step_index}[/bold]  "
+                        f"approve_all: [bold]{auto}[/bold]{pending}"
+                    )
+                continue
+            if user_input == "/todo":
+                if agent.task_state is None:
+                    console.print("[dim]No active task.[/dim]")
+                else:
+                    console.print(Panel(render_todos(agent.task_state.todos), title="Todo", border_style="dim"))
+                continue
+            if user_input == "/resume" or user_input.startswith("/resume "):
+                target = user_input[8:].strip() if user_input.startswith("/resume ") else ""
+                if target:
+                    loaded = _load_resumable_session(target, config.workspace_root)
+                    if loaded is None:
+                        console.print(f"[red]Session '{target}' not found.[/red]")
+                        continue
+                    session_state, messages, loaded_model = loaded
+                    agent.restore_session(session_state, messages, loaded_model)
+                    agent.llm.model = loaded_model
+                    config.model = loaded_model
+                    current_task = session_state.current_task
+                    status = current_task.status if current_task else "idle"
+                    console.print(
+                        f"[green]Resumed session: {session_state.session_id} "
+                        f"(status: {status}, model: {agent.llm.model})[/green]"
+                    )
+                    _render_conversation_history(messages)
+                    continue
+                sessions = _resume_candidates(config.workspace_root, limit=10)
+                if not sessions:
+                    console.print("[dim]No resumable sessions for the current project.[/dim]")
+                else:
+                    for session in sessions:
+                        title = session["title"] or session["session_id"]
+                        console.print(
+                            f"  [bold]{title}[/bold]\n"
+                            f"    [cyan]{session['session_id']}[/cyan] ({session['status']}, step {session['step_index']}, "
+                            f"{session['model']}, {session['saved_at']})"
+                        )
+                continue
+            if user_input == "/trace":
+                if agent.session_state is None:
+                    console.print("[dim]No active session.[/dim]")
+                    continue
+                trace = load_trace(agent.session_state.session_id)
+                if trace is None:
+                    console.print("[dim]No trace recorded yet.[/dim]")
+                else:
+                    console.print(Panel(format_trace(trace), title="Trace", border_style="dim"))
+                continue
+            if user_input == "/mcp":
+                infos = agent.mcp_manager.get_server_infos() if agent.mcp_manager is not None else []
+                if not infos:
+                    console.print("[dim]No MCP servers configured.[/dim]")
+                    continue
+                table = Table(title="MCP Servers", show_header=True, header_style="bold")
+                table.add_column("Server")
+                table.add_column("Status")
+                table.add_column("Tools", justify="right")
+                table.add_column("Error")
+                for info in infos:
+                    table.add_row(info.name, info.status, str(info.tool_count), info.error or "-")
+                console.print(table)
+                for info in infos:
+                    tool_names = [
+                        tool.name for tool in agent.mcp_manager.snapshot_tools()
+                        if getattr(tool, "server_name", "") == info.name
+                    ]
+                    if tool_names:
+                        console.print(f"[bold]{info.name}[/bold]: " + ", ".join(tool_names))
+                continue
+            if user_input == "/approve":
+                worker.start_approval(True)
+                continue
+            if user_input == "/approve_all":
+                worker.start_approval(True, enable_auto_approve=True)
+                continue
+            if user_input == "/reject":
+                worker.start_approval(False)
+                continue
+            if user_input == "/edit-last" or user_input.startswith("/edit-last "):
+                try:
+                    prompt = user_input[len("/edit-last"):].strip()
+                    turn_id, previous_prompt = _last_editable_prompt(agent)
+                    if not prompt:
+                        prompt = pt_prompt(
+                            [("ansibrightblue bold", "Edit last > ")],
+                            default=previous_prompt,
+                            multiline=True,
+                            key_bindings=kb,
+                            prompt_continuation="...  ",
+                        ).strip()
+                    if prompt:
+                        worker.start_edit(turn_id, prompt)
+                except ValueError as exc:
+                    console.print(f"[yellow]{exc}[/yellow]")
+                continue
+            if user_input == "/undo" or user_input.startswith("/undo "):
+                try:
+                    turn_id = user_input[len("/undo"):].strip()
+                    _apply_changeset_action(agent, "undo", turn_id)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    console.print(f"[yellow]Undo unavailable: {exc}[/yellow]")
+                continue
+            if user_input == "/reapply" or user_input.startswith("/reapply "):
+                try:
+                    turn_id = user_input[len("/reapply"):].strip()
+                    _apply_changeset_action(agent, "reapply", turn_id)
+                except (OSError, RuntimeError, ValueError) as exc:
+                    console.print(f"[yellow]Reapply unavailable: {exc}[/yellow]")
+                continue
 
-        # call the agent
-        streamed: list[str] = []
+            worker.start_chat(user_input)
 
-        def on_token(tok):
-            streamed.append(tok)
-            print(tok, end="", flush=True)
 
-        def on_tool(name, kwargs):
-            console.print(f"\n[dim]> {name}({_brief(kwargs)})[/dim]")
-
-        try:
-            response = agent.chat(
-                user_input,
-                on_token=on_token,
-                on_tool=on_tool,
-                approval_handler=None,
+def _last_editable_prompt(agent: Agent) -> tuple[str, str]:
+    task = agent.task_state
+    if task is None or task.status != "completed":
+        raise ValueError("Only the last completed turn can be edited.")
+    for message in reversed(agent.messages):
+        if (
+            message.get("role") == "user"
+            and message.get("message_kind", "prompt") == "prompt"
+            and message.get("turn_id", task.task_id) == task.task_id
+        ):
+            return task.task_id, str(
+                message.get("raw_prompt") or content_text(message.get("content", ""))
             )
-            if agent.task_state is not None and agent.task_state.pending_approval is not None:
-                if not _prompt_pending_approval():
-                    console.print(Markdown(response))
-                continue
-            if streamed:
-                print()  # newline after streamed tokens
-            else:
-                # response wasn't streamed (came after tool calls)
-                console.print(Markdown(response))
-        except KeyboardInterrupt:
-            console.print("\n[yellow]Interrupted.[/yellow]")
-        except Exception as e:
-            console.print(f"\n[red]Error: {e}[/red]")
+    raise ValueError(f"Prompt for turn '{task.task_id}' was not found.")
+
+
+def _apply_changeset_action(agent: Agent, action: str, turn_id: str = ""):
+    """Small CLI adapter around the state-layer ChangeSet API."""
+    session = agent.session_state
+    task = agent.task_state
+    if session is None:
+        raise ValueError("No active session.")
+    resolved_turn_id = turn_id or (task.task_id if task is not None else "")
+    if not resolved_turn_id:
+        raise ValueError("Turn id is required.")
+    store = ChangeSetStore(agent.workspace_root, session.session_id)
+    operation = getattr(store, action)
+    manifest = operation(resolved_turn_id)
+    console.print(
+        f"[green]{action.title()} complete for [cyan]{resolved_turn_id}[/cyan] "
+        f"({len(manifest.changed_paths)} files).[/green]"
+    )
+    return manifest
 
 
 def _show_help():
@@ -532,13 +763,17 @@ def _show_help():
         "  /todo          Show the current todo list\n"
         "  /trace         Show the current session trace\n"
         "  /mcp           Show MCP server status and loaded tools\n"
+        "  /edit-last     Edit and rerun the last completed prompt\n"
+        "  /undo [turn]   Undo one turn's workspace changes\n"
+        "  /reapply [turn] Reapply a previously undone turn\n"
         "  /approve       Approve the pending tool call\n"
         "  /approve_all   Approve this tool call and auto-approve later normal confirms\n"
         "  /reject        Reject the pending tool call\n"
         "  quit           Exit AutoCode\n"
         "\n"
         "[bold]Input:[/bold]\n"
-        "  Enter          Submit message\n"
+        "  Enter          Submit; while running, steer the active turn\n"
+        "  Tab            While running, queue the next turn\n"
         "  Esc+Enter      Insert newline (for pasting code)",
         title="AutoCode Help",
         border_style="dim",
@@ -558,15 +793,16 @@ def _format_token_count(value: int) -> str:
     return str(value)
 
 
-def _context_toolbar(agent: Agent):
+def _context_toolbar(agent: Agent, running: bool = False):
     usage = agent.context_usage()
+    status = " · running: Enter steer / Tab queue" if running else ""
     return [
         ("class:bottom-toolbar", " Context "),
         ("class:bottom-toolbar.text", f"{usage['used_percent']:.1f}% used"),
         (
             "class:bottom-toolbar",
             f" · {_format_token_count(usage['used_tokens'])} / "
-            f"{_format_token_count(usage['window_tokens'])} tokens ",
+            f"{_format_token_count(usage['window_tokens'])} tokens{status} ",
         ),
     ]
 

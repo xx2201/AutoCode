@@ -22,16 +22,19 @@ import {
   Menu,
   MessageSquareText,
   Paperclip,
+  Pencil,
   PanelLeftClose,
   Play,
   Plus,
   RefreshCw,
+  Redo2,
   Search,
   Send,
   ShieldCheck,
   Sparkles,
   TerminalSquare,
   Trash2,
+  Undo2,
   FileText,
   Image as ImageIcon,
   X,
@@ -41,10 +44,14 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import FilePanel from "./FilePanel";
 import GitPanel from "./GitPanel";
 import {
+  createPendingInput,
   formatDuration,
   formatToolTitle,
   groupConversation,
+  latestCompletedTurnId,
   mergeWorkEvent,
+  normalizeChangeAction,
+  settlePendingInput,
 } from "./conversation";
 
 const TOKEN_KEY = "autocode_web_token";
@@ -57,6 +64,11 @@ function createClientId() {
     return `web_${window.crypto.randomUUID().replaceAll("-", "")}`;
   }
   return `web_${Date.now()}_${Math.random().toString(36).slice(2, 14)}`;
+}
+
+function createInteractionId(prefix) {
+  if (window.crypto?.randomUUID) return `${prefix}_${window.crypto.randomUUID()}`;
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
 }
 
 function formatFileSize(size) {
@@ -486,13 +498,43 @@ function OutputFiles({ files = [], onFileAction, downloadingFileId }) {
   );
 }
 
-function UserMessage({ message }) {
+function UserMessage({ message, editable, editing, editDraft, editBusy, onEdit, onEditDraft, onCancelEdit, onSaveEdit }) {
   if (!message) return null;
   return (
     <article className="turn-user">
       <div className="user-bubble">
-        <RichText content={message.content} />
-        <MessageAttachments attachments={message.attachments} />
+        {editing ? (
+          <form className="turn-edit-form" onSubmit={onSaveEdit}>
+            <label htmlFor={`edit-${message.turn_id || "latest"}`}>编辑你的提问</label>
+            <textarea
+              id={`edit-${message.turn_id || "latest"}`}
+              value={editDraft}
+              onChange={(event) => onEditDraft(event.target.value)}
+              rows={3}
+              maxLength={32000}
+              autoFocus
+              disabled={editBusy}
+            />
+            <p>重新回答只修改对话上下文，不会自动撤销工作区文件。</p>
+            <div>
+              <button type="button" onClick={onCancelEdit} disabled={editBusy}>取消</button>
+              <button className="primary-edit-action" type="submit" disabled={!editDraft.trim() || editBusy}>
+                {editBusy ? <RefreshCw className="spin" size={14} /> : <Send size={14} />}
+                重新回答
+              </button>
+            </div>
+          </form>
+        ) : (
+          <>
+            <RichText content={message.content} />
+            <MessageAttachments attachments={message.attachments} />
+            {editable && (
+              <button className="turn-edit-button" type="button" onClick={onEdit} aria-label="编辑上一次提问" title="编辑并重新回答">
+                <Pencil size={14} />
+              </button>
+            )}
+          </>
+        )}
       </div>
     </article>
   );
@@ -574,9 +616,16 @@ function WorkBlock({ items, elapsedMs, active = false, liveText = "", stage = ""
   );
 }
 
-function TurnChangedFiles({ files = [], onOpenChanges }) {
+function TurnChangedFiles({ files = [], actionState, onOpenChanges, onChangeAction }) {
   const [expanded, setExpanded] = useState(true);
   if (files.length === 0) return null;
+  const persistedState = {
+    state: files[0]?.state || "",
+    canUndo: files[0]?.can_undo,
+    canReapply: files[0]?.can_reapply,
+    detail: files[0]?.blocked_reason || "",
+  };
+  const effectiveState = actionState || persistedState;
   const additions = files.reduce((total, file) => total + Number(file.additions || 0), 0);
   const deletions = files.reduce((total, file) => total + Number(file.deletions || 0), 0);
   const visibleFiles = files.slice(0, 3);
@@ -608,6 +657,31 @@ function TurnChangedFiles({ files = [], onOpenChanges }) {
             <ArrowRight size={16} />
           </button>
         )}
+        <div className="turn-change-actions" role="group" aria-label="文件修改操作">
+          <button
+            type="button"
+            onClick={() => onChangeAction("undo")}
+            disabled={effectiveState.busy || effectiveState.canUndo === false || effectiveState.state === "undone"}
+          >
+            {effectiveState.busyAction === "undo" ? <RefreshCw className="spin" size={14} /> : <Undo2 size={14} />}
+            Undo
+          </button>
+          <button
+            type="button"
+            onClick={() => onChangeAction("reapply")}
+            disabled={effectiveState.busy || effectiveState.canReapply === false || effectiveState.state !== "undone"}
+          >
+            {effectiveState.busyAction === "reapply" ? <RefreshCw className="spin" size={14} /> : <Redo2 size={14} />}
+            Reapply
+          </button>
+          <span className={`change-action-state ${effectiveState.conflict ? "is-conflict" : ""}`} aria-live="polite">
+            {effectiveState.conflict
+              ? `冲突：${effectiveState.detail || "文件已发生后续修改"}`
+              : effectiveState.state === "undone"
+                ? "本轮修改已撤销"
+                : effectiveState.detail || ""}
+          </span>
+        </div>
       </div>
     </details>
   );
@@ -619,6 +693,8 @@ function AssistantAnswer({
   onFileAction,
   onOpenChanges,
   downloadingFileId,
+  actionState,
+  onChangeAction,
 }) {
   if (!message) return null;
   return (
@@ -629,7 +705,12 @@ function AssistantAnswer({
         onFileAction={onFileAction}
         downloadingFileId={downloadingFileId}
       />
-      <TurnChangedFiles files={changedFiles} onOpenChanges={onOpenChanges} />
+      <TurnChangedFiles
+        files={changedFiles}
+        actionState={actionState}
+        onOpenChanges={onOpenChanges}
+        onChangeAction={onChangeAction}
+      />
     </article>
   );
 }
@@ -644,10 +725,30 @@ function ConversationTurn({
   onFileAction,
   onOpenChanges,
   downloadingFileId,
+  editable,
+  editing,
+  editDraft,
+  editBusy,
+  onEdit,
+  onEditDraft,
+  onCancelEdit,
+  onSaveEdit,
+  actionState,
+  onChangeAction,
 }) {
   return (
     <section className="conversation-turn">
-      <UserMessage message={turn.user} />
+      <UserMessage
+        message={turn.user}
+        editable={editable}
+        editing={editing}
+        editDraft={editDraft}
+        editBusy={editBusy}
+        onEdit={onEdit}
+        onEditDraft={onEditDraft}
+        onCancelEdit={onCancelEdit}
+        onSaveEdit={onSaveEdit}
+      />
       <div className="turn-response">
         <WorkBlock
           items={active ? liveWork : turn.work}
@@ -663,9 +764,32 @@ function ConversationTurn({
             onFileAction={onFileAction}
             onOpenChanges={onOpenChanges}
             downloadingFileId={downloadingFileId}
+            actionState={actionState}
+            onChangeAction={onChangeAction}
           />
         )}
       </div>
+    </section>
+  );
+}
+
+function PendingInputs({ items }) {
+  if (items.length === 0) return null;
+  return (
+    <section className="pending-inputs" aria-label="运行中发送的消息" aria-live="polite">
+      {items.map((item) => (
+        <article className={`pending-input pending-${item.status}`} key={item.id}>
+          <span>{item.mode === "queue" ? "下一轮" : "引导当前回答"}</span>
+          <p>{item.prompt}</p>
+          <small>
+            {item.status === "sending"
+              ? "正在发送…"
+              : item.status === "failed" || item.status === "rejected"
+                ? `发送失败${item.detail ? `：${item.detail}` : ""}`
+                : item.detail || "已接收"}
+          </small>
+        </article>
+      ))}
     </section>
   );
 }
@@ -792,6 +916,13 @@ export default function App() {
   const [liveWork, setLiveWork] = useState([]);
   const [runStartedAt, setRunStartedAt] = useState(0);
   const [runElapsedMs, setRunElapsedMs] = useState(0);
+  const [activeTurnId, setActiveTurnId] = useState("");
+  const [deliveryMode, setDeliveryMode] = useState("steer");
+  const [pendingInputs, setPendingInputs] = useState([]);
+  const [editingTurnId, setEditingTurnId] = useState("");
+  const [editDraft, setEditDraft] = useState("");
+  const [editBusy, setEditBusy] = useState(false);
+  const [changeActionStates, setChangeActionStates] = useState({});
   const [lastTimings, setLastTimings] = useState(null);
   const [contextUsage, setContextUsage] = useState({
     used_tokens: 0,
@@ -824,6 +955,10 @@ export default function App() {
   );
   const clientId = selectedWorkspace ? clientIdFor(selectedWorkspace.workspace_id) : "";
   const conversationTurns = useMemo(() => groupConversation(messages), [messages]);
+  const editableTurnId = useMemo(
+    () => latestCompletedTurnId(conversationTurns, busy),
+    [busy, conversationTurns],
+  );
 
   useEffect(() => {
     if (!busy || !runStartedAt) return undefined;
@@ -931,6 +1066,9 @@ export default function App() {
     let ignore = false;
     async function restoreWorkspace() {
       setMessages([]);
+      setPendingInputs([]);
+      setEditingTurnId("");
+      setChangeActionStates({});
       setPending(null);
       setStatus("idle");
       setContextUsage({
@@ -1045,11 +1183,210 @@ export default function App() {
     }
   }
 
+  async function sendDuringRun(cleanPrompt) {
+    const expectedTurnId = activeTurnId;
+    if (!expectedTurnId) {
+      showToast("尚未取得当前 Turn 标识，请稍后重试。");
+      return;
+    }
+    const localId = createInteractionId("input");
+    const localInput = createPendingInput(cleanPrompt, deliveryMode, localId);
+    setPendingInputs((items) => [...items, localInput]);
+    setPrompt("");
+    try {
+      const data = await request(token, "/api/turn/message", {
+        method: "POST",
+        body: JSON.stringify({
+          client_id: clientId,
+          workspace_id: selectedWorkspace.workspace_id,
+          expected_turn_id: expectedTurnId,
+          mode: deliveryMode,
+          prompt: cleanPrompt,
+        }),
+      });
+      const serverItem = data.queued_message;
+      setPendingInputs((items) => items.map((item) => (
+        item.id === localId
+          ? {
+              ...item,
+              id: serverItem?.id || item.id,
+              prompt: serverItem?.prompt || item.prompt,
+              createdAt: serverItem?.created_at || "",
+              status: data.accepted === false ? "rejected" : "accepted",
+              detail: data.mode === "queue" ? "等待当前回答完成" : "将在下一安全点生效",
+            }
+          : item
+      )));
+    } catch (error) {
+      setPendingInputs((items) => settlePendingInput(items, localId, "failed", error.message));
+      setPrompt(cleanPrompt);
+      showToast(error.message);
+    }
+  }
+
+  function beginEditTurn(turn) {
+    setEditingTurnId(turn.id);
+    setEditDraft(turn.user?.content || "");
+  }
+
+  async function saveEditedTurn(event, turn) {
+    event.preventDefault();
+    const cleanPrompt = editDraft.trim();
+    if (!cleanPrompt || editBusy || busy || !selectedWorkspace) return;
+    const turnId = turn.user?.turn_id || turn.id;
+    const previousMessages = messages;
+    setMessages((items) => {
+      const targetIndex = items.findLastIndex((message) => (
+        message.role === "user" && (!message.turn_id || message.turn_id === turnId)
+      ));
+      if (targetIndex < 0) return items;
+      return items.slice(0, targetIndex + 1).map((message, index) => (
+        index === targetIndex ? { ...message, content: cleanPrompt } : message
+      ));
+    });
+    setEditingTurnId("");
+    setEditBusy(true);
+    setBusy(true);
+    setStatus("running");
+    setStreamText("");
+    setRunStage("queued");
+    setLiveWork([]);
+    setRunStartedAt(Date.now());
+    setRunElapsedMs(0);
+    setActiveTurnId(turnId);
+    try {
+      let payload = null;
+      let streamed = "";
+      await streamRequest(token, "/api/turn/edit/stream", {
+        client_id: clientId,
+        workspace_id: selectedWorkspace.workspace_id,
+        turn_id: turnId,
+        prompt: cleanPrompt,
+      }, (streamEvent) => {
+        const startedTurnId = streamEvent.type === "turn"
+          ? streamEvent.turn_id
+          : streamEvent.details?.turn_id;
+        if (startedTurnId) setActiveTurnId(startedTurnId);
+        if (streamEvent.type === "token") {
+          streamed += streamEvent.text || "";
+          setStreamText(streamed);
+        } else if (streamEvent.type === "stage") {
+          setRunStage(streamEvent.stage || "");
+        } else if (streamEvent.type === "work") {
+          setLiveWork((items) => mergeWorkEvent(items, streamEvent));
+        } else if (streamEvent.type === "result") {
+          payload = streamEvent.data;
+        } else if (streamEvent.type === "error") {
+          const streamError = new Error(streamEvent.error || "重新回答失败。");
+          streamError.status = streamEvent.status_code;
+          throw streamError;
+        }
+      });
+      if (!payload) throw new Error("流式响应结束但没有最终结果。");
+      const result = payload.result || payload;
+      let synchronized = payload.messages || [];
+      try {
+        const refreshed = await refreshMessages();
+        if (refreshed.length > 0) synchronized = refreshed;
+      } catch (error) {
+        showToast(`操作记录刷新失败：${error.message}`);
+      }
+      if (synchronized.length > 0) {
+        setMessages(attachChangedFilesToLatestTurn(
+          synchronized,
+          payload.changed_files || result.changed_files || [],
+        ));
+      } else if (result.text) {
+        setMessages((items) => [
+          ...attachChangedFilesToLatestTurn(
+            items,
+            payload.changed_files || result.changed_files || [],
+          ),
+          { role: "assistant", content: result.text },
+        ]);
+      }
+      setPending(result.pending_tool ? result : null);
+      setStatus(result.status || "completed");
+      setContextUsage({
+        used_tokens: result.context_used_tokens || 0,
+        window_tokens: result.context_window_tokens || bootstrap.context_window_tokens || 0,
+      });
+      showToast("已根据编辑后的提问重新回答，工作区文件保持原状");
+      refreshGit().catch((error) => showToast(`Git 刷新失败：${error.message}`));
+    } catch (error) {
+      setMessages(previousMessages);
+      setEditingTurnId(turn.id);
+      showToast(error.message);
+    } finally {
+      setEditBusy(false);
+      setBusy(false);
+      setStreamText("");
+      setRunStage("");
+      setLiveWork([]);
+      setRunStartedAt(0);
+      setActiveTurnId("");
+    }
+  }
+
+  async function changeTurnFiles(turn, action) {
+    if (!selectedWorkspace) return;
+    const turnId = turn.user?.turn_id || turn.id;
+    setChangeActionStates((states) => ({
+      ...states,
+      [turn.id]: { ...states[turn.id], busy: true, busyAction: action, conflict: false, detail: "" },
+    }));
+    try {
+      const data = await request(token, "/api/changes/action", {
+        method: "POST",
+        body: JSON.stringify({
+          client_id: clientId,
+          workspace_id: selectedWorkspace.workspace_id,
+          turn_id: turnId,
+          action,
+        }),
+      });
+      const normalized = normalizeChangeAction(data, action);
+      setChangeActionStates((states) => ({
+        ...states,
+        [turn.id]: {
+          ...normalized,
+          canUndo: data.can_undo,
+          canReapply: data.can_reapply,
+          detail: data.blocked_reason || normalized.detail,
+          busy: false,
+          busyAction: "",
+        },
+      }));
+      if (data.git) setGitState(data.git);
+      else refreshGit().catch((error) => showToast(`Git 刷新失败：${error.message}`));
+    } catch (error) {
+      setChangeActionStates((states) => ({
+        ...states,
+        [turn.id]: {
+          ...states[turn.id],
+          busy: false,
+          busyAction: "",
+          conflict: error.status === 409,
+          detail: error.message,
+        },
+      }));
+      showToast(error.message);
+    }
+  }
+
   async function submitPrompt(value = prompt) {
     const cleanPrompt = value.trim();
-    if ((!cleanPrompt && attachments.length === 0) || busy || !selectedWorkspace) return;
+    if ((!cleanPrompt && attachments.length === 0) || !selectedWorkspace) return;
     if (!runnerOnline) {
       showToast("本机 Runner 离线，暂时不能执行任务。");
+      return;
+    }
+    if (busy) {
+      if (attachments.length > 0) {
+        showToast("运行中的引导消息暂不支持附件，请等待当前回答结束。");
+        return;
+      }
+      await sendDuringRun(cleanPrompt);
       return;
     }
     const pendingAttachments = attachments;
@@ -1092,7 +1429,11 @@ export default function App() {
           attachments: encodedAttachments,
         },
         (event) => {
-          if (event.type === "token") {
+          if (event.type === "turn" && event.phase === "queued_starting") {
+            streamed = "";
+            setStreamText("");
+            setLiveWork([]);
+          } else if (event.type === "token") {
             streamed += event.text || "";
             setStreamText(streamed);
           } else if (event.type === "stage") {
@@ -1107,6 +1448,13 @@ export default function App() {
             error.status = event.status_code;
             throw error;
           }
+          if (event.turn_id || event.expected_turn_id) {
+            setActiveTurnId(event.turn_id || event.expected_turn_id);
+          }
+          const startedTurnId = event.type === "turn"
+            ? event.turn_id
+            : event.details?.turn_id;
+          if (startedTurnId) setActiveTurnId(startedTurnId);
         },
       );
       if (!result) throw new Error("流式响应结束但没有最终结果。");
@@ -1142,6 +1490,7 @@ export default function App() {
         ]);
       }
       setPending(result.pending_tool ? result : null);
+      setPendingInputs([]);
       setStatus(result.status || "completed");
       setContextUsage({
         used_tokens: result.context_used_tokens || 0,
@@ -1159,6 +1508,7 @@ export default function App() {
       setLiveWork([]);
       setRunStartedAt(0);
       setBusy(false);
+      setActiveTurnId("");
       try {
         await refreshSessions();
       } catch (error) {
@@ -1174,6 +1524,7 @@ export default function App() {
       if (error.status === 401) logout("访问令牌已失效。");
     } finally {
       setBusy(false);
+      setActiveTurnId("");
       setStreamText("");
       setRunStage("");
       setLiveWork([]);
@@ -1327,6 +1678,9 @@ export default function App() {
   async function resumeSession(sessionId) {
     if (busy || !selectedWorkspace) return;
     setBusy(true);
+    setPendingInputs([]);
+    setEditingTurnId("");
+    setChangeActionStates({});
     setResumingSessionId(sessionId);
     try {
       const data = await request(token, "/api/resume", {
@@ -1377,6 +1731,9 @@ export default function App() {
     storeSessionId(selectedWorkspace.workspace_id, "");
     setActiveSessionId("");
     setMessages([]);
+    setPendingInputs([]);
+    setEditingTurnId("");
+    setChangeActionStates({});
     setPending(null);
     setStatus("idle");
     setLiveWork([]);
@@ -1806,6 +2163,16 @@ export default function App() {
                     onFileAction={handleOutputFile}
                     onOpenChanges={(path) => openFilePanel("changed", path)}
                     downloadingFileId={downloadingFileId}
+                    editable={turn.id === editableTurnId}
+                    editing={turn.id === editingTurnId}
+                    editDraft={editDraft}
+                    editBusy={editBusy}
+                    onEdit={() => beginEditTurn(turn)}
+                    onEditDraft={setEditDraft}
+                    onCancelEdit={() => setEditingTurnId("")}
+                    onSaveEdit={(event) => saveEditedTurn(event, turn)}
+                    actionState={changeActionStates[turn.id]}
+                    onChangeAction={(action) => changeTurnFiles(turn, action)}
                   />
                 ))}
                 <div ref={messageEndRef} />
@@ -1842,6 +2209,7 @@ export default function App() {
         )}
 
         <footer className="composer-area">
+          <PendingInputs items={pendingInputs} />
           <div className="composer">
             {attachments.length > 0 && (
               <div className="attachment-strip">
@@ -1878,20 +2246,39 @@ export default function App() {
               maxLength={32000}
               placeholder={
                 selectedWorkspace
-                  ? `在 ${selectedWorkspace.name} 中告诉 AutoCode 你想完成什么…`
+                  ? busy
+                    ? deliveryMode === "steer"
+                      ? "发送引导，下一安全点会交给当前回答…"
+                      : "排到下一轮，当前回答完成后自动发送…"
+                    : `在 ${selectedWorkspace.name} 中告诉 AutoCode 你想完成什么…`
                   : "请先选择项目"
               }
-              disabled={!selectedWorkspace || !runnerOnline || busy}
+              disabled={!selectedWorkspace || !runnerOnline}
             />
             <div className="composer-bottom">
-              <span>
-                <TerminalSquare size={15} />
-                {status === "running"
-                  ? "Agent 正在运行"
-                  : lastTimings
+              {busy ? (
+                <div className="delivery-mode" role="group" aria-label="运行中消息发送方式">
+                  <button
+                    type="button"
+                    className={deliveryMode === "steer" ? "active" : ""}
+                    aria-pressed={deliveryMode === "steer"}
+                    onClick={() => setDeliveryMode("steer")}
+                  >引导当前</button>
+                  <button
+                    type="button"
+                    className={deliveryMode === "queue" ? "active" : ""}
+                    aria-pressed={deliveryMode === "queue"}
+                    onClick={() => setDeliveryMode("queue")}
+                  >下一轮</button>
+                </div>
+              ) : (
+                <span>
+                  <TerminalSquare size={15} />
+                  {lastTimings
                     ? `本机完成 · ${Math.round(lastTimings.relay_total_ms || 0)} ms`
                     : "本机安全执行"}
-              </span>
+                </span>
+              )}
               <div className="composer-actions">
                 <input
                   ref={fileInputRef}
@@ -1915,18 +2302,18 @@ export default function App() {
                   onClick={() => submitPrompt()}
                   disabled={
                     (!prompt.trim() && attachments.length === 0)
-                    || busy
+                    || (busy && !activeTurnId)
                     || !runnerOnline
                     || !selectedWorkspace
                   }
                   aria-label="发送"
                 >
-                  {busy ? <RefreshCw className="spin" size={18} /> : <Send size={18} />}
+                  <Send size={18} />
                 </button>
               </div>
             </div>
           </div>
-          <p>Enter 发送 · Shift + Enter 换行 · 危险操作会等待确认</p>
+          <p>{busy ? "Enter 发送 · 可选择引导当前回答或排到下一轮" : "Enter 发送 · Shift + Enter 换行 · 危险操作会等待确认"}</p>
         </footer>
       </main>
 

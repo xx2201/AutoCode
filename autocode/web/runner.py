@@ -10,6 +10,7 @@ import ssl
 import sys
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
@@ -23,6 +24,11 @@ from ..config import Config
 from ..diagnostics import diagnostic_log_dir, get_diagnostic_logger, log_event
 from ..mcp import get_shared_mcp_manager
 from ..remote.manager import RemoteManager, presentation_tool_arguments
+from ..state.changes import (
+    ChangeSetConflictError,
+    ChangeSetStore,
+    ChangeSetUnavailableError,
+)
 from ..tools.factory import build_agent_tools
 from ..workspaces import WorkspaceRegistry
 from .files import WebFileStore, WebSendTool, WorkspaceFileBrowser
@@ -152,6 +158,10 @@ class LocalRunner:
             raise RuntimeError("AUTOCODE_API_KEY is required in the Agent runtime .env.")
         self._manager_factory = manager_factory or self._build_manager
         self._managers: dict[str, RemoteManager | Any] = {}
+        self._manager_lock = threading.Lock()
+        self._workspace_locks_guard = threading.Lock()
+        self._workspace_locks: dict[str, threading.RLock] = {}
+        self._pending_changes: dict[tuple[str, str], tuple[ChangeSetStore, Any, str]] = {}
         self._owns_client = client is None
         if client is None:
             ssl_context = ssl.create_default_context(cafile=settings.ca_cert)
@@ -175,6 +185,10 @@ class LocalRunner:
         self._logger = get_diagnostic_logger("web-runner")
         self._file_context = threading.local()
         self._web_files = WebFileStore()
+        self._job_executor = ThreadPoolExecutor(
+            max_workers=8,
+            thread_name_prefix="autocode-runner-job",
+        )
 
     def execute(self, action: str, payload: dict[str, Any], event_handler=None) -> Any:
         if action == "bootstrap":
@@ -235,87 +249,67 @@ class LocalRunner:
         }
         if action == "chat":
             workspace = self.registry.resolve(workspace_id)
-            git_before = git_turn_snapshot(workspace)
-            first_token_seen = False
-
-            def on_token(text: str) -> None:
-                nonlocal first_token_seen
-                if event_handler is None:
-                    return
-                if not first_token_seen:
-                    event_handler({"type": "stage", "stage": "first_token"})
-                    first_token_seen = True
-                event_handler({"type": "token", "text": text})
-
-            def on_hook(event: str, data: dict) -> None:
-                if event_handler is None:
-                    return
-                if event in {"before_tool", "after_tool"}:
-                    work_event = {
-                        "type": "work",
-                        "phase": "started" if event == "before_tool" else "completed",
-                        "tool_call_id": str(data.get("tool_call_id", "")),
-                        "tool_name": str(data.get("tool_name", "")),
-                    }
-                    if event == "before_tool":
-                        work_event["arguments"] = presentation_tool_arguments(
-                            data.get("arguments")
-                        )
-                    else:
-                        work_event.update(
-                            {
-                                "output": str(data.get("result", "")),
-                                "duration_ms": float(data.get("duration_ms", 0) or 0),
-                                "success": bool(data.get("success", False)),
-                            }
-                        )
-                    event_handler(work_event)
-                stage_map = {
-                    "before_llm": "model_started",
-                    "after_llm": "model_finished",
-                    "before_tool": "tool_started",
-                    "after_tool": "tool_finished",
-                    "context_compaction": "context_compacted",
-                }
-                stage = stage_map.get(event)
-                if stage:
-                    details = {
-                        key: data[key]
-                        for key in (
-                            "step_index",
-                            "tool_call_id",
-                            "tool_name",
-                            "prompt_tokens",
-                            "completion_tokens",
-                        )
-                        if key in data
-                    }
-                    event_handler({"type": "stage", "stage": stage, "details": details})
-
-            submit_kwargs = {}
-            if event_handler is not None:
-                submit_kwargs.update(hook_handler=on_hook, on_token=on_token)
-            if payload.get("attachments"):
-                submit_kwargs["attachments"] = list(payload["attachments"])
-            with self._capture_output_files(str(payload["workspace_id"])) as output_files:
-                result = manager.submit(
-                    payload["client_id"],
-                    payload.get("prompt", ""),
-                    **submit_kwargs,
-                )
-            changed_files = changed_git_files(
-                git_before,
-                git_turn_snapshot(workspace),
+            return self._execute_agent_turn(
+                manager,
+                workspace,
+                payload,
+                event_handler=event_handler,
             )
-            manager.annotate_turn_changes(payload["client_id"], changed_files)
-            if event_handler is not None:
-                if first_token_seen:
-                    event_handler({"type": "stage", "stage": "last_token"})
-                event_handler({"type": "stage", "stage": "persisted"})
-            response = asdict(result)
-            response["files"] = output_files
-            response["changed_files"] = changed_files
-            return response
+        if action == "edit_turn":
+            workspace = self.registry.resolve(workspace_id)
+            return self._execute_agent_turn(
+                manager,
+                workspace,
+                payload,
+                event_handler=event_handler,
+                edit_turn_id=str(payload.get("turn_id", "")),
+            )
+        if action == "turn_message":
+            expected_turn_id = str(payload.get("expected_turn_id", ""))
+            mode = str(payload.get("mode", ""))
+            prompt = str(payload.get("prompt", ""))
+            if mode == "steer":
+                item = manager.steer(payload["client_id"], expected_turn_id, prompt)
+            elif mode == "queue":
+                item = manager.enqueue_followup(
+                    payload["client_id"], expected_turn_id, prompt
+                )
+            else:
+                raise ValueError("Unsupported turn message mode.")
+            queued_message = {
+                "id": item.get("message_id", ""),
+                "prompt": item.get("content", ""),
+                "created_at": item.get("created_at", ""),
+            }
+            return {
+                "accepted": True,
+                "mode": mode,
+                "turn_id": expected_turn_id,
+                "queued_message": queued_message,
+            }
+        if action == "change_action":
+            workspace = self.registry.resolve(workspace_id)
+            turn_id = str(payload.get("turn_id", ""))
+            session_id = manager.current_session_id(payload["client_id"])
+            store = ChangeSetStore(workspace, session_id)
+            try:
+                if payload.get("change_action") == "undo":
+                    manifest = store.undo(turn_id)
+                elif payload.get("change_action") == "reapply":
+                    manifest = store.reapply(turn_id)
+                else:
+                    raise ValueError("Unsupported ChangeSet action.")
+            except (ChangeSetConflictError, ChangeSetUnavailableError) as exc:
+                raise ValueError(str(exc)) from exc
+            return {
+                "turn_id": turn_id,
+                "state": manifest.state,
+                "changed_paths": list(manifest.changed_paths),
+                "can_undo": manifest.state == "applied" and manifest.applicable,
+                "can_reapply": manifest.state == "undone" and manifest.applicable,
+                "blocked_reason": manifest.blocked_reason,
+                "git": GitWorkspace.inspect(workspace),
+            }
         if action == "approval":
             workspace = self.registry.resolve(workspace_id)
             git_before = git_turn_snapshot(workspace)
@@ -329,6 +323,12 @@ class LocalRunner:
                 git_before,
                 git_turn_snapshot(workspace),
             )
+            change_key = (workspace_id, str(payload["client_id"]))
+            pending_change = self._pending_changes.get(change_key)
+            if pending_change is not None and not result.pending_tool:
+                store, before, turn_id = self._pending_changes.pop(change_key)
+                manifest = store.capture_after(turn_id, before)
+                changed_files = self._decorate_changeset_files(changed_files, manifest)
             manager.annotate_turn_changes(payload["client_id"], changed_files)
             response = asdict(result)
             response["files"] = output_files
@@ -369,6 +369,196 @@ class LocalRunner:
             return {"reset": True}
         raise ValueError(f"Unknown relay action: {action}")
 
+    def _execute_agent_turn(
+        self,
+        manager,
+        workspace: Path,
+        payload: dict[str, Any],
+        *,
+        event_handler=None,
+        edit_turn_id: str = "",
+    ) -> dict[str, Any]:
+        """Run one visible turn and any FIFO follow-ups on the same event stream."""
+        client_id = payload["client_id"]
+        prompt = str(payload.get("prompt", ""))
+        attachments = list(payload.get("attachments") or [])
+        queued_turn = False
+        all_files: list[dict] = []
+        all_changed: list[dict] = []
+        result = None
+
+        while True:
+            git_before = git_turn_snapshot(workspace)
+            first_token_seen = False
+            change_store = None
+            change_before = None
+            started_turn_id = ""
+
+            def on_token(text: str) -> None:
+                nonlocal first_token_seen
+                if event_handler is None:
+                    return
+                if not first_token_seen:
+                    event_handler({"type": "stage", "stage": "first_token"})
+                    first_token_seen = True
+                event_handler({"type": "token", "text": text})
+
+            def on_hook(event: str, data: dict) -> None:
+                nonlocal change_store, change_before, started_turn_id
+                if event == "turn_started" and git_before.get("available"):
+                    started_turn_id = str(data.get("task_id", ""))
+                    change_store = ChangeSetStore(
+                        workspace,
+                        str(data.get("session_id", "")),
+                    )
+                    change_before = change_store.capture_before(started_turn_id)
+                if event_handler is None:
+                    return
+                if event == "turn_started":
+                    event_handler(
+                        {
+                            "type": "turn",
+                            "phase": "started",
+                            "turn_id": str(data.get("task_id", "")),
+                            "revision_id": str(data.get("revision_id", "")),
+                            "queued": queued_turn,
+                        }
+                    )
+                if event in {"before_tool", "after_tool"}:
+                    work_event = {
+                        "type": "work",
+                        "phase": "started" if event == "before_tool" else "completed",
+                        "tool_call_id": str(data.get("tool_call_id", "")),
+                        "tool_name": str(data.get("tool_name", "")),
+                    }
+                    if event == "before_tool":
+                        work_event["arguments"] = presentation_tool_arguments(
+                            data.get("arguments")
+                        )
+                    else:
+                        work_event.update(
+                            {
+                                "output": str(data.get("result", "")),
+                                "duration_ms": float(data.get("duration_ms", 0) or 0),
+                                "success": bool(data.get("success", False)),
+                            }
+                        )
+                    event_handler(work_event)
+                stage_map = {
+                    "before_llm": "model_started",
+                    "after_llm": "model_finished",
+                    "before_tool": "tool_started",
+                    "after_tool": "tool_finished",
+                    "context_compaction": "context_compacted",
+                    "turn_started": "turn_started",
+                }
+                stage = stage_map.get(event)
+                if stage:
+                    details = {
+                        key: data[key]
+                        for key in (
+                            "step_index",
+                            "tool_call_id",
+                            "tool_name",
+                            "prompt_tokens",
+                            "completion_tokens",
+                            "task_id",
+                            "turn_id",
+                            "revision_id",
+                        )
+                        if key in data
+                    }
+                    event_handler({"type": "stage", "stage": stage, "details": details})
+
+            submit_kwargs = {"hook_handler": on_hook}
+            if event_handler is not None:
+                submit_kwargs["on_token"] = on_token
+            if attachments:
+                submit_kwargs["attachments"] = attachments
+            with self._capture_output_files(str(payload["workspace_id"])) as output_files:
+                if edit_turn_id:
+                    result = manager.edit_last_turn(
+                        client_id,
+                        edit_turn_id,
+                        prompt,
+                        **submit_kwargs,
+                    )
+                    edit_turn_id = ""
+                else:
+                    result = manager.submit(client_id, prompt, **submit_kwargs)
+
+            changed_files = changed_git_files(
+                git_before,
+                git_turn_snapshot(workspace),
+            )
+            if change_store is not None and change_before is not None:
+                change_key = (str(payload["workspace_id"]), str(client_id))
+                if result.pending_tool:
+                    self._pending_changes[change_key] = (
+                        change_store,
+                        change_before,
+                        started_turn_id,
+                    )
+                else:
+                    manifest = change_store.capture_after(started_turn_id, change_before)
+                    changed_files = self._decorate_changeset_files(changed_files, manifest)
+            manager.annotate_turn_changes(client_id, changed_files)
+            all_files.extend(output_files)
+            all_changed.extend(changed_files)
+            if event_handler is not None:
+                if first_token_seen:
+                    event_handler({"type": "stage", "stage": "last_token"})
+                event_handler({"type": "stage", "stage": "persisted"})
+
+            if result.status != "completed":
+                break
+            pop_queued = getattr(manager, "pop_queued_followup", None)
+            followup = pop_queued(client_id) if pop_queued is not None else None
+            if followup is None:
+                break
+            prompt = followup.content
+            attachments = []
+            queued_turn = True
+            if event_handler is not None:
+                event_handler(
+                    {
+                        "type": "turn",
+                        "phase": "queued_starting",
+                        "message_id": followup.message_id,
+                    }
+                )
+
+        response = asdict(result)
+        response["files"] = all_files
+        response["changed_files"] = all_changed
+        return response
+
+    @staticmethod
+    def _decorate_changeset_files(changed_files: list[dict], manifest) -> list[dict]:
+        """Attach persisted undo state and include changes Git presentation missed."""
+        known_paths = {item["path"] for item in changed_files}
+        for changed_path in manifest.changed_paths:
+            if changed_path not in known_paths:
+                changed_files.append(
+                    {
+                        "path": changed_path,
+                        "status": "modified",
+                        "additions": 0,
+                        "deletions": 0,
+                    }
+                )
+        for item in changed_files:
+            item.update(
+                {
+                    "turn_id": manifest.turn_id,
+                    "state": manifest.state,
+                    "can_undo": bool(manifest.files) and manifest.applicable,
+                    "can_reapply": False,
+                    "blocked_reason": manifest.blocked_reason,
+                }
+            )
+        return changed_files
+
     def run_forever(self) -> None:
         retry_delay = 1.0
         heartbeat = threading.Thread(
@@ -389,7 +579,7 @@ class LocalRunner:
                         continue
                     response.raise_for_status()
                     job = response.json()
-                    self._run_job(job)
+                    self._job_executor.submit(self._run_job, job)
                     retry_delay = 1.0
                 except (httpx.HTTPError, ValueError) as exc:
                     if self._stopping:
@@ -400,25 +590,34 @@ class LocalRunner:
         finally:
             self._stopping = True
             heartbeat.join(timeout=2.0)
+            self._job_executor.shutdown(wait=True, cancel_futures=False)
 
     def stop(self) -> None:
         self._stopping = True
 
     def close(self) -> None:
+        self._job_executor.shutdown(wait=True, cancel_futures=False)
         if self._owns_client:
             self.client.close()
-        for manager in self._managers.values():
+        with self._manager_lock:
+            managers = list(self._managers.values())
+            self._managers.clear()
+        for manager in managers:
             manager.close()
-        self._managers.clear()
 
     def _manager(self, workspace_id: str):
-        manager = self._managers.get(workspace_id)
-        if manager is not None:
+        with self._manager_lock:
+            manager = self._managers.get(workspace_id)
+            if manager is not None:
+                return manager
+            workspace = self.registry.resolve(workspace_id)
+            manager = self._manager_factory(workspace)
+            self._managers[workspace_id] = manager
             return manager
-        workspace = self.registry.resolve(workspace_id)
-        manager = self._manager_factory(workspace)
-        self._managers[workspace_id] = manager
-        return manager
+
+    def _workspace_lock(self, workspace_id: str) -> threading.RLock:
+        with self._workspace_locks_guard:
+            return self._workspace_locks.setdefault(workspace_id, threading.RLock())
 
     def _build_manager(self, workspace: Path) -> RemoteManager:
         config = replace(self._base_config, workspace_root=str(workspace))
@@ -463,6 +662,8 @@ class LocalRunner:
 
     def _run_job(self, job: dict[str, Any]) -> None:
         job_id = str(job["job_id"])
+        action = str(job.get("action", ""))
+        payload = dict(job.get("payload") or {})
         started_at = time.monotonic()
         publisher = (
             _RunnerEventPublisher(self.client, job_id, self._logger)
@@ -481,7 +682,7 @@ class LocalRunner:
                     logging.INFO,
                     "Runner job stage",
                     job_id=job_id,
-                    action=str(job.get("action", "")),
+                    action=action,
                     stage=str(enriched.get("stage", "")),
                     elapsed_ms=enriched["elapsed_ms"],
                     details=enriched.get("details") or {},
@@ -489,11 +690,35 @@ class LocalRunner:
 
         try:
             emit({"type": "stage", "stage": "runner_started"})
-            result = self.execute(
-                str(job["action"]),
-                dict(job.get("payload") or {}),
-                event_handler=emit if publisher is not None else None,
+            workspace_id = str(payload.get("workspace_id", ""))
+            serialized_actions = {
+                "chat",
+                "edit_turn",
+                "approval",
+                "change_action",
+                "git_action",
+                "reset",
+                "resume",
+                "delete_session",
+            }
+            lock = (
+                self._workspace_lock(workspace_id)
+                if workspace_id and action in serialized_actions
+                else None
             )
+            if lock is None:
+                result = self.execute(
+                    action,
+                    payload,
+                    event_handler=emit if publisher is not None else None,
+                )
+            else:
+                with lock:
+                    result = self.execute(
+                        action,
+                        payload,
+                        event_handler=emit if publisher is not None else None,
+                    )
             emit({"type": "stage", "stage": "runner_completed"})
             body = {"success": True, "result": result}
         except ValueError as exc:
@@ -512,7 +737,7 @@ class LocalRunner:
             logging.INFO if body["success"] else logging.ERROR,
             "Runner job completed",
             job_id=job_id,
-            action=str(job.get("action", "")),
+            action=action,
             success=body["success"],
             elapsed_ms=round((time.monotonic() - started_at) * 1000, 1),
             error=body.get("error", ""),

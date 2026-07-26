@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from ..context import ContextManager, MemoryManager, estimate_tokens, render_todos, runtime_state_block, static_system_prompt
 from ..infra import BackgroundProcessManager, Sandbox, WorkspaceFS
 from ..llm import LLM, ToolCall
-from ..message_content import is_internal_visual_context, user_content
+from ..message_content import content_text, is_internal_visual_context, user_content
 from ..runtime import HookBus, Policy, RecoveryManager, Runtime
 from ..skills import SkillError, SkillManager
 from ..state import (
@@ -17,9 +17,13 @@ from ..state import (
     TaskState,
     TranscriptLogger,
     TraceRecorder,
+    TurnController,
+    new_message_id,
+    new_revision_id,
     new_session_id,
     new_task_id,
     save_checkpoint,
+    save_turn_queue,
 )
 from ..tools import ALL_TOOLS, build_tool_registry
 from ..tools.agent import AgentTool
@@ -55,6 +59,7 @@ class Agent:
         max_rounds: int = 50,
         workspace_root: str | None = None,
         auto_approve: bool = False,
+        turn_controller: TurnController | None = None,
     ):
         self.llm = llm
         self._tool_factory = tool_factory
@@ -84,8 +89,10 @@ class Agent:
         self.audit = AuditLogger()
         self.trace = TraceRecorder()
         self.transcript = TranscriptLogger()
+        self.turn_controller = turn_controller or TurnController()
         for event in (
             "user_message",
+            "turn_started",
             "before_llm",
             "after_llm",
             "context_compaction",
@@ -281,6 +288,8 @@ class Agent:
             payload["session_id"] = self.session_state.session_id
         if self.task_state is not None:
             payload["task_id"] = self.task_state.task_id
+            payload["turn_id"] = self.task_state.task_id
+            payload["revision_id"] = self.task_state.revision_id
             payload["task_title"] = self.task_state.title
         payload.update(extra)
         return payload
@@ -322,6 +331,7 @@ class Agent:
             session.set_current_task(
                 TaskState(
                     task_id=new_task_id(),
+                    revision_id=new_revision_id(),
                     title=(title or "").splitlines()[0][:120],
                     status="running",
                 )
@@ -346,6 +356,11 @@ class Agent:
         if self.session_state is None:
             return
         self.session_state.touch()
+        self.session_state.queued_inputs = [
+            item.to_dict() for item in self.turn_controller.queued()
+        ]
+        if self.session_state.queued_inputs:
+            save_turn_queue(self.session_state.session_id, self.session_state.queued_inputs)
         save_checkpoint(self.session_state, self.messages, self.llm.model, workspace_root=self.workspace_root)
         self.sessions.sync(self.session_state, self.llm.model)
 
@@ -353,9 +368,15 @@ class Agent:
         self.persist_session()
 
     def _append_message(self, message: dict):
-        self.messages.append(message)
+        stored = dict(message)
+        stored.setdefault("message_id", new_message_id())
+        if self.task_state is not None:
+            stored.setdefault("turn_id", self.task_state.task_id)
+            stored.setdefault("revision_id", self.task_state.revision_id)
+        stored.setdefault("message_kind", stored.get("role", "message"))
+        self.messages.append(stored)
         if self.session_state is not None:
-            self.transcript.append_message(self.session_state.session_id, message)
+            self.transcript.append_message(self.session_state.session_id, stored)
 
     def _append_tool_result(self, tool_call: ToolCall, result: str | ToolResult) -> str:
         text = result.text if isinstance(result, ToolResult) else result
@@ -496,6 +517,7 @@ class Agent:
         approval_handler=None,
         image_parts: list[dict] | None = None,
         attachments: list[dict] | None = None,
+        raw_user_prompt: str | None = None,
     ) -> str:
         if self.task_state and self.task_state.pending_approval:
             pending = self.task_state.pending_approval
@@ -504,10 +526,11 @@ class Agent:
                 f"{pending.tool_name} - use /approve or /reject first)"
             )
 
+        original_prompt = raw_user_prompt if raw_user_prompt is not None else user_input
         session = self._ensure_session()
         if not session.title:
             session.title = (user_input.strip().splitlines() or ["上传文件会话"])[0][:120]
-        self._ensure_task(user_input)
+        self._ensure_task(original_prompt)
         try:
             explicit_skill = self.skills.explicit_invocation(user_input)
         except SkillError as exc:
@@ -521,27 +544,104 @@ class Agent:
             )
         message_content = effective_input
         trace_content = user_content(effective_input, image_parts)
+        turn_id = self.task_state.task_id
+        self.turn_controller.start_turn(turn_id)
+        self.hooks.emit("turn_started", self._event_payload(status="running"))
         with self._turn_trace(
             name="agent.chat",
             input_payload={"user_message": trace_content},
             tags=["autocode", "chat", *(["multimodal"] if image_parts else [])],
         ) as observation:
             try:
-                user_message = {"role": "user", "content": message_content}
+                user_message = {
+                    "role": "user",
+                    "content": message_content,
+                    "message_kind": "prompt",
+                    "raw_prompt": original_prompt,
+                }
                 if attachments:
                     user_message["attachments"] = list(attachments)
                 if image_parts:
                     user_message["model_content"] = [dict(item) for item in image_parts]
                 self._append_message(user_message)
-                self.hooks.emit("user_message", self._event_payload(content_preview=user_input[:200]))
+                self.hooks.emit("user_message", self._event_payload(content_preview=original_prompt[:200]))
                 self._maybe_compress_messages()
                 self.persist_session()
                 response = self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
             except Exception as exc:
+                self.turn_controller.finish_turn(turn_id)
                 self._record_turn_error(observation, exc)
                 raise
             self._finalize_turn_trace(observation, response)
             return response
+
+    def edit_last_turn(
+        self,
+        turn_id: str,
+        prompt: str,
+        on_token=None,
+        on_tool=None,
+        approval_handler=None,
+        image_parts: list[dict] | None = None,
+        attachments: list[dict] | None = None,
+        raw_user_prompt: str | None = None,
+    ) -> str:
+        """Supersede the last completed turn while leaving workspace files untouched."""
+        normalized_prompt = prompt.strip()
+        original_prompt = raw_user_prompt if raw_user_prompt is not None else normalized_prompt
+        if not normalized_prompt:
+            raise ValueError("Edited prompt is required.")
+        task = self.task_state
+        if task is None or task.status != "completed":
+            raise ValueError("Only the last completed turn can be edited.")
+        if task.task_id != turn_id:
+            raise ValueError(f"Turn '{turn_id}' is not the last completed turn.")
+
+        prompt_index = next(
+            (
+                index
+                for index in range(len(self.messages) - 1, -1, -1)
+                if self.messages[index].get("role") == "user"
+                and self.messages[index].get("message_kind", "prompt") == "prompt"
+                and self.messages[index].get("turn_id", turn_id) == turn_id
+            ),
+            None,
+        )
+        if prompt_index is None:
+            raise ValueError(f"Prompt for turn '{turn_id}' was not found.")
+
+        old_message = self.messages[prompt_index]
+        old_revision_id = task.revision_id
+        new_task = TaskState(
+            task_id=new_task_id(),
+            revision_id=new_revision_id(),
+            parent_revision_id=old_revision_id,
+            supersedes_turn_id=turn_id,
+            title=original_prompt.strip().splitlines()[0][:120],
+            status="running",
+        )
+        self.messages = self.messages[:prompt_index]
+        self.session_state.set_current_task(new_task)
+        self.transcript.append_turn_superseded(
+            self.session_state.session_id,
+            {
+                "superseded_turn_id": turn_id,
+                "superseded_message_id": old_message.get("message_id", ""),
+                "superseded_revision_id": old_revision_id,
+                "replacement_turn_id": new_task.task_id,
+                "replacement_revision_id": new_task.revision_id,
+            },
+        )
+        self.persist_session()
+        return self.chat(
+            normalized_prompt,
+            on_token=on_token,
+            on_tool=on_tool,
+            approval_handler=approval_handler,
+            image_parts=image_parts,
+            attachments=attachments,
+            raw_user_prompt=original_prompt,
+        )
 
     def approve_pending(
         self,
@@ -610,12 +710,54 @@ class Agent:
 
     def restore_session(self, session_state: SessionState, messages: list[dict], model: str | None = None):
         self.session_state = session_state
-        self.messages = [
+        messages = [
             message
             for message in messages
             if not is_internal_visual_context(message.get("content"))
         ]
+        if session_state.current_task and not session_state.current_task.revision_id:
+            session_state.current_task.revision_id = new_revision_id()
+        prompt_indices = []
+        for index, message in enumerate(messages):
+            if message.get("role") != "user":
+                continue
+            kind = message.get("message_kind", "")
+            raw_text = content_text(message.get("content", ""))
+            if kind == "synthetic" or raw_text.startswith("Visual content loaded by tools:"):
+                continue
+            prompt_indices.append(index)
+        last_prompt_index = prompt_indices[-1] if prompt_indices else None
+        self.messages = []
+        current_turn_id = ""
+        current_revision_id = ""
+        for index, message in enumerate(messages):
+            stored = dict(message)
+            stored.setdefault("message_id", new_message_id())
+            if "message_kind" not in stored:
+                content = content_text(stored.get("content", ""))
+                stored["message_kind"] = (
+                    "synthetic"
+                    if stored.get("role") == "user" and content.startswith("Visual content loaded by tools:")
+                    else stored.get("role", "message")
+                )
+            if stored.get("role") == "user" and stored.get("message_kind") == "user":
+                stored["message_kind"] = "prompt"
+            if stored.get("role") == "user" and stored.get("message_kind") == "prompt":
+                use_current_task = index == last_prompt_index and session_state.current_task is not None
+                current_turn_id = str(stored.get("turn_id") or (
+                    session_state.current_task.task_id if use_current_task else new_task_id()
+                ))
+                current_revision_id = str(stored.get("revision_id") or (
+                    session_state.current_task.revision_id if use_current_task else new_revision_id()
+                ))
+            stored["turn_id"] = str(stored.get("turn_id") or current_turn_id)
+            stored["revision_id"] = str(stored.get("revision_id") or current_revision_id)
+            self.messages.append(stored)
         self._last_prompt_tokens = max(0, session_state.context_used_tokens)
+        self.turn_controller.restore_queued(session_state.queued_inputs)
+        task = session_state.current_task
+        if task is not None and task.status in {"running", "waiting_approval"}:
+            self.turn_controller.start_turn(task.task_id)
         if model:
             self.llm.model = model
 
@@ -624,6 +766,7 @@ class Agent:
             self._ensure_task()
 
         for _ in range(self.max_rounds):
+            self._append_pending_steer()
             full_messages = self._request_messages()
             tool_schemas = self._tool_schemas()
             resp = self.runtime.call_llm(
@@ -639,6 +782,15 @@ class Agent:
 
             if not resp.tool_calls:
                 self._append_message(resp.message)
+                steer_items, finished = self.turn_controller.drain_steer_or_finish(
+                    self.task_state.task_id
+                )
+                if steer_items:
+                    self._append_steer_items(steer_items)
+                    self.persist_session()
+                    continue
+                if not finished:
+                    raise RuntimeError("Turn controller did not finish an idle turn.")
                 if hasattr(self.llm, "_call_with_retry"):
                     self.memory.schedule_project_memory_refresh(self.messages, self.llm, force=True)
                 self.task_state.mark_completed()
@@ -664,7 +816,31 @@ class Agent:
             self._event_payload(status=self.task_state.status, error=self.task_state.last_error),
         )
         self.persist_session()
+        self.turn_controller.finish_turn(self.task_state.task_id)
         return summary
+
+    def _append_pending_steer(self) -> bool:
+        if self.task_state is None:
+            return False
+        items = self.turn_controller.drain_steer(self.task_state.task_id)
+        self._append_steer_items(items)
+        return bool(items)
+
+    def _append_steer_items(self, items) -> None:
+        for item in items:
+            self._append_message(
+                {
+                    "role": "user",
+                    "content": item.content,
+                    "message_id": item.message_id,
+                    "message_kind": "steer",
+                    "raw_prompt": item.content,
+                }
+            )
+            self.hooks.emit(
+                "user_message",
+                self._event_payload(content_preview=item.content[:200], message_kind="steer"),
+            )
 
     def _handle_tool_calls(self, tool_calls, on_tool=None, approval_handler=None) -> str | None:
         decisions = []

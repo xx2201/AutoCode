@@ -60,6 +60,22 @@ class ChatRequest(ClientRequest):
     attachments: list["AttachmentRequest"] = Field(default_factory=list, max_length=5)
 
 
+class TurnEditRequest(ClientRequest):
+    turn_id: str = Field(min_length=1, max_length=128)
+    prompt: str = Field(min_length=1, max_length=32_000)
+
+
+class TurnMessageRequest(ClientRequest):
+    expected_turn_id: str = Field(min_length=1, max_length=128)
+    mode: Literal["steer", "queue"]
+    prompt: str = Field(min_length=1, max_length=32_000)
+
+
+class ChangeActionRequest(ClientRequest):
+    turn_id: str = Field(min_length=1, max_length=128)
+    action: Literal["undo", "reapply"]
+
+
 class AttachmentRequest(BaseModel):
     name: str = Field(min_length=1, max_length=255)
     media_type: str = Field(min_length=1, max_length=120)
@@ -276,6 +292,70 @@ def create_app(
                 "Cache-Control": "no-cache, no-transform",
                 "X-Accel-Buffering": "no",
             },
+        )
+
+    @app.post("/api/turn/edit/stream", dependencies=browser_auth)
+    async def edit_turn_stream(payload: TurnEditRequest):
+        client_id = _validate_client_id(payload.client_id)
+        prompt = payload.prompt.strip()
+        if not prompt:
+            raise HTTPException(status_code=422, detail="Prompt is required.")
+        try:
+            job_id = relay.start_stream(
+                "edit_turn",
+                {
+                    "client_id": client_id,
+                    "workspace_id": payload.workspace_id,
+                    "turn_id": payload.turn_id,
+                    "prompt": prompt,
+                },
+            )
+        except RunnerOfflineError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        def event_stream():
+            for event in relay.iter_stream(job_id, timeout=request_timeout):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
+            },
+        )
+
+    @app.post("/api/turn/message", dependencies=browser_auth)
+    async def turn_message(payload: TurnMessageRequest):
+        client_id = _validate_client_id(payload.client_id)
+        prompt = payload.prompt.strip()
+        if not prompt:
+            raise HTTPException(status_code=422, detail="Prompt is required.")
+        return await dispatch(
+            "turn_message",
+            {
+                "client_id": client_id,
+                "workspace_id": payload.workspace_id,
+                "expected_turn_id": payload.expected_turn_id,
+                "mode": payload.mode,
+                "prompt": prompt,
+            },
+            timeout=control_request_timeout,
+        )
+
+    @app.post("/api/changes/action", dependencies=browser_auth)
+    async def change_action(payload: ChangeActionRequest):
+        client_id = _validate_client_id(payload.client_id)
+        return await dispatch(
+            "change_action",
+            {
+                "client_id": client_id,
+                "workspace_id": payload.workspace_id,
+                "turn_id": payload.turn_id,
+                "change_action": payload.action,
+            },
+            timeout=control_request_timeout,
         )
 
     @app.post("/api/approval", dependencies=browser_auth)

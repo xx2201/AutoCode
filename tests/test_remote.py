@@ -1,3 +1,5 @@
+import threading
+
 from autocode.state import checkpoint as checkpoint_module
 from autocode.config import Config
 from autocode.llm import LLMResponse, ToolCall
@@ -460,4 +462,216 @@ def test_remote_manager_reuses_same_session_id_within_same_chat(tmp_path, monkey
     assert second.status == "completed"
     assert second.session_id == first.session_id
     assert second.task_id != first.task_id
+
+
+def test_remote_manager_edit_last_turn_preserves_session_and_exposes_revision_metadata(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    llm = _FakeLLM([LLMResponse(content="first"), LLMResponse(content="revised")])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
+    first = manager.submit(707, "original")
+
+    revised = manager.edit_last_turn(707, first.task_id, "edited")
+    messages = manager.conversation_messages(707)
+
+    assert revised.session_id == first.session_id
+    assert revised.task_id != first.task_id
+    assert [message["content"] for message in messages] == ["edited", "revised"]
+    assert all(message["message_id"] for message in messages)
+    assert all(message["turn_id"] == revised.task_id for message in messages)
+    assert all(message["revision_id"] for message in messages)
+    assert messages[0]["message_kind"] == "prompt"
+
+
+def test_remote_manager_edit_last_turn_keeps_earlier_turn_and_annotates_replacement(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    llm = _FakeLLM([
+        LLMResponse(content="first answer"),
+        LLMResponse(content="second answer"),
+        LLMResponse(content="replacement answer"),
+    ])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
+    first = manager.submit(708, "first prompt")
+    second = manager.submit(708, "second prompt")
+
+    replacement = manager.edit_last_turn(708, second.task_id, "replacement prompt")
+    messages = manager.conversation_messages(708)
+
+    assert [message["content"] for message in messages] == [
+        "first prompt",
+        "first answer",
+        "replacement prompt",
+        "replacement answer",
+    ]
+    assert [message["turn_id"] for message in messages[:2]] == [first.task_id, first.task_id]
+    assert [message["turn_id"] for message in messages[2:]] == [replacement.task_id, replacement.task_id]
+    assert messages[2]["turn_elapsed_ms"] >= 0
+
+
+def test_remote_manager_accepts_steer_and_queue_while_submit_holds_agent_lock(tmp_path):
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _BlockingLLM:
+        model = "fake-model"
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages, tools=None, on_token=None):
+            self.calls += 1
+            if self.calls == 1:
+                entered.set()
+                assert release.wait(timeout=5)
+                return LLMResponse(content="draft")
+            assert any(
+                message.get("role") == "user"
+                and message.get("content") == "guide the active answer"
+                for message in messages
+            )
+            return LLMResponse(content="guided answer")
+
+    llm = _BlockingLLM()
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
+    result_holder = []
+    worker = threading.Thread(target=lambda: result_holder.append(manager.submit(818, "start")))
+    worker.start()
+    assert entered.wait(timeout=5)
+    active_turn_id = manager._require_runtime(818).agent.task_state.task_id
+
+    steer = manager.steer(818, active_turn_id, "guide the active answer")
+    queued = manager.enqueue_followup(818, active_turn_id, "answer this next")
+    release.set()
+    worker.join(timeout=5)
+
+    assert not worker.is_alive()
+    assert steer["mode"] == "steer"
+    assert queued["mode"] == "queue"
+    assert result_holder[0].text == "guided answer"
+    assert manager.queued_followups(818)[0]["content"] == "answer this next"
+    assert manager.pop_queued_followup(818).message_id == queued["message_id"]
+    messages = manager.conversation_messages(818)
+    assert [message["message_kind"] for message in messages] == [
+        "prompt",
+        "assistant",
+        "steer",
+        "assistant",
+    ]
+
+
+def test_remote_manager_rejects_stale_expected_turn_id(tmp_path):
+    manager = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: _FakeLLM([LLMResponse(content="done")]),
+        tools=[],
+    )
+    result = manager.submit(919, "complete immediately")
+
+    try:
+        manager.steer(919, result.task_id, "too late")
+    except ValueError as exc:
+        assert "no active turn" in str(exc).lower()
+    else:
+        raise AssertionError("expected completed turn steer to fail")
+
+
+def test_remote_manager_emits_turn_started_before_model_response(tmp_path):
+    events = []
+    manager = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: _FakeLLM([LLMResponse(content="done")]),
+        tools=[],
+    )
+
+    result = manager.submit(929, "start", hook_handler=lambda event, payload: events.append((event, payload)))
+    started = next(payload for event, payload in events if event == "turn_started")
+
+    assert started["turn_id"] == result.task_id
+    assert started["task_id"] == result.task_id
+    assert started["revision_id"]
+
+
+def test_queued_followup_survives_checkpoint_resume(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    entered = threading.Event()
+    release = threading.Event()
+
+    class _BlockingOnceLLM:
+        model = "fake-model"
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+
+        def chat(self, messages, tools=None, on_token=None):
+            entered.set()
+            assert release.wait(timeout=5)
+            return LLMResponse(content="done")
+
+    manager = RemoteManager(_config(tmp_path), llm_factory=_BlockingOnceLLM, tools=[])
+    results = []
+    worker = threading.Thread(target=lambda: results.append(manager.submit(939, "start")))
+    worker.start()
+    assert entered.wait(timeout=5)
+    active_turn = manager._require_runtime(939).agent.task_state.task_id
+    queued = manager.enqueue_followup(939, active_turn, "persist me")
+    release.set()
+    worker.join(timeout=5)
+    session_id = results[0].session_id
+
+    resumed = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: _FakeLLM([LLMResponse(content="unused")]),
+        tools=[],
+    )
+    resumed.resume_session(940, session_id)
+
+    restored = resumed.queued_followups(940)
+    assert restored[0]["message_id"] == queued["message_id"]
+    assert restored[0]["content"] == "persist me"
+
+    assert resumed.pop_queued_followup(940).message_id == queued["message_id"]
+    restarted = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: _FakeLLM([LLMResponse(content="unused")]),
+        tools=[],
+    )
+    restarted.resume_session(941, session_id)
+    assert restarted.queued_followups(941) == []
+
+
+def test_legacy_checkpoint_message_ids_are_persisted_on_first_resume(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    checkpoint_module.save_checkpoint(
+        SessionState(
+            session_id="session_legacy_ids",
+            current_task=TaskState(task_id="task_latest", status="completed"),
+        ),
+        [
+            {"role": "user", "content": "legacy prompt"},
+            {"role": "assistant", "content": "legacy answer"},
+        ],
+        "old-model",
+        workspace_root=str(tmp_path),
+    )
+    first = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: _FakeLLM([LLMResponse(content="unused")]),
+        tools=[],
+    )
+    first.resume_session(951, "session_legacy_ids")
+    first_messages = first.conversation_messages(951)
+
+    second = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: _FakeLLM([LLMResponse(content="unused")]),
+        tools=[],
+    )
+    second.resume_session(952, "session_legacy_ids")
+    second_messages = second.conversation_messages(952)
+
+    assert [message["message_id"] for message in second_messages] == [
+        message["message_id"] for message in first_messages
+    ]
+    assert all(message["turn_id"] == "task_latest" for message in second_messages)
+    assert all(message["revision_id"] for message in second_messages)
 

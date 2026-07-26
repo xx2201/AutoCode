@@ -319,6 +319,94 @@ def test_streaming_chat_relays_tokens_stages_and_final_result(relay_client):
     assert final["timings"]["relay_total_ms"] >= 0
 
 
+def test_turn_controls_and_change_actions_are_relayed(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+
+    steer_response, steer_job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/turn/message",
+            headers=_browser_headers(),
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "expected_turn_id": "turn_123",
+                "mode": "steer",
+                "prompt": "focus on tests",
+            },
+        ),
+        "turn_message",
+        {"accepted": True, "mode": "steer", "turn_id": "turn_123"},
+    )
+    change_response, change_job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/changes/action",
+            headers=_browser_headers(),
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "turn_id": "turn_123",
+                "action": "undo",
+            },
+        ),
+        "change_action",
+        {"turn_id": "turn_123", "state": "undone"},
+    )
+
+    assert steer_response.status_code == 200
+    assert steer_job["payload"]["expected_turn_id"] == "turn_123"
+    assert steer_job["payload"]["mode"] == "steer"
+    assert change_response.status_code == 200
+    assert change_job["payload"]["change_action"] == "undo"
+
+
+def test_edit_turn_is_streamed_to_runner(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+    holder = {}
+
+    def browser_request():
+        with client.stream(
+            "POST",
+            "/api/turn/edit/stream",
+            headers=_browser_headers(),
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "turn_id": "turn_123",
+                "prompt": "edited prompt",
+            },
+        ) as response:
+            holder["status"] = response.status_code
+            holder["events"] = [
+                json.loads(line[6:])
+                for line in response.iter_lines()
+                if line.startswith("data: ")
+            ]
+
+    thread = threading.Thread(target=browser_request)
+    thread.start()
+    job = client.get(
+        "/api/runner/next",
+        params={"wait": 1},
+        headers=_runner_headers(),
+    ).json()
+    assert job["action"] == "edit_turn"
+    assert job["payload"]["turn_id"] == "turn_123"
+    client.post(
+        f"/api/runner/result/{job['job_id']}",
+        headers=_runner_headers(),
+        json={"success": True, "result": {"text": "edited answer"}},
+    )
+    thread.join(timeout=3)
+
+    assert holder["status"] == 200
+    final = next(event for event in holder["events"] if event["type"] == "result")
+    assert final["data"]["text"] == "edited answer"
+
+
 def test_chat_accepts_attachment_without_text(relay_client):
     client, _ = relay_client
     _connect_runner(client)

@@ -38,6 +38,9 @@ UI can only select a workspace that is already registered and still exists.
   and sub-agent tools.
 - MCP stdio servers exposed to the agent as regular tools.
 - Checkpointed sessions with a shared title and history in CLI and Web.
+- Edit and rerun the latest completed prompt without rolling back workspace files.
+- Steer an active turn or queue FIFO follow-ups from both the CLI and Web.
+- Validated per-turn ChangeSets for safe Undo/Reapply with conflict detection.
 - Multimodal Web input: text, files, and PNG/JPEG/GIF/WebP images.
 - Secure phone access through a public Relay and an outbound-only local Runner.
 - SSE token streaming with execution-stage timings.

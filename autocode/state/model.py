@@ -69,6 +69,9 @@ class PendingApproval:
 @dataclass
 class TaskState:
     task_id: str
+    revision_id: str = ""
+    parent_revision_id: str = ""
+    supersedes_turn_id: str = ""
     title: str = ""
     status: str = "idle"
     step_index: int = 0
@@ -139,6 +142,9 @@ class TaskState:
     def to_dict(self) -> dict:
         return {
             "task_id": self.task_id,
+            "revision_id": self.revision_id,
+            "parent_revision_id": self.parent_revision_id,
+            "supersedes_turn_id": self.supersedes_turn_id,
             "title": self.title,
             "status": self.status,
             "step_index": self.step_index,
@@ -158,6 +164,9 @@ class TaskState:
         pending = data.get("pending_approval")
         return cls(
             task_id=data.get("task_id", ""),
+            revision_id=data.get("revision_id", ""),
+            parent_revision_id=data.get("parent_revision_id", ""),
+            supersedes_turn_id=data.get("supersedes_turn_id", ""),
             title=data.get("title", ""),
             status=data.get("status", "idle"),
             step_index=int(data.get("step_index", 0)),
@@ -181,6 +190,7 @@ class SessionState:
     started_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     current_task: TaskState | None = None
+    queued_inputs: list[dict] = field(default_factory=list)
 
     def touch(self):
         self.updated_at = _now()
@@ -201,6 +211,7 @@ class SessionState:
             "started_at": self.started_at,
             "updated_at": self.updated_at,
             "current_task": self.current_task.to_dict() if self.current_task else None,
+            "queued_inputs": self.queued_inputs,
         }
 
     @classmethod
@@ -213,4 +224,5 @@ class SessionState:
             started_at=data.get("started_at", _now()),
             updated_at=data.get("updated_at", _now()),
             current_task=TaskState.from_dict(task) if task else None,
+            queued_inputs=list(data.get("queued_inputs", [])),
         )

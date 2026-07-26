@@ -5,6 +5,10 @@ import {
   formatDuration,
   formatToolTitle,
   groupConversation,
+  latestCompletedTurnId,
+  createPendingInput,
+  normalizeChangeAction,
+  settlePendingInput,
   mergeWorkEvent,
 } from "../src/conversation.js";
 
@@ -105,4 +109,45 @@ test("does not render legacy model-only visual context as a user turn", () => {
   assert.equal(turns.length, 1);
   assert.equal(turns[0].user.content, "这张图是什么？");
   assert.equal(turns[0].answer.content, "图片里是 Apple Gift Card。");
+});
+
+test("only exposes the latest completed turn for editing", () => {
+  const turns = [
+    { id: "turn-1", user: { content: "one" }, answer: { content: "done" } },
+    { id: "turn-2", user: { content: "two" }, answer: null },
+  ];
+
+  assert.equal(latestCompletedTurnId(turns), "turn-1");
+  assert.equal(latestCompletedTurnId(turns, true), "");
+});
+
+test("tracks queue and steer messages through their request lifecycle", () => {
+  const queued = createPendingInput("  run tests next  ", "queue", "input-1");
+  assert.deepEqual(queued, {
+    id: "input-1",
+    prompt: "run tests next",
+    mode: "queue",
+    status: "sending",
+  });
+  assert.deepEqual(
+    settlePendingInput([queued], "input-1", "accepted", "queued"),
+    [{ ...queued, status: "accepted", detail: "queued" }],
+  );
+});
+
+test("normalizes undo conflicts without losing the server reason", () => {
+  assert.deepEqual(normalizeChangeAction({
+    status: "conflict",
+    conflict: true,
+    conflict_reason: "文件已被再次修改",
+  }, "undo"), {
+    state: "conflict",
+    conflict: true,
+    detail: "文件已被再次修改",
+  });
+  assert.deepEqual(normalizeChangeAction({}, "reapply"), {
+    state: "applied",
+    conflict: false,
+    detail: "",
+  });
 });

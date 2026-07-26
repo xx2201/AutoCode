@@ -19,6 +19,7 @@ _SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_TASK_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _CHECKPOINT_CACHE: dict[Path, tuple[int, int, dict]] = {}
 _CHECKPOINT_CACHE_LOCK = threading.Lock()
+_TURN_QUEUE_LOCK = threading.Lock()
 
 
 def new_session_id() -> str:
@@ -74,6 +75,31 @@ def save_checkpoint(session_state: SessionState, messages: list[dict], model: st
         _CHECKPOINT_CACHE[path] = (stat.st_mtime_ns, stat.st_size, payload)
 
 
+def save_turn_queue(session_id: str, queued_inputs: list[dict]) -> None:
+    """Persist queue control state independently from the running agent checkpoint."""
+    directory = session_dir(session_id)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / "queued_inputs.json"
+    temporary = directory / "queued_inputs.tmp"
+    with _TURN_QUEUE_LOCK:
+        temporary.write_text(
+            json.dumps(queued_inputs, ensure_ascii=False, indent=2),
+            encoding="utf-8",
+        )
+        temporary.replace(path)
+
+
+def load_turn_queue(session_id: str) -> list[dict] | None:
+    path = session_dir(session_id) / "queued_inputs.json"
+    if not path.exists():
+        return None
+    try:
+        data = _read_json(path)
+    except (UnicodeDecodeError, json.JSONDecodeError):
+        return None
+    return list(data) if isinstance(data, list) else None
+
+
 def load_checkpoint(session_id: str) -> tuple[SessionState, list[dict], str] | None:
     path = session_dir(session_id) / "checkpoint.json"
     if not path.exists():
@@ -83,6 +109,9 @@ def load_checkpoint(session_id: str) -> tuple[SessionState, list[dict], str] | N
     except (UnicodeDecodeError, json.JSONDecodeError):
         return None
     state = SessionState.from_dict(data["session"])
+    persisted_queue = load_turn_queue(session_id)
+    if persisted_queue is not None:
+        state.queued_inputs = persisted_queue
     messages = data["messages"]
     if not state.title:
         state.title = _first_user_title(messages)

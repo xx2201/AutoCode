@@ -68,6 +68,12 @@ flowchart LR
 | `transcript.jsonl` | 追加原始消息和压缩事件，保留不可变历史 | 保留，是 checkpoint 损坏后的恢复与审计依据 |
 | `audit.jsonl` | 记录工具、审批、阻止和错误等运行事件 | 保留，负责安全与行为审计 |
 | `trace.json` | 从运行事件聚合任务状态、工具数、Token 和耗时，供 `/trace` 直接读取 | 暂时保留；它是可派生缓存，未来可由 audit 动态生成 |
+| `queued_inputs.json` | 即时保存等待当前 Turn 完成后执行的 FIFO 提问 | 独立持久化，Runner/CLI 重启恢复时不会丢失 |
+| `changes/<turn_id>/` | 保存该 Turn 修改前后的文件内容、哈希、mode 和 Git HEAD/index 基线 | Undo/Reapply 的事实来源；冲突时拒绝整轮写入 |
+
+编辑最后一次提问会生成新的 `revision_id`，并在 transcript 追加
+`turn_superseded` 事件；它只重写对话分支，不恢复或删除上一轮已修改的文件。
+文件回滚是独立的 ChangeSet 操作，因此用户可以分别决定是否 Undo/Reapply。
 
 进程级诊断日志写入 `~/.autocode/logs/*.jsonl`，采用 5 MB、5 个备份的轮转策略。
 它记录 Relay/Runner/Langfuse 初始化、网络故障和分段耗时，不替代会话级

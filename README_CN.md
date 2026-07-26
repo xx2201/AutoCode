@@ -34,6 +34,9 @@ flowchart LR
 - 工作区范围内的文件、搜索、Shell、后台进程、图片、任务列表和子 Agent 工具。
 - 将 MCP stdio Server 的能力作为普通 Agent 工具使用。
 - 支持检查点恢复，CLI 和 Web 共用会话标题与历史记录。
+- 支持编辑最后一次已完成的提问并重新回答；对话 Revision 与工作区文件状态相互独立。
+- 回答运行中可发送 Steer 引导或 FIFO 排队下一条提问，CLI 和 Web 使用同一 Turn 控制语义。
+- 每个 Turn 保存可校验的 ChangeSet，可安全 Undo/Reapply；文件发生后续修改时整轮拒绝覆盖。
 - Web 多模态输入：文字、文件，以及 PNG/JPEG/GIF/WebP 图片。
 - 通过公网 Relay 和仅主动出站连接的本机 Runner 实现手机访问。
 - SSE Token 流式输出和分阶段耗时。
