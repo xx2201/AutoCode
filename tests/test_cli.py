@@ -3,18 +3,47 @@ from types import SimpleNamespace
 import pytest
 from rich.console import Console
 
+from autocode.config import Config
 from autocode.cli import (
     _clear_terminal,
     _context_toolbar,
     _format_token_count,
     _load_resumable_session,
     _prompt_approval,
+    _render_conversation_history,
     _resume_candidates,
     _show_help,
     _welcome_panel,
     main,
 )
-from autocode.config import Config
+
+
+def test_render_conversation_history_hides_legacy_visual_carrier(monkeypatch):
+    console = Console(record=True, width=120)
+    monkeypatch.setattr("autocode.cli.console", console)
+
+    _render_conversation_history(
+        [
+            {"role": "user", "content": "真实问题"},
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Visual content loaded by tools: read."},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/jpeg;base64,abc"},
+                    },
+                ],
+            },
+            {"role": "assistant", "content": "真实回答"},
+        ]
+    )
+
+    output = console.export_text(styles=False)
+    assert "真实问题" in output
+    assert "真实回答" in output
+    assert "Visual content loaded by tools" not in output
+    assert "[image]" not in output
 
 
 class _Pending:

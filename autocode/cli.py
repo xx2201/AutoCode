@@ -19,7 +19,7 @@ from .agent import Agent
 from .config import Config
 from .context import render_todos
 from .llm import LLM, LiteLLM
-from .message_content import content_text
+from .message_content import content_text, is_internal_visual_context
 from .mcp import get_shared_mcp_manager
 from .tools.factory import build_agent_tools
 from .state import (
@@ -586,6 +586,7 @@ def _render_conversation_history(messages: list[dict]) -> None:
     visible = [
         message for message in messages
         if message.get("role") in {"user", "assistant"}
+        and not is_internal_visual_context(message.get("content"))
         and content_text(message.get("content", "")).strip()
     ]
     if not visible:

@@ -247,7 +247,10 @@ def test_remote_manager_presents_uploaded_attachment_metadata(tmp_path):
     ]
     checkpoint = checkpoint_module.load_checkpoint(runtime.agent.session_state.session_id)
     assert checkpoint is not None
-    assert "base64" not in str(checkpoint[1])
+    stored_user = checkpoint[1][0]
+    assert stored_user["model_content"][0]["type"] == "image_url"
+    assert "model_content" not in messages[0]
+    assert "base64" not in str(messages)
 
 
 def test_remote_manager_persists_changed_files_on_latest_turn(tmp_path):

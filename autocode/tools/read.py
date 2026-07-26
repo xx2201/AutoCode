@@ -16,8 +16,14 @@ _MAX_TEXT_CHARS = 50_000
 _MAX_SINGLE_LINE_CHARS = 20_000
 _DEFAULT_LINE_LIMIT = 2_000
 _MAX_PDF_PAGES = 20
-_IMAGE_MAX_DIMENSION = 1_568
-_IMAGE_TARGET_BYTES = 1_500_000
+_IMAGE_MAX_DIMENSION = 2_000
+_IMAGE_TARGET_BYTES = 5_000_000
+_IMAGE_FORMAT_MEDIA_TYPES = {
+    "GIF": "image/gif",
+    "JPEG": "image/jpeg",
+    "PNG": "image/png",
+    "WEBP": "image/webp",
+}
 
 
 class ReadTool(Tool):
@@ -135,26 +141,40 @@ class ReadTool(Tool):
     def _read_image(self, path: Path, detail: str) -> ToolResult:
         from PIL import Image
 
+        original = path.read_bytes()
         with Image.open(path) as source:
-            image = source.convert("RGB")
-            image.thumbnail((_IMAGE_MAX_DIMENSION, _IMAGE_MAX_DIMENSION))
-            output = io.BytesIO()
-            quality = 90
-            image.save(output, format="JPEG", quality=quality, optimize=True)
-            while output.tell() > _IMAGE_TARGET_BYTES and quality > 45:
-                quality -= 10
+            source_format = str(source.format or "").upper()
+            media_type = _IMAGE_FORMAT_MEDIA_TYPES.get(source_format)
+            width, height = source.size
+            if (
+                media_type is not None
+                and max(width, height) <= _IMAGE_MAX_DIMENSION
+                and len(original) <= _IMAGE_TARGET_BYTES
+            ):
+                payload = original
+            else:
+                image = source.convert("RGB")
+                image.thumbnail((_IMAGE_MAX_DIMENSION, _IMAGE_MAX_DIMENSION))
+                width, height = image.size
                 output = io.BytesIO()
+                quality = 90
                 image.save(output, format="JPEG", quality=quality, optimize=True)
-        encoded = base64.b64encode(output.getvalue()).decode("ascii")
+                while output.tell() > _IMAGE_TARGET_BYTES and quality > 45:
+                    quality -= 10
+                    output = io.BytesIO()
+                    image.save(output, format="JPEG", quality=quality, optimize=True)
+                payload = output.getvalue()
+                media_type = "image/jpeg"
+        encoded = base64.b64encode(payload).decode("ascii")
         relative = self._display_path(path)
         return ToolResult(
             text=(
                 f"Loaded image for visual inspection: {relative} "
-                f"({image.width}x{image.height}, {output.tell()} bytes)"
+                f"({width}x{height}, {len(payload)} bytes)"
             ),
             model_content=[{
                 "type": "image_url",
-                "image_url": {"url": f"data:image/jpeg;base64,{encoded}", "detail": detail},
+                "image_url": {"url": f"data:{media_type};base64,{encoded}", "detail": detail},
             }],
         )
 
