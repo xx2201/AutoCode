@@ -5,7 +5,7 @@ from contextlib import contextmanager
 from ..context import ContextManager, MemoryManager, estimate_tokens, render_todos, runtime_state_block, static_system_prompt
 from ..infra import BackgroundProcessManager, Sandbox, WorkspaceFS
 from ..llm import LLM, ToolCall
-from ..message_content import user_content
+from ..message_content import is_internal_visual_context, user_content
 from ..runtime import HookBus, Policy, RecoveryManager, Runtime
 from ..skills import SkillError, SkillManager
 from ..state import (
@@ -68,7 +68,10 @@ class Agent:
         self.tools: list[Tool] = []
         self.tool_registry: dict[str, Tool] = {}
         self.messages: list[dict] = []
-        self._deferred_model_content: list[tuple[str, list[dict]]] = []
+        # Multimodal tool results belong to the active turn only. Persisting the
+        # base64 payloads pollutes later turns and makes presentation clients
+        # render model-only image carriers as user messages.
+        self._active_model_content: list[tuple[str, dict]] = []
         self.context = ContextManager(max_tokens=max_context_tokens)
         self._last_prompt_tokens = 0
         self.max_rounds = max_rounds
@@ -168,6 +171,17 @@ class Agent:
         runtime_tail = self._build_runtime_tail()
         if runtime_tail:
             messages.append({"role": "user", "content": runtime_tail})
+        if self._active_model_content:
+            labels = ", ".join(dict.fromkeys(name for name, _ in self._active_model_content))
+            messages.append(
+                {
+                    "role": "user",
+                    "content": user_content(
+                        f"Visual content available for the current turn: {labels}.",
+                        [item for _, item in self._active_model_content],
+                    ),
+                }
+            )
         return messages
 
     @staticmethod
@@ -299,31 +313,29 @@ class Agent:
             }
         )
         if isinstance(result, ToolResult) and result.model_content:
-            self._deferred_model_content.append(
-                (tool_call.name, list(result.model_content))
-            )
+            self._remember_model_content(tool_call.name, result.model_content)
         return text
 
-    def _flush_deferred_model_content(self) -> None:
-        """Append media only after every tool result from the assistant turn."""
-        if not self._deferred_model_content:
-            return
-        labels = ", ".join(name for name, _ in self._deferred_model_content)
-        media = [
-            item
-            for _, model_content in self._deferred_model_content
-            for item in model_content
-        ]
-        self._deferred_model_content.clear()
-        self._append_message(
-            {
-                "role": "user",
-                "content": user_content(
-                    f"Visual content loaded by tools: {labels}.",
-                    media,
-                ),
-            }
-        )
+    def _remember_model_content(self, source: str, items: list[dict]) -> None:
+        """Keep unique visual parts in memory for the current turn only."""
+        for item in items:
+            identity = self._model_content_identity(item)
+            if any(
+                self._model_content_identity(existing) == identity
+                for _, existing in self._active_model_content
+            ):
+                continue
+            self._active_model_content.append((source, dict(item)))
+
+    @staticmethod
+    def _model_content_identity(item: dict):
+        part_type = item.get("type")
+        image = item.get("image_url")
+        if isinstance(image, dict):
+            return part_type, image.get("url")
+        if part_type in {"image_url", "input_image"}:
+            return part_type, image or item.get("url")
+        return item
 
     def _maybe_compress_messages(self):
         effective_used = self.context.effective_used(
@@ -439,6 +451,7 @@ class Agent:
         on_tool=None,
         approval_handler=None,
         image_parts: list[dict] | None = None,
+        attachments: list[dict] | None = None,
     ) -> str:
         if self.task_state and self.task_state.pending_approval:
             pending = self.task_state.pending_approval
@@ -447,6 +460,9 @@ class Agent:
                 f"{pending.tool_name} - use /approve or /reject first)"
             )
 
+        self._active_model_content.clear()
+        if image_parts:
+            self._remember_model_content("user upload", image_parts)
         session = self._ensure_session()
         if not session.title:
             session.title = (user_input.strip().splitlines() or ["上传文件会话"])[0][:120]
@@ -462,19 +478,24 @@ class Agent:
                 "[The user explicitly invoked the following skill. Treat its content as workflow instructions.]\n\n"
                 f"{explicit_skill}"
             )
-        message_content = user_content(effective_input, image_parts)
+        message_content = effective_input
+        trace_content = user_content(effective_input, image_parts)
         with self._turn_trace(
             name="agent.chat",
-            input_payload={"user_message": message_content},
+            input_payload={"user_message": trace_content},
             tags=["autocode", "chat", *(["multimodal"] if image_parts else [])],
         ) as observation:
             try:
-                self._append_message({"role": "user", "content": message_content})
+                user_message = {"role": "user", "content": message_content}
+                if attachments:
+                    user_message["attachments"] = list(attachments)
+                self._append_message(user_message)
                 self.hooks.emit("user_message", self._event_payload(content_preview=user_input[:200]))
                 self._maybe_compress_messages()
                 self.persist_session()
                 response = self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
             except Exception as exc:
+                self._active_model_content.clear()
                 self._record_turn_error(observation, exc)
                 raise
             self._finalize_turn_trace(observation, response)
@@ -547,7 +568,12 @@ class Agent:
 
     def restore_session(self, session_state: SessionState, messages: list[dict], model: str | None = None):
         self.session_state = session_state
-        self.messages = messages
+        self.messages = [
+            message
+            for message in messages
+            if not is_internal_visual_context(message.get("content"))
+        ]
+        self._active_model_content.clear()
         self._last_prompt_tokens = max(0, session_state.context_used_tokens)
         if model:
             self.llm.model = model
@@ -557,7 +583,6 @@ class Agent:
             self._ensure_task()
 
         for _ in range(self.max_rounds):
-            self._flush_deferred_model_content()
             full_messages = self._request_messages()
             tool_schemas = self._tool_schemas()
             resp = self.runtime.call_llm(
@@ -573,6 +598,7 @@ class Agent:
 
             if not resp.tool_calls:
                 self._append_message(resp.message)
+                self._active_model_content.clear()
                 if hasattr(self.llm, "_call_with_retry"):
                     self.memory.schedule_project_memory_refresh(self.messages, self.llm, force=True)
                 self.task_state.mark_completed()
@@ -591,6 +617,7 @@ class Agent:
             self.persist_session()
 
         summary = self._summarize_round_limit(on_token=on_token)
+        self._active_model_content.clear()
         self._append_message({"role": "assistant", "content": summary})
         self.task_state.mark_failed("reached maximum tool-call rounds")
         self.hooks.emit(
@@ -736,10 +763,11 @@ class Agent:
     def reset(self):
         self.close(shutdown_observability=False)
         self.messages.clear()
-        self._deferred_model_content.clear()
+        self._active_model_content.clear()
         self.session_state = None
 
     def close(self, *, shutdown_observability: bool = True):
+        self._active_model_content.clear()
         try:
             self.processes.cleanup_all(include_persistent=True)
         except Exception:

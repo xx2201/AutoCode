@@ -6,6 +6,7 @@ from PIL import Image
 from autocode.agent import Agent
 from autocode.attachments import prepare_attachments
 from autocode.llm import LLM, LLMResponse, ToolCall
+from autocode.state import SessionState
 from autocode.tools.read import ReadTool
 
 
@@ -68,10 +69,15 @@ def test_uploaded_image_reaches_the_model_and_workspace(tmp_path):
 
     assert reply == "我看到了图片"
     user_message = next(
-        item for item in captured[0]["messages"] if item.get("role") == "user"
+        item
+        for item in captured[0]["messages"]
+        if item.get("role") == "user" and isinstance(item.get("content"), list)
     )
     assert user_message["content"][0]["type"] == "text"
     assert user_message["content"][1]["type"] == "image_url"
+    assert agent.messages[0]["content"] == prepared.prompt
+    assert not any(isinstance(message.get("content"), list) for message in agent.messages)
+    assert captured[0]["messages"][-1] is user_message
 
 
 def test_read_tool_feeds_workspace_image_into_next_model_round(tmp_path):
@@ -108,6 +114,7 @@ def test_read_tool_feeds_workspace_image_into_next_model_round(tmp_path):
     assert visual_message["content"][1]["image_url"]["url"].startswith(
         "data:image/jpeg;base64,"
     )
+    assert not any(isinstance(message.get("content"), list) for message in agent.messages)
 
 
 def test_all_parallel_tool_results_precede_visual_user_message(tmp_path):
@@ -173,3 +180,72 @@ def test_all_parallel_tool_results_precede_visual_user_message(tmp_path):
     )
     assert image_tool_index < visual_user_index
     assert text_tool_index < visual_user_index
+
+
+def test_repeated_read_keeps_one_ephemeral_image_for_current_turn(tmp_path):
+    Image.new("RGB", (4, 4), "red").save(tmp_path / "diagram.png")
+
+    class RepeatingReadLLM:
+        model = "vision-model"
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+        total_cache_read_tokens = 0
+        total_cache_miss_tokens = 0
+
+        def __init__(self):
+            self.calls = []
+
+        def chat(self, messages, tools=None, on_token=None):
+            self.calls.append(messages)
+            if len(self.calls) < 3:
+                return LLMResponse(
+                    content="",
+                    tool_calls=[
+                        ToolCall(
+                            id=f"image-{len(self.calls)}",
+                            name="read",
+                            arguments={"file_path": "diagram.png", "detail": "high"},
+                        )
+                    ],
+                )
+            return LLMResponse(content="done")
+
+    llm = RepeatingReadLLM()
+    agent = Agent(llm=llm, tools=[ReadTool()], workspace_root=str(tmp_path))
+    agent.memory.schedule_project_memory_refresh = lambda *args, **kwargs: None
+
+    assert agent.chat("inspect image") == "done"
+    final_visual = [
+        message
+        for message in llm.calls[-1]
+        if isinstance(message.get("content"), list)
+    ]
+    assert len(final_visual) == 1
+    assert len(final_visual[0]["content"]) == 2
+    assert not any(isinstance(message.get("content"), list) for message in agent.messages)
+
+
+def test_restore_removes_legacy_tool_visual_carriers(tmp_path):
+    agent = Agent(
+        llm=LLM(model="vision-model", api_key="sk-test"),
+        tools=[],
+        workspace_root=str(tmp_path),
+    )
+    messages = [
+        {"role": "user", "content": "real question"},
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Visual content loaded by tools: read."},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64,abc"},
+                },
+            ],
+        },
+        {"role": "assistant", "content": "answer"},
+    ]
+
+    agent.restore_session(SessionState(session_id="session_visual"), messages)
+
+    assert [message["content"] for message in agent.messages] == ["real question", "answer"]

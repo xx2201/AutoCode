@@ -16,7 +16,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from ..message_content import content_text
+from ..message_content import content_text, is_internal_visual_context
 
 if TYPE_CHECKING:
     from ..llm import LLM
@@ -130,6 +130,8 @@ class ContextManager:
     @staticmethod
     def _is_real_user_turn_start(message: dict) -> bool:
         if message.get("role") != "user":
+            return False
+        if is_internal_visual_context(message.get("content")):
             return False
         content = content_text(message.get("content", "")).strip()
         return not content.startswith(("[Context compressed - conversation summary]", "[Hard context reset]"))

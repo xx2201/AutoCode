@@ -45,6 +45,12 @@ export function groupConversation(messages) {
   let current = null;
 
   messages.forEach((message, index) => {
+    if (
+      message.role === "user"
+      && String(message.content || "").startsWith("Visual content loaded by tools:")
+    ) {
+      return;
+    }
     if (message.role === "user") {
       current = {
         id: messageKey(message, index),

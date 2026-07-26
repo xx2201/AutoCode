@@ -7,6 +7,7 @@ from autocode.runtime import Policy
 from autocode.state import SessionState, TaskState
 from autocode.state import PolicyDecision
 from autocode.tools.base import Tool
+from autocode.state.transcript import TranscriptLogger
 
 
 class _DelegationTool(Tool):
@@ -174,6 +175,79 @@ def test_remote_manager_exposes_bounded_conversation_snapshot(tmp_path):
     assert messages[1]["content"] == "finished"
     assert messages[0]["turn_id"].startswith("task_")
     assert messages[0]["turn_elapsed_ms"] >= 0
+
+
+def test_remote_manager_exposes_complete_cli_transcript_and_hides_visual_carriers(
+    tmp_path, monkeypatch
+):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    manager = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: _FakeLLM([LLMResponse(content="finished")]),
+        tools=[],
+    )
+    result = manager.submit(808, "first prompt")
+    runtime = manager._require_runtime(808)
+    transcript = TranscriptLogger()
+    for index in range(120):
+        transcript.append_message(
+            result.session_id,
+            {"role": "assistant", "content": f"history-{index}"},
+        )
+    transcript.append_message(
+        result.session_id,
+        {
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "Visual content loaded by tools: read."},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/jpeg;base64,abc"},
+                },
+            ],
+        },
+    )
+
+    messages = manager.conversation_messages(808)
+
+    assert messages[0]["content"] == "first prompt"
+    assert messages[-1]["content"] == "history-119"
+    assert len(messages) == 122
+    assert all("Visual content loaded by tools" not in message["content"] for message in messages)
+
+
+def test_remote_manager_presents_uploaded_attachment_metadata(tmp_path):
+    llm = _FakeLLM([LLMResponse(content="finished")])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
+    runtime = manager._get_or_create_runtime(808)
+    runtime.agent.chat(
+        "describe upload",
+        image_parts=[
+            {
+                "type": "image_url",
+                "image_url": {"url": "data:image/png;base64,abc", "detail": "auto"},
+            }
+        ],
+        attachments=[
+            {
+                "name": "screen.png",
+                "path": ".autocode/uploads/screen.png",
+                "media_type": "image/png",
+                "size": 123,
+                "is_image": True,
+            }
+        ],
+    )
+
+    messages = manager.conversation_messages(808)
+
+    assert messages[0]["content"] == "describe upload"
+    assert messages[0]["attachments"] == [
+        {"name": "screen.png", "media_type": "image/png", "size": 123}
+    ]
+    checkpoint = checkpoint_module.load_checkpoint(runtime.agent.session_state.session_id)
+    assert checkpoint is not None
+    assert "base64" not in str(checkpoint[1])
 
 
 def test_remote_manager_persists_changed_files_on_latest_turn(tmp_path):
