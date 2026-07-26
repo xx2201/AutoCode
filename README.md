@@ -20,7 +20,7 @@ flowchart LR
     Runner --> Registry["~/.autocode/workspaces.json"]
     Registry --> Workspace["Local project workspace"]
     Runner --> Agent["AutoCoder agent"]
-    Agent --> Model["OpenAI-compatible model"]
+    Agent --> Model["Anthropic Messages (default)<br/>or Chat Completions"]
     Agent --> Tools["File, shell, process, image,<br/>Git, MCP and sub-agent tools"]
     Agent -.-> Langfuse["Langfuse (optional)"]
 ```
@@ -33,7 +33,8 @@ UI can only select a workspace that is already registered and still exists.
 ## Features
 
 - Interactive and one-shot coding-agent CLI.
-- OpenAI-compatible model APIs, with optional LiteLLM support.
+- Native Anthropic Messages API by default, with OpenAI-compatible Chat
+  Completions and optional LiteLLM support.
 - Workspace-scoped file, search, shell, background-process, image, task-list,
   and sub-agent tools.
 - MCP stdio servers exposed to the agent as regular tools.
@@ -54,7 +55,7 @@ UI can only select a workspace that is already registered and still exists.
 ## Requirements
 
 - Python 3.10 or newer.
-- A model name, API key, and OpenAI-compatible API endpoint.
+- A model name, API key, and Anthropic Messages or Chat Completions endpoint.
 - Git for the Web Git panel.
 - Node.js and npm only when rebuilding the React frontend.
 - HTTPS and a trusted CA certificate when a local Runner connects to a remote
@@ -92,18 +93,23 @@ AutoCoder reads the nearest `.env` file from the current directory upward.
 Create one in the project from which you will run the agent:
 
 ```dotenv
-AUTOCODE_MODEL=gpt-5
+AUTOCODE_MODEL=macaron-v1-coding-venti
 AUTOCODE_API_KEY=your-api-key
-AUTOCODE_BASE_URL=https://api.openai.com/v1
+AUTOCODE_BASE_URL=https://mintcn.macaron.xin
 
 # Optional
-AUTOCODE_PROVIDER=openai
+AUTOCODE_PROVIDER=anthropic
 AUTOCODE_MAX_TOKENS=4096
 AUTOCODE_TEMPERATURE=0
 AUTOCODE_MAX_CONTEXT=1000000
 ```
 
-`AUTOCODE_PROVIDER=litellm` selects the optional LiteLLM adapter.
+`AUTOCODE_PROVIDER=anthropic` (the default) uses `/v1/messages`, including
+native image blocks inside tool results. Set `AUTOCODE_PROVIDER=openai` to keep
+using an OpenAI-compatible `/chat/completions` endpoint, or `litellm` for the
+optional LiteLLM adapter. Provider base URLs must be the root expected by the
+corresponding official SDK; for Anthropic-compatible gateways, do not append
+`/v1/messages` yourself.
 
 ## CLI
 
@@ -194,6 +200,7 @@ AUTOCODE_RELAY_CA_CERT=C:/path/to/trusted-relay-ca.pem
 AUTOCODE_MODEL=gpt-5
 AUTOCODE_API_KEY=your-api-key
 AUTOCODE_BASE_URL=https://api.openai.com/v1
+AUTOCODE_PROVIDER=openai
 ```
 
 Start it on the workspace-owning computer:

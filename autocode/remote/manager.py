@@ -12,7 +12,7 @@ from typing import Hashable
 from ..agent import Agent
 from ..attachments import prepare_attachments
 from ..config import Config
-from ..llm import LLM, LiteLLM
+from ..llm import llm_class_for_provider
 from ..message_content import content_text, is_internal_visual_context
 from ..mcp import get_shared_mcp_manager
 from ..observability import LangfuseTracer
@@ -678,7 +678,7 @@ class RemoteManager:
         return built
 
     def _build_llm(self):
-        llm_cls = LiteLLM if self.config.provider == "litellm" else LLM
+        llm_cls = llm_class_for_provider(self.config.provider)
         return llm_cls(
             model=self.config.model,
             api_key=self.config.api_key,

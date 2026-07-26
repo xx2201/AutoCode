@@ -212,9 +212,9 @@ class TestChat:
 
 
 class TestConfigProvider:
-    def test_default_provider_is_openai(self):
+    def test_default_provider_is_anthropic(self):
         config = Config()
-        assert config.provider == "openai"
+        assert config.provider == "anthropic"
 
     def test_provider_from_env(self):
         with mock.patch.dict("os.environ", {"AUTOCODE_PROVIDER": "litellm"}, clear=False):
@@ -222,9 +222,9 @@ class TestConfigProvider:
             assert config.provider == "litellm"
 
     def test_cli_picks_litellm_class(self):
-        from autocode.llm import LiteLLM
+        from autocode.llm import LiteLLM, llm_class_for_provider
         config = Config(provider="litellm", model="anthropic/claude-3-haiku", api_key="k")
-        llm_cls = LiteLLM if config.provider == "litellm" else LLM
+        llm_cls = llm_class_for_provider(config.provider)
         assert llm_cls is LiteLLM
 
 

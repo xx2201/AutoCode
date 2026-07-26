@@ -44,7 +44,7 @@ class Config:
     max_tokens: int = 4096
     temperature: float = 0.0
     max_context_tokens: int = 1_000_000
-    provider: str = "openai"
+    provider: str = "anthropic"
     workspace_root: str = ""
     auto_approve: bool = False
     mcp_config_path: str = ""
@@ -69,7 +69,7 @@ class Config:
             max_tokens=int(_resolve_config_value(snapshot, "AUTOCODE_MAX_TOKENS", "4096")),
             temperature=float(_resolve_config_value(snapshot, "AUTOCODE_TEMPERATURE", "0")),
             max_context_tokens=int(_resolve_config_value(snapshot, "AUTOCODE_MAX_CONTEXT", "1000000")),
-            provider=_resolve_config_value(snapshot, "AUTOCODE_PROVIDER", "openai"),
+            provider=_resolve_config_value(snapshot, "AUTOCODE_PROVIDER", "anthropic"),
             workspace_root=_resolve_config_value(snapshot, "AUTOCODE_WORKSPACE_ROOT", str(Path.cwd())),
             auto_approve=_resolve_config_value(snapshot, "AUTOCODE_AUTO_APPROVE", "").lower() in {"1", "true", "yes", "on"},
             mcp_config_path=_resolve_config_value(snapshot, "AUTOCODE_MCP_CONFIG"),

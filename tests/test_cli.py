@@ -316,14 +316,15 @@ def test_cli_registers_current_workspace_before_running_agent(monkeypatch, tmp_p
         lambda: SimpleNamespace(
             model=None,
             base_url=None,
-            api_key=None,
-            prompt="inspect",
+                api_key=None,
+                provider=None,
+                prompt="inspect",
             resume=None,
         ),
     )
     monkeypatch.setattr("autocode.cli.Config.from_env", lambda: config)
     monkeypatch.setattr("autocode.cli.WorkspaceRegistry", _Registry)
-    monkeypatch.setattr("autocode.cli.LLM", lambda **kwargs: object())
+    monkeypatch.setattr("autocode.cli.llm_class_for_provider", lambda provider: lambda **kwargs: object())
     monkeypatch.setattr("autocode.cli.get_shared_mcp_manager", lambda *args: _McpManager())
     monkeypatch.setattr("autocode.cli.build_agent_tools", lambda *args, **kwargs: [])
     monkeypatch.setattr("autocode.cli.Agent", _Agent)

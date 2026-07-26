@@ -52,6 +52,7 @@ def test_config_defaults(monkeypatch):
         "AUTOCODE_MODEL",
         "AUTOCODE_API_KEY",
         "AUTOCODE_BASE_URL",
+        "AUTOCODE_PROVIDER",
         "AUTOCODE_MAX_TOKENS",
         "AUTOCODE_AUTO_APPROVE",
         "OPENAI_API_KEY",
@@ -68,6 +69,7 @@ def test_config_defaults(monkeypatch):
     assert c.model == ""
     assert c.api_key == ""
     assert c.base_url is None
+    assert c.provider == "anthropic"
     assert c.langfuse_public_key == ""
     assert c.langfuse_secret_key == ""
     assert c.langfuse_base_url is None

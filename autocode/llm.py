@@ -1,12 +1,8 @@
-"""LLM provider layer - thin wrapper over OpenAI-compatible APIs.
+"""Provider adapters for native Anthropic Messages and Chat Completions.
 
-Since most providers (DeepSeek, Qwen, Kimi, GLM, Ollama, etc.) expose an
-OpenAI-compatible endpoint, we just use the openai SDK directly.  Switch
-provider by changing OPENAI_BASE_URL + OPENAI_API_KEY. That's it.
-
-For providers that are NOT OpenAI-compatible (AWS Bedrock, Google Vertex,
-etc.), use the LiteLLM backend which routes to 100+ providers through a
-single unified interface. Set AUTOCODE_PROVIDER=litellm.
+Anthropic Messages is the default protocol. OpenAI-compatible providers remain
+available through ``AUTOCODE_PROVIDER=openai``; LiteLLM is an optional third
+adapter for provider-specific deployments.
 """
 
 import json
@@ -14,6 +10,13 @@ import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 
+from anthropic import (
+    Anthropic,
+    APIConnectionError as AnthropicAPIConnectionError,
+    APITimeoutError as AnthropicAPITimeoutError,
+    APIStatusError as AnthropicAPIStatusError,
+    RateLimitError as AnthropicRateLimitError,
+)
 from openai import OpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError
 
 from .observability import LangfuseTracer
@@ -73,6 +76,14 @@ def _parse_tool_arguments(raw_args: str) -> tuple[dict, str | None]:
 
 
 def _usage_field(obj, name: str):
+    if obj is None:
+        return None
+    if isinstance(obj, dict):
+        return obj.get(name)
+    return getattr(obj, name, None)
+
+
+def _field(obj, name: str):
     if obj is None:
         return None
     if isinstance(obj, dict):
@@ -150,6 +161,8 @@ _PRICING = {
 
 
 class LLM:
+    api_format = "chat_completions"
+
     def __init__(
         self,
         model: str,
@@ -340,17 +353,251 @@ class LLM:
         for attempt in range(max_retries):
             try:
                 return self.client.chat.completions.create(**params)
-            except (RateLimitError, APITimeoutError, APIConnectionError) as e:
+            except (RateLimitError, APITimeoutError, APIConnectionError):
                 if attempt == max_retries - 1:
                     raise
-                wait = 2 ** attempt
-                time.sleep(wait)
-            except APIError as e:
+                time.sleep(2 ** attempt)
+            except APIError as exc:
                 # 5xx = server error, retry; 4xx = client error, don't
-                if e.status_code and e.status_code >= 500 and attempt < max_retries - 1:
+                if exc.status_code and exc.status_code >= 500 and attempt < max_retries - 1:
                     time.sleep(2 ** attempt)
                 else:
                     raise
+
+
+class AnthropicMessagesLLM(LLM):
+    """Native Anthropic Messages backend using the official Python SDK."""
+
+    api_format = "messages"
+
+    def __init__(
+        self,
+        model: str,
+        api_key: str,
+        base_url: str | None = None,
+        langfuse_public_key: str = "",
+        langfuse_secret_key: str = "",
+        langfuse_base_url: str | None = None,
+        tracer: LangfuseTracer | None = None,
+        **kwargs,
+    ):
+        self.model = model
+        self.api_key = api_key
+        self.base_url = base_url
+        self.langfuse_public_key = langfuse_public_key
+        self.langfuse_secret_key = langfuse_secret_key
+        self.langfuse_base_url = langfuse_base_url
+        self.client = Anthropic(
+            api_key=api_key,
+            base_url=base_url,
+            max_retries=0,
+        )
+        self.extra = kwargs
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+        self.total_cache_read_tokens = 0
+        self.total_cache_miss_tokens = 0
+        self.tracer = tracer or LangfuseTracer(
+            public_key=langfuse_public_key,
+            secret_key=langfuse_secret_key,
+            base_url=langfuse_base_url,
+        )
+
+    def clone(self) -> "AnthropicMessagesLLM":
+        return type(self)(
+            model=self.model,
+            api_key=self.api_key,
+            base_url=self.base_url,
+            langfuse_public_key=self.langfuse_public_key,
+            langfuse_secret_key=self.langfuse_secret_key,
+            langfuse_base_url=self.langfuse_base_url,
+            tracer=self.tracer,
+            **self.extra,
+        )
+
+    def chat(
+        self,
+        messages: list[dict],
+        tools: list[dict] | None = None,
+        on_token=None,
+    ) -> LLMResponse:
+        """Send one streaming Messages request and normalize its response."""
+        system, message_params = self._split_system(messages)
+        request_tools = self._convert_tools(tools or [])
+        max_tokens = int(self.extra.get("max_tokens", 4096))
+        params: dict = {
+            "model": self.model,
+            "max_tokens": max_tokens,
+            "messages": message_params,
+        }
+        if system:
+            params["system"] = system
+        if request_tools:
+            params["tools"] = request_tools
+        for name in ("temperature", "top_p", "top_k", "stop_sequences"):
+            value = self.extra.get(name)
+            if value is not None:
+                params[name] = value
+
+        trace_input = {
+            "system": system,
+            "messages": message_params,
+            "tools": request_tools,
+        }
+        model_parameters = {
+            key: value
+            for key, value in params.items()
+            if key not in {"messages", "system", "tools"}
+        }
+        with self.tracer.start_generation(
+            name="llm.chat",
+            input_payload=trace_input,
+            model=self.model,
+            model_parameters=model_parameters,
+            metadata={
+                "backend": type(self).__name__,
+                "api_format": self.api_format,
+                "tool_schema_count": len(request_tools),
+            },
+        ) as generation:
+            try:
+                final_message, first_content_at = self._call_with_retry(
+                    params,
+                    on_token=on_token,
+                )
+                if first_content_at is not None:
+                    generation.update(completion_start_time=first_content_at)
+                response = self._normalize_response(final_message)
+            except Exception as exc:
+                generation.update(
+                    output={"error": str(exc)},
+                    metadata={
+                        "backend": type(self).__name__,
+                        "api_format": self.api_format,
+                        "error_type": type(exc).__name__,
+                    },
+                    level="ERROR",
+                    status_message=str(exc),
+                )
+                raise
+
+            self.total_prompt_tokens += response.prompt_tokens
+            self.total_completion_tokens += response.completion_tokens
+            self.total_cache_read_tokens += response.cache_read_tokens
+            self.total_cache_miss_tokens += response.cache_miss_tokens
+            generation.update(
+                output={
+                    "content": response.content,
+                    "tool_calls": [_tool_call_payload(tool_call) for tool_call in response.tool_calls],
+                },
+                model=self.model,
+                model_parameters=model_parameters,
+                usage_details=_langfuse_usage(response),
+                metadata={
+                    "backend": type(self).__name__,
+                    "api_format": self.api_format,
+                    "tool_call_count": len(response.tool_calls),
+                    "stop_reason": _field(final_message, "stop_reason") or "",
+                },
+            )
+            return response
+
+    def _call_with_retry(self, params: dict, on_token=None, max_retries: int = 3):
+        for attempt in range(max_retries):
+            emitted_text = False
+            try:
+                first_content_at = None
+                with self.client.messages.stream(**params) as stream:
+                    for text in stream.text_stream:
+                        emitted_text = True
+                        if first_content_at is None:
+                            first_content_at = datetime.now(timezone.utc)
+                        if on_token:
+                            on_token(text)
+                    final_message = stream.get_final_message()
+                if first_content_at is None and _field(final_message, "content"):
+                    first_content_at = datetime.now(timezone.utc)
+                return final_message, first_content_at
+            except (
+                AnthropicRateLimitError,
+                AnthropicAPITimeoutError,
+                AnthropicAPIConnectionError,
+            ):
+                # Retrying after user-visible text was emitted would duplicate
+                # the prefix in CLI/Web streaming output.
+                if emitted_text or attempt == max_retries - 1:
+                    raise
+                time.sleep(2 ** attempt)
+            except AnthropicAPIStatusError as exc:
+                if exc.status_code >= 500 and attempt < max_retries - 1:
+                    time.sleep(2 ** attempt)
+                    continue
+                raise
+
+    @staticmethod
+    def _split_system(messages: list[dict]) -> tuple[str, list[dict]]:
+        system_parts: list[str] = []
+        message_params: list[dict] = []
+        for message in messages:
+            if message.get("role") == "system":
+                content = message.get("content")
+                if content:
+                    system_parts.append(str(content))
+                continue
+            message_params.append(message)
+        return "\n\n".join(system_parts), message_params
+
+    @staticmethod
+    def _convert_tools(tools: list[dict]) -> list[dict]:
+        converted: list[dict] = []
+        for tool in tools:
+            if tool.get("type") != "function":
+                continue
+            function = tool.get("function") or {}
+            converted.append(
+                {
+                    "name": str(function.get("name") or ""),
+                    "description": str(function.get("description") or ""),
+                    "input_schema": function.get("parameters")
+                    or {"type": "object", "properties": {}},
+                }
+            )
+        return converted
+
+    @staticmethod
+    def _normalize_response(message) -> LLMResponse:
+        text_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        for block in _field(message, "content") or []:
+            block_type = _field(block, "type")
+            if block_type == "text":
+                text_parts.append(str(_field(block, "text") or ""))
+            elif block_type == "tool_use":
+                arguments = _field(block, "input") or {}
+                if not isinstance(arguments, dict):
+                    arguments = {}
+                tool_calls.append(
+                    ToolCall(
+                        id=str(_field(block, "id") or ""),
+                        name=str(_field(block, "name") or ""),
+                        arguments=dict(arguments),
+                        raw_arguments=json.dumps(arguments, ensure_ascii=False),
+                    )
+                )
+
+        usage = _field(message, "usage")
+        input_tokens = _usage_int(usage, "input_tokens")
+        output_tokens = _usage_int(usage, "output_tokens")
+        cache_read = _usage_int(usage, "cache_read_input_tokens")
+        cache_creation = _usage_int(usage, "cache_creation_input_tokens")
+        return LLMResponse(
+            content="".join(text_parts),
+            tool_calls=tool_calls,
+            prompt_tokens=input_tokens + cache_read + cache_creation,
+            completion_tokens=output_tokens,
+            cache_read_tokens=cache_read,
+            cache_miss_tokens=input_tokens + cache_creation,
+        )
 
 
 class LiteLLM(LLM):
@@ -556,6 +803,27 @@ class LiteLLM(LLM):
                     time.sleep(2 ** attempt)
                 else:
                     raise
+
+
+def llm_class_for_provider(provider: str):
+    """Resolve the configured provider without silently changing protocols."""
+    normalized = provider.strip().lower()
+    providers = {
+        "anthropic": AnthropicMessagesLLM,
+        "openai": LLM,
+        "litellm": LiteLLM,
+    }
+    try:
+        return providers[normalized]
+    except KeyError as exc:
+        supported = ", ".join(sorted(providers))
+        raise ValueError(
+            f"Unsupported AUTOCODE_PROVIDER '{provider}'. Expected one of: {supported}."
+        ) from exc
+
+
+def api_format_for_provider(provider: str) -> str:
+    return str(llm_class_for_provider(provider).api_format)
 
 
 def _tool_call_payload(tool_call: ToolCall) -> dict:

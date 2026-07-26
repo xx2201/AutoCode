@@ -18,7 +18,7 @@ flowchart LR
     Runner --> Registry["~/.autocode/workspaces.json"]
     Registry --> Workspace["本机项目工作区"]
     Runner --> Agent["AutoCoder Agent"]
-    Agent --> Model["OpenAI 兼容模型"]
+    Agent --> Model["Anthropic Messages（默认）<br/>或 Chat Completions"]
     Agent --> Tools["文件、Shell、进程、图片、<br/>Git、MCP 和子 Agent 工具"]
     Agent -.-> Langfuse["Langfuse（可选）"]
 ```
@@ -30,7 +30,8 @@ flowchart LR
 ## 主要能力
 
 - 支持交互式和单次任务的代码 Agent CLI。
-- 支持 OpenAI 兼容模型 API，并可选接入 LiteLLM。
+- 默认使用原生 Anthropic Messages API，同时保留 OpenAI 兼容 Chat
+  Completions，并可选接入 LiteLLM。
 - 工作区范围内的文件、搜索、Shell、后台进程、图片、任务列表和子 Agent 工具。
 - 将 MCP stdio Server 的能力作为普通 Agent 工具使用。
 - 支持检查点恢复，CLI 和 Web 共用会话标题与历史记录。
@@ -49,7 +50,7 @@ flowchart LR
 ## 环境要求
 
 - Python 3.10 或更高版本。
-- 模型名称、API Key 和 OpenAI 兼容 API 地址。
+- 模型名称、API Key，以及 Anthropic Messages 或 Chat Completions API 地址。
 - Web Git 面板需要本机已安装 Git。
 - 只有重新构建 React 前端时才需要 Node.js 和 npm。
 - 本机 Runner 连接远程 Relay 时必须使用 HTTPS，并提供可信 CA 证书。
@@ -86,18 +87,22 @@ AutoCoder 会从当前目录开始向上查找最近的 `.env`。可以在启动
 的项目中创建：
 
 ```dotenv
-AUTOCODE_MODEL=gpt-5
+AUTOCODE_MODEL=macaron-v1-coding-venti
 AUTOCODE_API_KEY=your-api-key
-AUTOCODE_BASE_URL=https://api.openai.com/v1
+AUTOCODE_BASE_URL=https://mintcn.macaron.xin
 
 # 可选
-AUTOCODE_PROVIDER=openai
+AUTOCODE_PROVIDER=anthropic
 AUTOCODE_MAX_TOKENS=4096
 AUTOCODE_TEMPERATURE=0
 AUTOCODE_MAX_CONTEXT=1000000
 ```
 
-设置 `AUTOCODE_PROVIDER=litellm` 会启用可选的 LiteLLM 适配器。
+`AUTOCODE_PROVIDER=anthropic` 是默认值，使用 `/v1/messages`，工具图片会
+直接放进对应的 `tool_result`。设置 `AUTOCODE_PROVIDER=openai` 可继续使用
+OpenAI 兼容的 `/chat/completions`；设置为 `litellm` 则启用可选 LiteLLM
+适配器。Anthropic 兼容网关的 `AUTOCODE_BASE_URL` 应填写 SDK 使用的根地址，
+不要手动追加 `/v1/messages`。
 
 ## CLI 使用
 
@@ -181,6 +186,7 @@ AUTOCODE_RELAY_CA_CERT=C:/path/to/trusted-relay-ca.pem
 AUTOCODE_MODEL=gpt-5
 AUTOCODE_API_KEY=your-api-key
 AUTOCODE_BASE_URL=https://api.openai.com/v1
+AUTOCODE_PROVIDER=openai
 ```
 
 在拥有工作区的电脑上启动：
