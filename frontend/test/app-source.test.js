@@ -17,3 +17,13 @@ test("App JSX compiles after adding interaction controls", async () => {
   assert.ok(transformed.code.includes("/api/turn/message"));
   assert.ok(transformed.code.includes("/api/changes/action"));
 });
+
+test("approval request is rendered in the conversation instead of a page-wide banner", async () => {
+  const source = await readFile(appPath, "utf8");
+  const approvalIndex = source.indexOf("<ApprovalRequest");
+  const messageEndIndex = source.indexOf("<div ref={messageEndRef}");
+
+  assert.ok(approvalIndex >= 0, "expected the approval request component");
+  assert.ok(messageEndIndex > approvalIndex, "approval should appear at the end of the conversation");
+  assert.doesNotMatch(source, /className="approval-banner"/);
+});

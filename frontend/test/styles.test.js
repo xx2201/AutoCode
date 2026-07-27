@@ -20,3 +20,20 @@ test("markdown code blocks render as light inline work instead of a dark panel",
   assert.match(rule, /border-left:\s*2px solid/);
   assert.doesNotMatch(rule, /#292c3b|#292b35/);
 });
+
+test("approval request uses a neutral inline card instead of the legacy warning banner", () => {
+  const rule = styles.match(/\.approval-request\s*\{([^}]*)\}/)?.[1];
+
+  assert.ok(rule, "expected an inline approval request rule");
+  assert.match(rule, /border:\s*1px solid #dfe1e7/);
+  assert.match(rule, /background:\s*#fff/);
+  assert.doesNotMatch(styles, /\.approval-banner|#fffaf0/);
+});
+
+test("mobile approval actions fit the viewport without horizontal scrolling", () => {
+  const mobile = styles.match(/@media \(max-width: 720px\)\s*\{([\s\S]*)\}\s*$/)?.[1];
+
+  assert.ok(mobile, "expected the mobile media query");
+  assert.match(mobile, /\.approval-request-actions\s*\{[^}]*grid-template-columns:\s*1fr 1fr/);
+  assert.match(mobile, /\.approval-request-target\s*\{[^}]*grid-template-columns:\s*1fr/);
+});

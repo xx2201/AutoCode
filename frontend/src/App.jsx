@@ -3,7 +3,6 @@ import {
   ArrowRight,
   Check,
   ChevronDown,
-  CircleStop,
   Clock3,
   Code2,
   Download,
@@ -24,7 +23,6 @@ import {
   Paperclip,
   Pencil,
   PanelLeftClose,
-  Play,
   Plus,
   RefreshCw,
   Redo2,
@@ -43,6 +41,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import FilePanel from "./FilePanel";
 import GitPanel from "./GitPanel";
+import { approvalPresentation } from "./approval";
 import {
   createPendingInput,
   formatDuration,
@@ -87,6 +86,71 @@ function attachChangedFilesToLatestTurn(messages, changedFiles = []) {
     changed_files: changedFiles,
   };
   return next;
+}
+
+function ApprovalRequest({ pending, busy, onResolve }) {
+  const view = approvalPresentation(pending);
+  return (
+    <section
+      className={`approval-request approval-${view.tone}`}
+      aria-labelledby="approval-request-title"
+    >
+      <header className="approval-request-head">
+        <span className="approval-request-mark"><ShieldCheck size={17} /></span>
+        <div>
+          <small>需要确认</small>
+          <h3 id="approval-request-title">{view.title}</h3>
+        </div>
+      </header>
+
+      <p className="approval-request-summary">{view.summary}</p>
+
+      <div className="approval-request-target">
+        <span>{view.targetLabel}</span>
+        <code>{view.target}</code>
+      </div>
+
+      <div className="approval-request-risk">
+        <ShieldCheck size={14} />
+        <span>{view.reason}</span>
+      </div>
+
+      <details className="approval-request-details">
+        <summary>
+          <ChevronDown size={15} />
+          {view.detailLabel}
+        </summary>
+        <pre>{view.detail}</pre>
+      </details>
+
+      <footer className="approval-request-footer">
+        <p>{view.note}</p>
+        <div className="approval-request-actions">
+          <button type="button" disabled={busy} onClick={() => onResolve("reject")}>
+            拒绝
+          </button>
+          <button
+            className="approval-allow"
+            type="button"
+            disabled={busy}
+            onClick={() => onResolve("approve")}
+          >
+            {view.allowLabel}
+          </button>
+          {!pending.pending_requires_manual && (
+            <button
+              className="approval-allow"
+              type="button"
+              disabled={busy}
+              onClick={() => onResolve("approve_all")}
+            >
+              {view.allowAllLabel}
+            </button>
+          )}
+        </div>
+      </footer>
+    </section>
+  );
 }
 
 function clientIdFor(workspaceId) {
@@ -1123,7 +1187,7 @@ export default function App() {
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, busy]);
+  }, [messages, busy, pending]);
 
   useEffect(() => {
     if (authState !== "ready") return undefined;
@@ -2175,38 +2239,18 @@ export default function App() {
                     onChangeAction={(action) => changeTurnFiles(turn, action)}
                   />
                 ))}
+                {pending && (
+                  <ApprovalRequest
+                    pending={pending}
+                    busy={busy}
+                    onResolve={resolveApproval}
+                  />
+                )}
                 <div ref={messageEndRef} />
               </div>
             )}
           </div>
         </section>
-
-        {pending && (
-          <section className="approval-banner">
-            <div className="approval-icon"><ShieldCheck size={21} /></div>
-            <div className="approval-copy">
-              <strong>需要你的确认</strong>
-              <span>{pending.pending_tool} · {pending.pending_reason || "此操作需要审批"}</span>
-              <code>
-                {pending.pending_arguments?.command ||
-                  JSON.stringify(pending.pending_arguments || {}, null, 2)}
-              </code>
-            </div>
-            <div className="approval-actions">
-              <button type="button" onClick={() => resolveApproval("reject")}>
-                <CircleStop size={16} /> 拒绝
-              </button>
-              <button type="button" onClick={() => resolveApproval("approve")}>
-                <Check size={16} /> 批准一次
-              </button>
-              {!pending.pending_requires_manual && (
-                <button className="approve-primary" type="button" onClick={() => resolveApproval("approve_all")}>
-                  <Play size={16} /> 批准后续普通操作
-                </button>
-              )}
-            </div>
-          </section>
-        )}
 
         <footer className="composer-area">
           <PendingInputs items={pendingInputs} />
