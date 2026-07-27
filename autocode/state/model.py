@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+import uuid
 from dataclasses import dataclass, field
 
 
@@ -40,6 +41,7 @@ class PolicyDecision:
 
 @dataclass
 class PendingApproval:
+    approval_id: str
     tool_call_id: str
     tool_name: str
     arguments: dict
@@ -47,11 +49,12 @@ class PendingApproval:
     requires_manual: bool = False
     approval_scope: str = ""
     approval_label: str = ""
-    remaining_tool_calls: list[dict] = field(default_factory=list)
+    decision: str = "pending"
     requested_at: str = field(default_factory=_now)
 
     def to_dict(self) -> dict:
         return {
+            "approval_id": self.approval_id,
             "tool_call_id": self.tool_call_id,
             "tool_name": self.tool_name,
             "arguments": self.arguments,
@@ -59,13 +62,14 @@ class PendingApproval:
             "requires_manual": self.requires_manual,
             "approval_scope": self.approval_scope,
             "approval_label": self.approval_label,
-            "remaining_tool_calls": self.remaining_tool_calls,
+            "decision": self.decision,
             "requested_at": self.requested_at,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "PendingApproval":
         return cls(
+            approval_id=data.get("approval_id", uuid.uuid4().hex),
             tool_call_id=data.get("tool_call_id", ""),
             tool_name=data.get("tool_name", ""),
             arguments=data.get("arguments", {}),
@@ -73,8 +77,51 @@ class PendingApproval:
             requires_manual=bool(data.get("requires_manual", False)),
             approval_scope=data.get("approval_scope", ""),
             approval_label=data.get("approval_label", ""),
-            remaining_tool_calls=list(data.get("remaining_tool_calls", [])),
+            decision=data.get("decision", "pending"),
             requested_at=data.get("requested_at", _now()),
+        )
+
+
+@dataclass
+class PendingToolBatch:
+    batch_id: str
+    turn_id: str
+    tool_calls: list[dict]
+    policy_decisions: list[dict | None]
+    approvals: list[PendingApproval]
+    state: str = "waiting"
+    created_at: str = field(default_factory=_now)
+
+    def unresolved(self) -> list[PendingApproval]:
+        return [item for item in self.approvals if item.decision == "pending"]
+
+    def is_ready(self) -> bool:
+        return bool(self.approvals) and not self.unresolved()
+
+    def to_dict(self) -> dict:
+        return {
+            "batch_id": self.batch_id,
+            "turn_id": self.turn_id,
+            "tool_calls": list(self.tool_calls),
+            "policy_decisions": list(self.policy_decisions),
+            "approvals": [item.to_dict() for item in self.approvals],
+            "state": self.state,
+            "created_at": self.created_at,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "PendingToolBatch":
+        return cls(
+            batch_id=data.get("batch_id", uuid.uuid4().hex),
+            turn_id=data.get("turn_id", ""),
+            tool_calls=list(data.get("tool_calls", [])),
+            policy_decisions=list(data.get("policy_decisions", [])),
+            approvals=[
+                PendingApproval.from_dict(item)
+                for item in data.get("approvals", [])
+            ],
+            state=data.get("state", "waiting"),
+            created_at=data.get("created_at", _now()),
         )
 
 
@@ -92,7 +139,7 @@ class TaskState:
     last_error: str = ""
     todos: list[dict] = field(default_factory=list)
     recent_failures: list[str] = field(default_factory=list)
-    pending_approval: PendingApproval | None = None
+    pending_tool_batch: PendingToolBatch | None = None
     approval_grants: list[str] = field(default_factory=list)
     last_tool_name: str = ""
     last_tool_result: str = ""
@@ -108,12 +155,12 @@ class TaskState:
         self.step_index += 1
         self.touch("running")
 
-    def mark_waiting(self, pending: PendingApproval):
-        self.pending_approval = pending
+    def mark_waiting(self, pending: PendingToolBatch):
+        self.pending_tool_batch = pending
         self.touch("waiting_approval")
 
     def clear_pending(self):
-        self.pending_approval = None
+        self.pending_tool_batch = None
         if self.status == "waiting_approval":
             self.touch("running")
 
@@ -171,7 +218,7 @@ class TaskState:
             "last_error": self.last_error,
             "todos": self.todos,
             "recent_failures": self.recent_failures,
-            "pending_approval": self.pending_approval.to_dict() if self.pending_approval else None,
+            "pending_tool_batch": self.pending_tool_batch.to_dict() if self.pending_tool_batch else None,
             "approval_grants": list(self.approval_grants),
             "last_tool_name": self.last_tool_name,
             "last_tool_result": self.last_tool_result,
@@ -181,7 +228,33 @@ class TaskState:
 
     @classmethod
     def from_dict(cls, data: dict) -> "TaskState":
-        pending = data.get("pending_approval")
+        pending_batch = data.get("pending_tool_batch")
+        legacy_pending = data.get("pending_approval")
+        if pending_batch is None and legacy_pending:
+            first_call = {
+                "id": legacy_pending.get("tool_call_id", ""),
+                "name": legacy_pending.get("tool_name", ""),
+                "arguments": dict(legacy_pending.get("arguments", {})),
+            }
+            remaining = list(legacy_pending.get("remaining_tool_calls", []))
+            approval = PendingApproval.from_dict(legacy_pending)
+            pending_batch = {
+                "batch_id": uuid.uuid4().hex,
+                "turn_id": data.get("task_id", ""),
+                "tool_calls": [first_call, *remaining],
+                "policy_decisions": [
+                    {
+                        "action": "confirm",
+                        "reason": approval.reason,
+                        "requires_manual": approval.requires_manual,
+                        "approval_scope": approval.approval_scope,
+                        "approval_label": approval.approval_label,
+                    },
+                    *([None] * len(remaining)),
+                ],
+                "approvals": [approval.to_dict()],
+                "state": "waiting",
+            }
         return cls(
             task_id=data.get("task_id", ""),
             revision_id=data.get("revision_id", ""),
@@ -195,7 +268,7 @@ class TaskState:
             last_error=data.get("last_error", ""),
             todos=list(data.get("todos", [])),
             recent_failures=list(data.get("recent_failures", [])),
-            pending_approval=PendingApproval.from_dict(pending) if pending else None,
+            pending_tool_batch=PendingToolBatch.from_dict(pending_batch) if pending_batch else None,
             approval_grants=list(data.get("approval_grants", [])),
             last_tool_name=data.get("last_tool_name", ""),
             last_tool_result=data.get("last_tool_result", ""),

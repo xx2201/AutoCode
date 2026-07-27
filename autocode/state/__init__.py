@@ -2,7 +2,7 @@
 
 from .checkpoint import delete_session, list_sessions, load_checkpoint, load_turn_queue, new_session_id, new_task_id, save_checkpoint, save_turn_queue, session_dir
 from .journal import AuditLogger, load_events
-from .model import PendingApproval, PolicyDecision, SessionState, TaskState
+from .model import PendingApproval, PendingToolBatch, PolicyDecision, SessionState, TaskState
 from .store import SessionStore
 from .trace import TraceRecorder, format_trace, load_trace
 from .transcript import TranscriptLogger, load_transcript_entries, load_transcript_messages
@@ -11,6 +11,7 @@ from .turn_control import TurnController, TurnInput, new_message_id, new_revisio
 __all__ = [
     "AuditLogger",
     "PendingApproval",
+    "PendingToolBatch",
     "PolicyDecision",
     "SessionState",
     "TaskState",

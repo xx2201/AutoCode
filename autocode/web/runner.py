@@ -321,7 +321,15 @@ class LocalRunner:
                 "blocked_reason": manifest.blocked_reason,
                 "git": GitWorkspace.inspect(workspace),
             }
-        if action == "approval":
+        if action == "approval_decision":
+            return manager.decide_approval(
+                payload["client_id"],
+                payload["approval_id"],
+                payload["approval_action"],
+                payload["expected_turn_id"],
+                payload["batch_id"],
+            )
+        if action == "continue_turn":
             workspace = self.registry.resolve(workspace_id)
             git_before = git_turn_snapshot(workspace)
             first_token_seen = False
@@ -341,10 +349,10 @@ class LocalRunner:
                 self._emit_hook_event(event_handler, event, data)
 
             with self._capture_output_files(str(payload["workspace_id"])) as output_files:
-                result = manager.resolve_approval(
+                result = manager.continue_approval_batch(
                     payload["client_id"],
-                    payload["approved"],
-                    payload["grant_scope"],
+                    payload["expected_turn_id"],
+                    payload["batch_id"],
                     hook_handler=on_hook,
                     on_token=on_token,
                 )
@@ -773,7 +781,7 @@ class LocalRunner:
             serialized_actions = {
                 "chat",
                 "edit_turn",
-                "approval",
+                "continue_turn",
                 "change_action",
                 "git_action",
                 "reset",

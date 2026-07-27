@@ -162,10 +162,10 @@ async def _handle_approval(update, context, approved: bool, grant_scope: bool = 
     manager: RemoteManager = context.application.bot_data["manager"]
     try:
         result = await asyncio.to_thread(
-            manager.resolve_approval,
+            manager.resolve_next_approval,
             update.effective_chat.id,
-            approved,
-            grant_scope,
+            approved=approved,
+            grant_scope=grant_scope,
         )
         text = render_turn_result(result)
     except ValueError as exc:

@@ -35,8 +35,20 @@ class _FakeManager:
         self.calls.append(("chat", client_id, prompt))
         return self.result
 
-    def resolve_approval(self, client_id, approved, grant_scope, hook_handler=None, on_token=None, on_tool=None):
-        self.calls.append(("approval", client_id, approved, grant_scope))
+    def decide_approval(self, client_id, approval_id, action, expected_turn_id, batch_id):
+        self.calls.append(("approval_decision", client_id, approval_id, action, expected_turn_id, batch_id))
+        return {"batch_id": batch_id, "turn_id": expected_turn_id, "ready": True}
+
+    def continue_approval_batch(
+        self,
+        client_id,
+        expected_turn_id,
+        batch_id,
+        hook_handler=None,
+        on_token=None,
+        on_tool=None,
+    ):
+        self.calls.append(("continue_turn", client_id, expected_turn_id, batch_id))
         return replace(self.result, text="approved")
 
     def annotate_turn_changes(self, client_id, changed_files):
@@ -194,7 +206,7 @@ def test_changed_git_files_detects_same_size_untracked_rewrite():
     ]
 
 
-def test_runner_executes_chat_and_approval_in_selected_workspace(tmp_path):
+def test_runner_executes_chat_approval_decision_and_continuation(tmp_path):
     runner, workspace, managers = _runner(tmp_path)
     payload = {
         "workspace_id": workspace.workspace_id,
@@ -202,17 +214,40 @@ def test_runner_executes_chat_and_approval_in_selected_workspace(tmp_path):
     }
 
     chat = runner.execute("chat", {**payload, "prompt": "inspect project"})
+    decision = runner.execute(
+        "approval_decision",
+        {
+            **payload,
+            "approval_id": "approval_1",
+            "approval_action": "approve_scope",
+            "expected_turn_id": "turn_1",
+            "batch_id": "batch_1",
+        },
+    )
     approval = runner.execute(
-        "approval",
-        {**payload, "approved": True, "grant_scope": True},
+        "continue_turn",
+        {
+            **payload,
+            "expected_turn_id": "turn_1",
+            "batch_id": "batch_1",
+        },
     )
     manager = managers[str((tmp_path / "project-a").resolve())]
 
     assert chat["status"] == "completed"
     assert chat["files"] == []
+    assert decision["ready"] is True
     assert approval["text"] == "approved"
     assert ("chat", "web_12345678", "inspect project") in manager.calls
-    assert ("approval", "web_12345678", True, True) in manager.calls
+    assert (
+        "approval_decision",
+        "web_12345678",
+        "approval_1",
+        "approve_scope",
+        "turn_1",
+        "batch_1",
+    ) in manager.calls
+    assert ("continue_turn", "web_12345678", "turn_1", "batch_1") in manager.calls
 
 
 def test_runner_captures_undo_and_reapply_for_one_turn(tmp_path, monkeypatch):

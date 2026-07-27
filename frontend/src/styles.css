@@ -753,6 +753,8 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
   background: #fff;
   box-shadow: 0 8px 24px rgba(37, 40, 55, 0.06);
 }
+.approval-batch { display: grid; gap: 12px; }
+.approval-batch .approval-request { margin-bottom: 0; }
 .approval-request-head { display: flex; min-width: 0; align-items: center; gap: 10px; }
 .approval-request-mark { display: grid; width: 32px; height: 32px; flex: 0 0 auto; place-items: center; border-radius: 10px; color: #5b5ce2; background: #efefff; }
 .approval-danger .approval-request-mark { color: #b94a5a; background: #fff0f2; }

@@ -32,11 +32,13 @@ function detailText(argumentsValue) {
 }
 
 export function approvalPresentation(pending) {
-  const tool = textValue(pending?.pending_tool);
-  const argumentsValue = pending?.pending_arguments || {};
-  const reason = textValue(pending?.pending_reason);
+  const tool = textValue(pending?.pending_tool || pending?.tool_name);
+  const argumentsValue = pending?.pending_arguments || pending?.arguments || {};
+  const reason = textValue(pending?.pending_reason || pending?.reason);
   const reasonLabel = KNOWN_REASONS.get(reason) || reason || "此操作需要你的许可";
-  const scopeLabel = textValue(pending?.pending_approval_label);
+  const scopeLabel = textValue(
+    pending?.pending_approval_label || pending?.approval_label,
+  );
   const base = {
     tool,
     toolLabel: readableToolName(tool) || "工具操作",

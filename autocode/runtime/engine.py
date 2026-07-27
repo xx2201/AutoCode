@@ -197,7 +197,11 @@ class Runtime:
         tool_calls,
         session_id: str,
         on_tool=None,
+        decisions: list[PolicyDecision | None] | None = None,
     ) -> list[str | ToolResult]:
+        call_decisions = decisions or [None] * len(tool_calls)
+        if len(call_decisions) != len(tool_calls):
+            raise ValueError("Tool calls and policy decisions must have the same length.")
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(tool_calls))) as pool:
             # 每个线程复制当前 OTel 上下文，确保并行 tool span 仍归属于当前 agent。
             futures = [
@@ -208,8 +212,9 @@ class Runtime:
                     tool_call,
                     session_id,
                     on_tool,
+                    decision,
                 )
-                for tool_call in tool_calls
+                for tool_call, decision in zip(tool_calls, call_decisions)
             ]
             return [f.result() for f in futures]
 

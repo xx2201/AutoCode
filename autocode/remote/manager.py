@@ -65,6 +65,8 @@ class RemoteTurnResult:
     pending_requires_manual: bool = False
     pending_approval_scope: str = ""
     pending_approval_label: str = ""
+    approval_batch_id: str = ""
+    pending_approvals: list[dict] | None = None
     permission_mode: str = "ask"
     context_used_tokens: int = 0
     context_window_tokens: int = 0
@@ -74,6 +76,7 @@ class RemoteTurnResult:
 class _ChatRuntime:
     agent: Agent
     lock: threading.RLock
+    approval_lock: threading.RLock
 
 
 class RemoteManager:
@@ -254,24 +257,42 @@ class RemoteManager:
         queued_inputs = [item.to_dict() for item in runtime.agent.turn_controller.queued()]
         save_turn_queue(session.session_id, queued_inputs)
 
-    def resolve_approval(
+    def decide_approval(
         self,
         chat_id: Hashable,
-        approved: bool,
-        grant_scope: bool = False,
+        approval_id: str,
+        action: str,
+        expected_turn_id: str,
+        expected_batch_id: str,
+        hook_handler=None,
+    ) -> dict:
+        runtime = self._require_runtime(chat_id)
+        with runtime.approval_lock:
+            with self._temporary_hook(runtime.agent, hook_handler):
+                return runtime.agent.decide_approval(
+                    approval_id,
+                    action,
+                    expected_turn_id=expected_turn_id,
+                    expected_batch_id=expected_batch_id,
+                )
+
+    def continue_approval_batch(
+        self,
+        chat_id: Hashable,
+        expected_turn_id: str,
+        expected_batch_id: str,
         hook_handler=None,
         on_token=None,
         on_tool=None,
     ) -> RemoteTurnResult:
         runtime = self._require_runtime(chat_id)
-        with runtime.lock:
+        with runtime.lock, runtime.approval_lock:
             message_start = len(runtime.agent.messages)
             started_at = time.monotonic()
             with self._temporary_hook(runtime.agent, hook_handler):
-                reply = runtime.agent.approve_pending(
-                    approved=approved,
-                    approval_handler=None,
-                    grant_scope=grant_scope,
+                reply = runtime.agent.continue_pending_batch(
+                    expected_turn_id=expected_turn_id,
+                    expected_batch_id=expected_batch_id,
                     on_token=on_token,
                     on_tool=on_tool,
                 )
@@ -281,6 +302,52 @@ class RemoteManager:
                 round((time.monotonic() - started_at) * 1000, 1),
             )
             return self._result_from_agent(runtime.agent, reply)
+
+    def resolve_next_approval(
+        self,
+        chat_id: Hashable,
+        *,
+        approved: bool,
+        grant_scope: bool = False,
+        hook_handler=None,
+        on_token=None,
+        on_tool=None,
+    ) -> RemoteTurnResult:
+        """Resolve the next batch item for command-based remote channels."""
+        runtime = self._require_runtime(chat_id)
+        with runtime.approval_lock:
+            task = runtime.agent.task_state
+            batch = task.pending_tool_batch if task else None
+            unresolved = batch.unresolved() if batch else []
+            if batch is None or not unresolved:
+                raise ValueError("No pending approval.")
+            action = (
+                "approve_scope"
+                if approved and grant_scope
+                else "approve"
+                if approved
+                else "reject"
+            )
+            with self._temporary_hook(runtime.agent, hook_handler):
+                snapshot = runtime.agent.decide_approval(
+                    unresolved[0].approval_id,
+                    action,
+                    expected_turn_id=batch.turn_id,
+                    expected_batch_id=batch.batch_id,
+                )
+        if not snapshot["ready"]:
+            return self._result_from_agent(
+                runtime.agent,
+                f"Approval recorded. {snapshot['unresolved_count']} approval(s) remain.",
+            )
+        return self.continue_approval_batch(
+            chat_id,
+            batch.turn_id,
+            batch.batch_id,
+            hook_handler=hook_handler,
+            on_token=on_token,
+            on_tool=on_tool,
+        )
 
     def set_permission_mode(self, chat_id: Hashable, permission_mode: str) -> str:
         runtime = self._get_or_create_runtime(chat_id)
@@ -568,8 +635,12 @@ class RemoteManager:
                 return f"Session: {agent.session_state.session_id}\nCurrent Task: (none)"
 
             suffix = ""
-            if task.pending_approval:
-                suffix = f"\nPending approval: {task.pending_approval.tool_name} - {task.pending_approval.reason}"
+            batch = task.pending_tool_batch
+            if batch and batch.unresolved():
+                suffix = (
+                    f"\nPending approvals: {len(batch.unresolved())} "
+                    f"(next: {batch.unresolved()[0].tool_name})"
+                )
             return (
                 f"Session: {agent.session_state.session_id}\n"
                 f"Task: {task.task_id}\n"
@@ -664,7 +735,11 @@ class RemoteManager:
                     )
                 previous_locked = previous is not None
             try:
-                runtime = _ChatRuntime(agent=self._build_agent(), lock=threading.RLock())
+                runtime = _ChatRuntime(
+                    agent=self._build_agent(),
+                    lock=threading.RLock(),
+                    approval_lock=threading.RLock(),
+                )
             except Exception:
                 if previous_locked:
                     previous.lock.release()
@@ -764,13 +839,29 @@ class RemoteManager:
         pending_requires_manual = False
         pending_approval_scope = ""
         pending_approval_label = ""
-        if task.pending_approval:
-            pending_tool = task.pending_approval.tool_name
-            pending_reason = task.pending_approval.reason
-            pending_arguments = task.pending_approval.arguments
-            pending_requires_manual = task.pending_approval.requires_manual
-            pending_approval_scope = task.pending_approval.approval_scope
-            pending_approval_label = task.pending_approval.approval_label
+        approval_batch_id = ""
+        pending_approvals: list[dict] = []
+        batch = task.pending_tool_batch
+        if batch:
+            approval_batch_id = batch.batch_id
+            pending_approvals = [
+                {
+                    **item.to_dict(),
+                    "arguments": presentation_tool_arguments(item.arguments),
+                }
+                for item in batch.approvals
+            ]
+            current = next(
+                (item for item in batch.approvals if item.decision == "pending"),
+                batch.approvals[0] if batch.approvals else None,
+            )
+            if current is not None:
+                pending_tool = current.tool_name
+                pending_reason = current.reason
+                pending_arguments = presentation_tool_arguments(current.arguments)
+                pending_requires_manual = current.requires_manual
+                pending_approval_scope = current.approval_scope
+                pending_approval_label = current.approval_label
         return RemoteTurnResult(
             text=text,
             session_id=agent.session_state.session_id,
@@ -782,6 +873,8 @@ class RemoteManager:
             pending_requires_manual=pending_requires_manual,
             pending_approval_scope=pending_approval_scope,
             pending_approval_label=pending_approval_label,
+            approval_batch_id=approval_batch_id,
+            pending_approvals=pending_approvals,
             permission_mode=agent.policy.permission_mode,
             context_used_tokens=context["used_tokens"],
             context_window_tokens=context["window_tokens"],

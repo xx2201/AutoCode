@@ -1,5 +1,6 @@
 """Core agent loop."""
 
+import uuid
 from contextlib import contextmanager
 
 from ..context import ContextManager, MemoryManager, estimate_tokens, render_todos, runtime_state_block, static_system_prompt
@@ -12,6 +13,7 @@ from ..skills import SkillError, SkillManager
 from ..state import (
     AuditLogger,
     PendingApproval,
+    PendingToolBatch,
     PolicyDecision,
     SessionState,
     SessionStore,
@@ -422,7 +424,8 @@ class Agent:
     def _finalize_turn_trace(self, observation, response_text: str):
         if observation is None:
             return
-        pending = self.task_state.pending_approval if self.task_state else None
+        batch = self.task_state.pending_tool_batch if self.task_state else None
+        pending = batch.unresolved()[0] if batch and batch.unresolved() else None
         observation.update(
             output={
                 "text": response_text,
@@ -464,11 +467,13 @@ class Agent:
         attachments: list[dict] | None = None,
         raw_user_prompt: str | None = None,
     ) -> str:
-        if self.task_state and self.task_state.pending_approval:
-            pending = self.task_state.pending_approval
+        if self.task_state and self.task_state.pending_tool_batch:
+            pending_items = self.task_state.pending_tool_batch.unresolved()
+            pending = pending_items[0] if pending_items else None
             return (
                 f"(task {self.task_state.task_id} is waiting for approval: "
-                f"{pending.tool_name} - use /approve or /reject first)"
+                f"{pending.tool_name if pending else 'tool batch'} - "
+                "resolve the pending approvals first)"
             )
 
         original_prompt = raw_user_prompt if raw_user_prompt is not None else user_input
@@ -596,64 +601,128 @@ class Agent:
         approval_handler=None,
         grant_scope: bool = False,
     ) -> str:
-        if self.task_state is None or self.task_state.pending_approval is None:
+        batch = self.task_state.pending_tool_batch if self.task_state else None
+        if batch is None or not batch.unresolved():
             return "No pending approval."
+        pending = batch.unresolved()[0]
+        action = "approve_scope" if approved and grant_scope else ("approve" if approved else "reject")
+        snapshot = self.decide_approval(
+            pending.approval_id,
+            action,
+            expected_turn_id=batch.turn_id,
+            expected_batch_id=batch.batch_id,
+        )
+        if not snapshot["ready"]:
+            return f"(waiting for approval: {snapshot['unresolved_count']} tool call(s))"
+        return self.continue_pending_batch(
+            expected_turn_id=batch.turn_id,
+            expected_batch_id=batch.batch_id,
+            on_tool=on_tool,
+            on_token=on_token,
+            approval_handler=approval_handler,
+        )
+
+    def decide_approval(
+        self,
+        approval_id: str,
+        action: str,
+        *,
+        expected_turn_id: str,
+        expected_batch_id: str,
+    ) -> dict:
+        task = self.task_state
+        batch = task.pending_tool_batch if task else None
+        if task is None or batch is None:
+            raise ValueError("No pending approval batch.")
+        if task.task_id != expected_turn_id or batch.turn_id != expected_turn_id:
+            raise ValueError("The active turn changed before this approval was applied.")
+        if batch.batch_id != expected_batch_id:
+            raise ValueError("The approval batch is stale.")
+        if action not in {"approve", "approve_scope", "reject"}:
+            raise ValueError(f"Unsupported approval action: {action}")
+
+        pending = next(
+            (item for item in batch.approvals if item.approval_id == approval_id),
+            None,
+        )
+        if pending is None:
+            raise ValueError(f"Approval '{approval_id}' was not found.")
+        decision = "rejected" if action == "reject" else "approved"
+        if pending.decision != "pending":
+            if pending.decision != decision:
+                raise ValueError("This approval was already resolved with a different decision.")
+            return self._approval_batch_snapshot(batch)
+
+        targets = [pending]
+        if action == "approve_scope" and pending.approval_scope:
+            task.grant_approval_scope(pending.approval_scope)
+            targets = [
+                item
+                for item in batch.approvals
+                if item.decision == "pending"
+                and item.approval_scope == pending.approval_scope
+            ]
+        for item in targets:
+            item.decision = decision
+            self.hooks.emit(
+                "approval_resolved",
+                self._event_payload(
+                    approval_id=item.approval_id,
+                    tool_call_id=item.tool_call_id,
+                    tool_name=item.tool_name,
+                    approved=decision == "approved",
+                    grant_scope=action == "approve_scope",
+                ),
+            )
+        if batch.is_ready():
+            batch.state = "ready"
+        task.touch("waiting_approval")
+        self.persist_session()
+        return self._approval_batch_snapshot(batch)
+
+    def continue_pending_batch(
+        self,
+        *,
+        expected_turn_id: str,
+        expected_batch_id: str,
+        on_tool=None,
+        on_token=None,
+        approval_handler=None,
+    ) -> str:
+        task = self.task_state
+        batch = task.pending_tool_batch if task else None
+        if task is None or batch is None:
+            raise ValueError("No pending approval batch.")
+        if task.task_id != expected_turn_id or batch.turn_id != expected_turn_id:
+            raise ValueError("The active turn changed before continuation.")
+        if batch.batch_id != expected_batch_id:
+            raise ValueError("The approval batch is stale.")
+        if not batch.is_ready():
+            raise ValueError("All approvals must be resolved before continuing.")
 
         with self._turn_trace(
-            name="agent.approve_pending",
+            name="agent.continue_pending_batch",
             input_payload={
-                "approved": approved,
-                "grant_scope": grant_scope,
-                "pending_tool": self.task_state.pending_approval.tool_name,
+                "turn_id": batch.turn_id,
+                "batch_id": batch.batch_id,
+                "approval_count": len(batch.approvals),
             },
-            tags=["autocode", "approval"],
+            tags=["autocode", "approval", "continuation"],
             continue_turn=True,
         ) as observation:
             try:
-                pending = self.task_state.pending_approval
-                remaining_tool_calls = self._deserialize_tool_calls(pending.remaining_tool_calls)
-                self.task_state.clear_pending()
-                if grant_scope and approved:
-                    self.task_state.grant_approval_scope(pending.approval_scope)
-
-                tool_call = ToolCall(
-                    id=pending.tool_call_id,
-                    name=pending.tool_name,
-                    arguments=pending.arguments,
-                )
-
-                if approved:
-                    result = self._execute_tool_call(
-                        tool_call,
-                        on_tool=on_tool,
-                        decision=PolicyDecision(
-                            "confirm",
-                            pending.reason,
-                            requires_manual=pending.requires_manual,
-                            approval_scope=pending.approval_scope,
-                            approval_label=pending.approval_label,
-                        ),
-                    )
-                else:
-                    result = self.runtime.blocked_result(tool_call.name, PolicyDecision("deny", "approval denied by user"))
-                result_text = result.text if isinstance(result, ToolResult) else result
-                self.task_state.note_tool_result(tool_call.name, result_text)
-                self.hooks.emit("approval_resolved", self._event_payload(tool_name=tool_call.name, approved=approved))
-
-                self._append_tool_result(tool_call, result)
-                self._maybe_compress_messages()
+                batch.state = "running"
+                task.touch("running")
                 self.persist_session()
-
-                if remaining_tool_calls:
-                    wait = self._handle_tool_calls(remaining_tool_calls, on_tool=on_tool, approval_handler=approval_handler)
-                    self._maybe_compress_messages()
-                    self.persist_session()
-                    if wait is not None:
-                        response = wait
-                    else:
-                        response = self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
+                wait = self._execute_pending_batch(batch, on_tool=on_tool)
+                if wait is not None:
+                    response = wait
                 else:
-                    response = self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
+                    response = self._continue_loop(
+                        on_token=on_token,
+                        on_tool=on_tool,
+                        approval_handler=approval_handler,
+                    )
             except Exception as exc:
                 self._record_turn_error(observation, exc)
                 raise
@@ -795,15 +864,9 @@ class Agent:
             )
 
     def _handle_tool_calls(self, tool_calls, on_tool=None, approval_handler=None) -> str | None:
-        decisions = []
-        invalid_results: dict[str, str] = {}
+        decisions: list[PolicyDecision | None] = []
         for tool_call in tool_calls:
             if tool_call.parse_error:
-                invalid_results[tool_call.id] = self.runtime.invalid_tool_call_result(
-                    self.task_state,
-                    tool_call,
-                    self.session_state.session_id,
-                )
                 decisions.append(None)
                 continue
             decisions.append(
@@ -819,74 +882,183 @@ class Agent:
             for decision in decisions
         ]
 
-        if len(tool_calls) > 1 and decisions and all(
-            decision is not None and decision.action == "allow" for decision in decisions
-        ):
-            try:
-                results = self.runtime.execute_tool_calls_parallel(
-                    self.task_state,
-                    tool_calls,
-                    self.session_state.session_id,
-                    on_tool=on_tool,
+        approvals = [
+            PendingApproval(
+                approval_id=uuid.uuid4().hex,
+                tool_call_id=tool_call.id,
+                tool_name=tool_call.name,
+                arguments=tool_call.arguments,
+                reason=decision.reason,
+                requires_manual=decision.requires_manual,
+                approval_scope=decision.approval_scope,
+                approval_label=decision.approval_label,
+            )
+            for tool_call, decision in zip(tool_calls, decisions)
+            if decision is not None and decision.action == "confirm"
+        ]
+        batch = PendingToolBatch(
+            batch_id=uuid.uuid4().hex,
+            turn_id=self.task_state.task_id,
+            tool_calls=[self._serialize_tool_call(item) for item in tool_calls],
+            policy_decisions=[
+                decision.to_dict() if decision is not None else None
+                for decision in decisions
+            ],
+            approvals=approvals,
+            state="waiting" if approvals else "ready",
+        )
+
+        if approvals:
+            self.task_state.mark_waiting(batch)
+            self.persist_session()
+            if approval_handler is None:
+                return f"(waiting for approval: {len(approvals)} tool call(s))"
+
+            for approval in list(batch.approvals):
+                if approval.decision != "pending":
+                    continue
+                approval_response = approval_handler(approval)
+                action = (
+                    "approve_scope"
+                    if approval_response == "approve_scope"
+                    else "approve"
+                    if approval_response in {True, "approve"}
+                    else "reject"
                 )
-            except KeyboardInterrupt:
-                results = [self._interrupted_tool_result(tool_call) for tool_call in tool_calls]
-            for tool_call, result in zip(tool_calls, results):
-                self._append_tool_result(tool_call, result)
-            return None
+                self.decide_approval(
+                    approval.approval_id,
+                    action,
+                    expected_turn_id=batch.turn_id,
+                    expected_batch_id=batch.batch_id,
+                )
+
+        return self._execute_pending_batch(
+            batch,
+            on_tool=on_tool,
+        )
+
+    def _execute_pending_batch(
+        self,
+        batch: PendingToolBatch,
+        *,
+        on_tool=None,
+    ) -> str | None:
+        tool_calls = self._deserialize_tool_calls(batch.tool_calls)
+        decision_data = list(batch.policy_decisions)
+        if len(decision_data) != len(tool_calls):
+            raise ValueError("Pending tool batch is corrupt.")
+
+        decisions: list[PolicyDecision | None] = [
+            PolicyDecision.from_dict(item) if item is not None else None
+            for item in decision_data
+        ]
+        approval_by_call = {
+            item.tool_call_id: item
+            for item in batch.approvals
+        }
+        executable_calls: list[ToolCall] = []
+        executable_decisions: list[PolicyDecision | None] = []
+        results_by_call: dict[str, str | ToolResult] = {}
 
         for index, (tool_call, decision) in enumerate(zip(tool_calls, decisions)):
+            if tool_call.parse_error:
+                results_by_call[tool_call.id] = self.runtime.invalid_tool_call_result(
+                    self.task_state,
+                    tool_call,
+                    self.session_state.session_id,
+                )
+                continue
             if decision is None:
-                result = invalid_results[tool_call.id]
-            elif decision.action == "allow":
-                result = self._execute_tool_call(tool_call, on_tool=on_tool)
-            elif decision.action == "deny":
-                result = self.runtime.blocked_result(tool_call.name, decision)
-            else:
-                self.task_state.mark_waiting(
-                    PendingApproval(
-                        tool_call_id=tool_call.id,
-                        tool_name=tool_call.name,
-                        arguments=tool_call.arguments,
-                        reason=decision.reason,
-                        requires_manual=decision.requires_manual,
-                        approval_scope=decision.approval_scope,
-                        approval_label=decision.approval_label,
-                        remaining_tool_calls=[
+                decision = self.runtime.evaluate_tool_call(
+                    self.task_state,
+                    tool_call,
+                    self.session_state.session_id,
+                )
+                decisions[index] = decision
+            if decision.action == "deny":
+                results_by_call[tool_call.id] = self.runtime.blocked_result(tool_call.name, decision)
+                continue
+            if decision.action == "confirm":
+                approval = approval_by_call.get(tool_call.id)
+                if approval is None:
+                    legacy_batch = PendingToolBatch(
+                        batch_id=uuid.uuid4().hex,
+                        turn_id=self.task_state.task_id,
+                        tool_calls=[
                             self._serialize_tool_call(item)
-                            for item in tool_calls[index + 1:]
+                            for item in tool_calls[index:]
+                        ],
+                        policy_decisions=[
+                            item.to_dict() if item is not None else None
+                            for item in decisions[index:]
+                        ],
+                        approvals=[
+                            PendingApproval(
+                                approval_id=uuid.uuid4().hex,
+                                tool_call_id=tool_call.id,
+                                tool_name=tool_call.name,
+                                arguments=tool_call.arguments,
+                                reason=decision.reason,
+                                requires_manual=decision.requires_manual,
+                                approval_scope=decision.approval_scope,
+                                approval_label=decision.approval_label,
+                            )
                         ],
                     )
-                )
-                self.persist_session()
-
-                if approval_handler is None:
-                    return f"(waiting for approval: {tool_call.name} - {decision.reason or 'confirmation required'})"
-
-                approval_response = approval_handler(self.task_state.pending_approval)
-                grant_scope = approval_response == "approve_scope"
-                approved = approval_response in {True, "approve", "approve_scope"}
-                self.task_state.clear_pending()
-                if grant_scope and approved:
-                    self.task_state.grant_approval_scope(decision.approval_scope)
-
-                if approved:
-                    result = self._execute_tool_call(tool_call, on_tool=on_tool, decision=decision)
-                else:
-                    result = self.runtime.blocked_result(
+                    self.task_state.mark_waiting(legacy_batch)
+                    self.persist_session()
+                    return f"(waiting for approval: {tool_call.name})"
+                if approval.decision == "pending":
+                    raise ValueError("Pending tool batch is not fully resolved.")
+                if approval.decision == "rejected":
+                    results_by_call[tool_call.id] = self.runtime.blocked_result(
                         tool_call.name,
                         PolicyDecision("deny", "approval denied by user"),
                     )
-                self.hooks.emit(
-                    "approval_resolved",
-                    self._event_payload(tool_name=tool_call.name, approved=approved),
-                )
+                    continue
+            executable_calls.append(tool_call)
+            executable_decisions.append(decision)
 
+        if executable_calls:
+            try:
+                executed = self.runtime.execute_tool_calls_parallel(
+                    self.task_state,
+                    executable_calls,
+                    self.session_state.session_id,
+                    on_tool=on_tool,
+                    decisions=executable_decisions,
+                )
+            except KeyboardInterrupt:
+                executed = [
+                    self._interrupted_tool_result(tool_call)
+                    for tool_call in executable_calls
+                ]
+            results_by_call.update(
+                (tool_call.id, result)
+                for tool_call, result in zip(executable_calls, executed)
+            )
+
+        for tool_call in tool_calls:
+            result = results_by_call[tool_call.id]
             result_text = result.text if isinstance(result, ToolResult) else result
             self.task_state.note_tool_result(tool_call.name, result_text)
             self._append_tool_result(tool_call, result)
 
+        self.task_state.clear_pending()
+        self._maybe_compress_messages()
+        self.persist_session()
         return None
+
+    @staticmethod
+    def _approval_batch_snapshot(batch: PendingToolBatch) -> dict:
+        return {
+            "batch_id": batch.batch_id,
+            "turn_id": batch.turn_id,
+            "state": batch.state,
+            "ready": batch.is_ready(),
+            "unresolved_count": len(batch.unresolved()),
+            "approvals": [item.to_dict() for item in batch.approvals],
+        }
 
     def _execute_tool_call(
         self,

@@ -320,7 +320,7 @@ def test_streaming_chat_relays_tokens_stages_and_final_result(relay_client):
     assert final["timings"]["relay_total_ms"] >= 0
 
 
-def test_streaming_approval_can_outlive_control_timeout(relay_client):
+def test_streaming_approval_continuation_can_outlive_control_timeout(relay_client):
     client, _ = relay_client
     _connect_runner(client)
     holder = {}
@@ -328,12 +328,13 @@ def test_streaming_approval_can_outlive_control_timeout(relay_client):
     def browser_request():
         with client.stream(
             "POST",
-            "/api/approval/stream",
+            "/api/turn/continue/stream",
             headers=_browser_headers(),
             json={
                 "client_id": CLIENT_ID,
                 "workspace_id": WORKSPACE_ID,
-                "action": "approve_scope",
+                "expected_turn_id": "turn_1",
+                "batch_id": "batch_1",
             },
         ) as response:
             holder["status"] = response.status_code
@@ -350,10 +351,10 @@ def test_streaming_approval_can_outlive_control_timeout(relay_client):
         params={"wait": 1},
         headers=_runner_headers(),
     ).json()
-    assert job["action"] == "approval"
+    assert job["action"] == "continue_turn"
     assert job["stream"] is True
-    assert job["payload"]["approved"] is True
-    assert job["payload"]["grant_scope"] is True
+    assert job["payload"]["expected_turn_id"] == "turn_1"
+    assert job["payload"]["batch_id"] == "batch_1"
     client.post(
         f"/api/runner/event/{job['job_id']}",
         headers=_runner_headers(),
@@ -430,12 +431,38 @@ def test_turn_controls_and_change_actions_are_relayed(relay_client):
         "change_action",
         {"turn_id": "turn_123", "state": "undone"},
     )
+    approval_response, approval_job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/approval/decision",
+            headers=_browser_headers(),
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "approval_id": "approval_123",
+                "expected_turn_id": "turn_123",
+                "batch_id": "batch_123",
+                "action": "approve_scope",
+            },
+        ),
+        "approval_decision",
+        {
+            "batch_id": "batch_123",
+            "turn_id": "turn_123",
+            "ready": True,
+            "approvals": [],
+        },
+    )
 
     assert steer_response.status_code == 200
     assert steer_job["payload"]["expected_turn_id"] == "turn_123"
     assert steer_job["payload"]["mode"] == "steer"
     assert change_response.status_code == 200
     assert change_job["payload"]["change_action"] == "undo"
+    assert approval_response.status_code == 200
+    assert approval_job["payload"]["approval_id"] == "approval_123"
+    assert approval_job["payload"]["approval_action"] == "approve_scope"
+    assert approval_job["stream"] is False
 
 
 def test_edit_turn_is_streamed_to_runner(relay_client):

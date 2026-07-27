@@ -73,7 +73,7 @@ def test_remote_manager_handles_approval_flow(tmp_path):
     assert pending.status == "waiting_approval"
     assert pending.pending_tool == "agent"
 
-    resolved = manager.resolve_approval(101, approved=True)
+    resolved = manager.resolve_next_approval(101, approved=True)
     assert resolved.text == "done"
     assert resolved.status == "completed"
 
@@ -428,7 +428,7 @@ def test_remote_manager_scope_approval_marks_task_grant(tmp_path):
     manager = _ConfirmingRemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[_DelegationTool()])
     manager.submit(404, "run delegated task")
 
-    result = manager.resolve_approval(404, approved=True, grant_scope=True)
+    result = manager.resolve_next_approval(404, approved=True, grant_scope=True)
     assert result.permission_mode == "ask"
     summary = manager.current_task_summary(404)
     assert "Permission mode: ask" in summary

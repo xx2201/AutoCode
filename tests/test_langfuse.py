@@ -247,7 +247,8 @@ def test_approval_continues_original_turn_trace_after_checkpoint_restore(monkeyp
     approval_enter = next(
         item
         for item in events
-        if item["event"] == "enter" and item["kwargs"].get("name") == "agent.approve_pending"
+        if item["event"] == "enter"
+        and item["kwargs"].get("name") == "agent.continue_pending_batch"
     )
     assert approval_enter["trace_id"] == root_trace_id
     assert approval_enter["kwargs"]["trace_context"] == {
@@ -292,9 +293,10 @@ def test_multiple_approvals_remain_children_of_the_original_turn_trace(monkeypat
     approval_enters = [
         item
         for item in events
-        if item["event"] == "enter" and item["kwargs"].get("name") == "agent.approve_pending"
+        if item["event"] == "enter"
+        and item["kwargs"].get("name") == "agent.continue_pending_batch"
     ]
-    assert len(approval_enters) == 2
+    assert len(approval_enters) == 1
     assert all(item["kwargs"]["trace_context"] == expected_context for item in approval_enters)
 
 

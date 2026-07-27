@@ -85,7 +85,15 @@ class AttachmentRequest(BaseModel):
 
 
 class ApprovalRequest(ClientRequest):
+    approval_id: str = Field(min_length=1, max_length=128)
+    expected_turn_id: str = Field(min_length=1, max_length=128)
+    batch_id: str = Field(min_length=1, max_length=128)
     action: Literal["approve", "approve_scope", "reject"]
+
+
+class ApprovalContinuationRequest(ClientRequest):
+    expected_turn_id: str = Field(min_length=1, max_length=128)
+    batch_id: str = Field(min_length=1, max_length=128)
 
 
 class PermissionModeRequest(ClientRequest):
@@ -380,23 +388,33 @@ def create_app(
             timeout=control_request_timeout,
         )
 
-    @app.post("/api/approval/stream", dependencies=browser_auth)
-    async def approval_stream(payload: ApprovalRequest):
+    @app.post("/api/approval/decision", dependencies=browser_auth)
+    async def approval_decision(payload: ApprovalRequest):
         client_id = _validate_client_id(payload.client_id)
-        actions = {
-            "approve": (True, False),
-            "approve_scope": (True, True),
-            "reject": (False, False),
-        }
-        approved, grant_scope = actions[payload.action]
+        return await dispatch(
+            "approval_decision",
+            {
+                "client_id": client_id,
+                "workspace_id": payload.workspace_id,
+                "approval_id": payload.approval_id,
+                "expected_turn_id": payload.expected_turn_id,
+                "batch_id": payload.batch_id,
+                "approval_action": payload.action,
+            },
+            timeout=control_request_timeout,
+        )
+
+    @app.post("/api/turn/continue/stream", dependencies=browser_auth)
+    async def continue_turn_stream(payload: ApprovalContinuationRequest):
+        client_id = _validate_client_id(payload.client_id)
         try:
             job_id = relay.start_stream(
-                "approval",
+                "continue_turn",
                 {
                     "client_id": client_id,
                     "workspace_id": payload.workspace_id,
-                    "approved": approved,
-                    "grant_scope": grant_scope,
+                    "expected_turn_id": payload.expected_turn_id,
+                    "batch_id": payload.batch_id,
                 },
             )
         except RunnerOfflineError as exc:

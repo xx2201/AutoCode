@@ -16,7 +16,8 @@ test("App JSX compiles after adding interaction controls", async () => {
   assert.ok(transformed.code.includes("/api/turn/edit/stream"));
   assert.ok(transformed.code.includes("/api/turn/message"));
   assert.ok(transformed.code.includes("/api/changes/action"));
-  assert.ok(transformed.code.includes("/api/approval/stream"));
+  assert.ok(transformed.code.includes("/api/approval/decision"));
+  assert.ok(transformed.code.includes("/api/turn/continue/stream"));
   assert.ok(transformed.code.includes("/api/permission-mode"));
   assert.ok(transformed.code.includes("full_access"));
 });
@@ -29,4 +30,18 @@ test("approval request is rendered in the conversation instead of a page-wide ba
   assert.ok(approvalIndex >= 0, "expected the approval request component");
   assert.ok(messageEndIndex > approvalIndex, "approval should appear at the end of the conversation");
   assert.doesNotMatch(source, /className="approval-banner"/);
+});
+
+test("approval batch keeps decisions independent from turn continuation", async () => {
+  const source = await readFile(appPath, "utf8");
+
+  assert.match(source, /pending_approvals\.filter/);
+  assert.match(source, /approvalBusyIds\[approval\.approval_id\]/);
+  assert.match(source, /async function resolveApproval\(approval, action\)/);
+  assert.match(source, /async function continueApprovalBatch\(batch\)/);
+  const resolver = source.slice(source.indexOf("async function resolveApproval"));
+  assert.ok(
+    resolver.indexOf("/api/approval/decision")
+      < resolver.indexOf("await continueApprovalBatch(batch)"),
+  );
 });

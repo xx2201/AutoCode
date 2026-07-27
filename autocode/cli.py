@@ -216,7 +216,7 @@ class _AgentWorker:
 
     def _has_pending_approval(self) -> bool:
         task = self.agent.task_state
-        return task is not None and task.pending_approval is not None
+        return task is not None and getattr(task, "pending_tool_batch", None) is not None
 
 
 class _ApprovalCompleter(Completer):
@@ -442,7 +442,11 @@ def _repl(agent: Agent, config: Config):
         event.current_buffer.insert_text("\n")
 
     def _prompt_pending_approval() -> bool:
-        choice = _prompt_approval(agent.task_state.pending_approval)
+        batch = agent.task_state.pending_tool_batch
+        pending_items = batch.unresolved() if batch else []
+        if not pending_items:
+            return False
+        choice = _prompt_approval(pending_items[0])
         if choice is None:
             console.print(
                 "[yellow]Approval is still pending. "
@@ -459,7 +463,7 @@ def _repl(agent: Agent, config: Config):
             if (
                 not worker.is_running
                 and agent.task_state is not None
-                and agent.task_state.pending_approval is not None
+                and agent.task_state.pending_tool_batch is not None
             ):
                 if _prompt_pending_approval():
                     continue
@@ -492,7 +496,7 @@ def _repl(agent: Agent, config: Config):
 
             if (
                 agent.task_state is not None
-                and agent.task_state.pending_approval is not None
+                and agent.task_state.pending_tool_batch is not None
                 and not worker.is_running
                 and not user_input.startswith("/")
             ):
@@ -598,8 +602,10 @@ def _repl(agent: Agent, config: Config):
                         console.print(f"Session: [cyan]{agent.session_state.session_id}[/cyan]  current task: [dim](none)[/dim]")
                         continue
                     pending = ""
-                    if agent.task_state.pending_approval:
-                        pending = f"  pending: {agent.task_state.pending_approval.tool_name}"
+                    batch = agent.task_state.pending_tool_batch
+                    if batch:
+                        unresolved = batch.unresolved()
+                        pending = f"  pending approvals: {len(unresolved)}"
                     console.print(
                         f"Session: [cyan]{agent.session_state.session_id}[/cyan]  "
                         f"Task: [cyan]{agent.task_state.task_id}[/cyan]  "

@@ -162,7 +162,8 @@ def test_agent_waits_for_approval(tmp_path):
     assert "waiting for approval" in reply
     assert agent.task_state is not None
     assert agent.task_state.status == "waiting_approval"
-    assert agent.task_state.pending_approval is not None
+    assert agent.task_state.pending_tool_batch is not None
+    assert len(agent.task_state.pending_tool_batch.approvals) == 1
 
 
 def test_agent_approves_pending_tool(tmp_path):
@@ -237,8 +238,8 @@ def test_agent_scope_approval_completes_matching_tool_calls_before_next_llm(tmp_
     waiting = agent.chat("check environment", approval_handler=None)
     assert "waiting for approval" in waiting
     assert agent.task_state is not None
-    assert agent.task_state.pending_approval is not None
-    assert len(agent.task_state.pending_approval.remaining_tool_calls) == 1
+    assert agent.task_state.pending_tool_batch is not None
+    assert len(agent.task_state.pending_tool_batch.approvals) == 2
 
     reply = agent.approve_pending(True, approval_handler=None, grant_scope=True)
 
@@ -273,13 +274,68 @@ def test_agent_requeues_next_pending_tool_from_same_batch(tmp_path):
     assert "waiting for approval" in still_waiting
     assert len(llm.calls) == 1
     assert agent.task_state is not None
-    assert agent.task_state.pending_approval is not None
-    assert agent.task_state.pending_approval.tool_call_id == "2"
-    assert agent.task_state.pending_approval.remaining_tool_calls == []
+    assert agent.task_state.pending_tool_batch is not None
+    unresolved = agent.task_state.pending_tool_batch.unresolved()
+    assert len(unresolved) == 1
+    assert unresolved[0].tool_call_id == "2"
 
     reply = agent.approve_pending(True, approval_handler=None)
     assert reply == "done"
     assert len(llm.calls) == 2
+
+
+def test_agent_records_independent_decisions_before_executing_batch(tmp_path):
+    llm = _RecordingLLM([
+        LLMResponse(content="", tool_calls=[
+            ToolCall(id="1", name="bash", arguments={"command": "first"}),
+            ToolCall(id="2", name="bash", arguments={"command": "second"}),
+        ]),
+        LLMResponse(content="done"),
+    ])
+    agent = Agent(
+        llm=llm,
+        tools=[_SafeBashTool()],
+        workspace_root=str(tmp_path),
+    )
+    agent.policy = _ConfirmAllPolicy(workspace_root=str(tmp_path))
+    agent.runtime.policy = agent.policy
+
+    assert "waiting for approval" in agent.chat("run both")
+    batch = agent.task_state.pending_tool_batch
+    first, second = batch.approvals
+
+    first_result = agent.decide_approval(
+        first.approval_id,
+        "approve",
+        expected_turn_id=batch.turn_id,
+        expected_batch_id=batch.batch_id,
+    )
+    assert first_result["ready"] is False
+    assert first_result["unresolved_count"] == 1
+    assert len(llm.calls) == 1
+
+    second_result = agent.decide_approval(
+        second.approval_id,
+        "reject",
+        expected_turn_id=batch.turn_id,
+        expected_batch_id=batch.batch_id,
+    )
+    assert second_result["ready"] is True
+    assert len(llm.calls) == 1
+
+    reply = agent.continue_pending_batch(
+        expected_turn_id=batch.turn_id,
+        expected_batch_id=batch.batch_id,
+    )
+    assert reply == "done"
+    tool_messages = [
+        message
+        for message in llm.calls[1]
+        if message.get("role") == "tool"
+    ]
+    assert [message["tool_call_id"] for message in tool_messages] == ["1", "2"]
+    assert "ran:first" in tool_messages[0]["content"]
+    assert "approval denied by user" in tool_messages[1]["content"]
 
 
 def test_agent_todo_tool_updates_task_state(tmp_path):

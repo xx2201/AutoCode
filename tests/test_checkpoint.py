@@ -7,7 +7,7 @@ from autocode.state import (
     save_checkpoint,
 )
 from autocode.state import checkpoint as checkpoint_module
-from autocode.state import PendingApproval
+from autocode.state import PendingApproval, PendingToolBatch
 
 
 def test_checkpoint_round_trip(tmp_path, monkeypatch):
@@ -22,12 +22,33 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
             step_index=3,
             langfuse_trace_id="a" * 32,
             langfuse_root_observation_id="b" * 16,
-            pending_approval=PendingApproval(
-                tool_call_id="call_1",
-                tool_name="bash",
-                arguments={"command": "python --version"},
-                reason="confirmation required",
-                remaining_tool_calls=[{"id": "call_2", "name": "bash", "arguments": {"command": "python -c \"import pika\""}}],
+            pending_tool_batch=PendingToolBatch(
+                batch_id="batch_1",
+                turn_id="task_demo",
+                tool_calls=[
+                    {"id": "call_1", "name": "bash", "arguments": {"command": "python --version"}},
+                    {"id": "call_2", "name": "bash", "arguments": {"command": "python -c \"import pika\""}},
+                ],
+                policy_decisions=[
+                    {"action": "confirm", "reason": "confirmation required"},
+                    {"action": "confirm", "reason": "confirmation required"},
+                ],
+                approvals=[
+                    PendingApproval(
+                        approval_id="approval_1",
+                        tool_call_id="call_1",
+                        tool_name="bash",
+                        arguments={"command": "python --version"},
+                        reason="confirmation required",
+                    ),
+                    PendingApproval(
+                        approval_id="approval_2",
+                        tool_call_id="call_2",
+                        tool_name="bash",
+                        arguments={"command": "python -c \"import pika\""},
+                        reason="confirmation required",
+                    ),
+                ],
             ),
         ),
     )
@@ -44,8 +65,9 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
     assert loaded_state.current_task.step_index == 3
     assert loaded_state.current_task.langfuse_trace_id == "a" * 32
     assert loaded_state.current_task.langfuse_root_observation_id == "b" * 16
-    assert loaded_state.current_task.pending_approval is not None
-    assert loaded_state.current_task.pending_approval.remaining_tool_calls[0]["id"] == "call_2"
+    assert loaded_state.current_task.pending_tool_batch is not None
+    assert loaded_state.current_task.pending_tool_batch.tool_calls[1]["id"] == "call_2"
+    assert loaded_state.current_task.pending_tool_batch.approvals[1].approval_id == "approval_2"
     assert loaded_messages == messages
     assert loaded_model == "demo-model"
 

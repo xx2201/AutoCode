@@ -89,18 +89,19 @@ function attachChangedFilesToLatestTurn(messages, changedFiles = []) {
   return next;
 }
 
-function ApprovalRequest({ pending, busy, onResolve }) {
+function ApprovalRequest({ pending, busy, position, total, onResolve }) {
   const view = approvalPresentation(pending);
+  const titleId = `approval-request-title-${pending.approval_id || position}`;
   return (
     <section
       className={`approval-request approval-${view.tone}`}
-      aria-labelledby="approval-request-title"
+      aria-labelledby={titleId}
     >
       <header className="approval-request-head">
         <span className="approval-request-mark"><ShieldCheck size={17} /></span>
         <div>
-          <small>需要确认</small>
-          <h3 id="approval-request-title">{view.title}</h3>
+          <small>需要确认{total > 1 ? ` · ${position}/${total}` : ""}</small>
+          <h3 id={titleId}>{view.title}</h3>
         </div>
       </header>
 
@@ -138,7 +139,7 @@ function ApprovalRequest({ pending, busy, onResolve }) {
           >
             {view.allowLabel}
           </button>
-          {pending.pending_approval_scope && (
+          {(pending.pending_approval_scope || pending.approval_scope) && (
             <button
               className="approval-allow"
               type="button"
@@ -151,6 +152,13 @@ function ApprovalRequest({ pending, busy, onResolve }) {
         </div>
       </footer>
     </section>
+  );
+}
+
+function hasPendingApprovals(result) {
+  return Boolean(
+    result?.pending_tool
+    || result?.pending_approvals?.some((item) => item.decision === "pending"),
   );
 }
 
@@ -975,6 +983,7 @@ export default function App() {
   const [messages, setMessages] = useState([]);
   const [sessions, setSessions] = useState([]);
   const [pending, setPending] = useState(null);
+  const [approvalBusyIds, setApprovalBusyIds] = useState({});
   const [prompt, setPrompt] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [busy, setBusy] = useState(false);
@@ -1167,7 +1176,7 @@ export default function App() {
         });
         if (ignore) return;
         setMessages(data.messages || []);
-        setPending(data.result?.pending_tool ? data.result : null);
+        setPending(hasPendingApprovals(data.result) ? data.result : null);
         setStatus(data.result?.status || "idle");
         setContextUsage({
           used_tokens: data.result?.context_used_tokens || 0,
@@ -1380,7 +1389,7 @@ export default function App() {
           { role: "assistant", content: result.text },
         ]);
       }
-      setPending(result.pending_tool ? result : null);
+      setPending(hasPendingApprovals(result) ? result : null);
       setStatus(result.status || "completed");
       setContextUsage({
         used_tokens: result.context_used_tokens || 0,
@@ -1565,7 +1574,7 @@ export default function App() {
           },
         ]);
       }
-      setPending(result.pending_tool ? result : null);
+      setPending(hasPendingApprovals(result) ? result : null);
       setPendingInputs([]);
       setStatus(result.status || "completed");
       setContextUsage({
@@ -1691,16 +1700,16 @@ export default function App() {
     });
   }
 
-  async function resolveApproval(action) {
-    if (!pending || busy || !selectedWorkspace) return;
+  async function continueApprovalBatch(batch) {
     setBusy(true);
     try {
       let result = null;
       let streamed = "";
-      await streamRequest(token, "/api/approval/stream", {
+      await streamRequest(token, "/api/turn/continue/stream", {
           client_id: clientId,
           workspace_id: selectedWorkspace.workspace_id,
-          action,
+          expected_turn_id: batch.turn_id || pending.task_id,
+          batch_id: batch.batch_id || pending.approval_batch_id,
         }, (event) => {
           if (event.type === "token") {
             streamed += event.text || "";
@@ -1749,7 +1758,7 @@ export default function App() {
           },
         ]);
       }
-      setPending(result.pending_tool ? result : null);
+      setPending(hasPendingApprovals(result) ? result : null);
       setStatus(result.status || "completed");
       setContextUsage({
         used_tokens: result.context_used_tokens || 0,
@@ -1766,6 +1775,44 @@ export default function App() {
       setStreamText("");
       setRunStage("");
       setLiveWork([]);
+    }
+  }
+
+  async function resolveApproval(approval, action) {
+    if (!pending || busy || !selectedWorkspace || !approval?.approval_id) return;
+    setApprovalBusyIds((items) => ({ ...items, [approval.approval_id]: true }));
+    try {
+      const batch = await request(token, "/api/approval/decision", {
+        method: "POST",
+        body: JSON.stringify({
+          client_id: clientId,
+          workspace_id: selectedWorkspace.workspace_id,
+          approval_id: approval.approval_id,
+          expected_turn_id: pending.task_id,
+          batch_id: pending.approval_batch_id,
+          action,
+        }),
+      });
+      setPending((current) => (
+        current
+          ? {
+              ...current,
+              approval_batch_id: batch.batch_id,
+              pending_approvals: batch.approvals,
+            }
+          : current
+      ));
+      if (batch.ready) {
+        await continueApprovalBatch(batch);
+      }
+    } catch (error) {
+      showToast(error.message);
+    } finally {
+      setApprovalBusyIds((items) => {
+        const next = { ...items };
+        delete next[approval.approval_id];
+        return next;
+      });
     }
   }
 
@@ -1811,7 +1858,7 @@ export default function App() {
         }),
       });
       setMessages(data.messages || []);
-      setPending(data.result?.pending_tool ? data.result : null);
+      setPending(hasPendingApprovals(data.result) ? data.result : null);
       setStatus(data.result?.status || "idle");
       setContextUsage({
         used_tokens: data.result?.context_used_tokens || 0,
@@ -2294,11 +2341,21 @@ export default function App() {
                   />
                 ))}
                 {pending && (
-                  <ApprovalRequest
-                    pending={pending}
-                    busy={busy}
-                    onResolve={resolveApproval}
-                  />
+                  <div className="approval-batch" aria-label="待确认操作">
+                    {(pending.pending_approvals?.length
+                      ? pending.pending_approvals.filter((item) => item.decision === "pending")
+                      : [pending]
+                    ).map((approval, index, items) => (
+                      <ApprovalRequest
+                        key={approval.approval_id || approval.tool_call_id || "legacy-approval"}
+                        pending={approval}
+                        busy={busy || Boolean(approvalBusyIds[approval.approval_id])}
+                        position={index + 1}
+                        total={items.length}
+                        onResolve={(action) => resolveApproval(approval, action)}
+                      />
+                    ))}
+                  </div>
                 )}
                 <div ref={messageEndRef} />
               </div>

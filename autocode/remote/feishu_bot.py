@@ -245,16 +245,16 @@ class FeishuBot:
 
     def _resolve_command(self, session_key: str, command: str, hook_handler=None) -> RemoteTurnResult:
         if command == "approve":
-            return self.manager.resolve_approval(session_key, approved=True, hook_handler=hook_handler)
+            return self.manager.resolve_next_approval(session_key, approved=True, hook_handler=hook_handler)
         if command == "approve_scope":
-            return self.manager.resolve_approval(
+            return self.manager.resolve_next_approval(
                 session_key,
                 approved=True,
                 grant_scope=True,
                 hook_handler=hook_handler,
             )
         if command == "reject":
-            return self.manager.resolve_approval(session_key, approved=False, hook_handler=hook_handler)
+            return self.manager.resolve_next_approval(session_key, approved=False, hook_handler=hook_handler)
         raise ValueError(f"Unsupported command: {command}")
 
     def _deliver_result(
