@@ -84,6 +84,8 @@ class TaskState:
     auto_approve_for_task: bool = False
     last_tool_name: str = ""
     last_tool_result: str = ""
+    langfuse_trace_id: str = ""
+    langfuse_root_observation_id: str = ""
 
     def touch(self, status: str | None = None):
         if status:
@@ -157,6 +159,8 @@ class TaskState:
             "auto_approve_for_task": self.auto_approve_for_task,
             "last_tool_name": self.last_tool_name,
             "last_tool_result": self.last_tool_result,
+            "langfuse_trace_id": self.langfuse_trace_id,
+            "langfuse_root_observation_id": self.langfuse_root_observation_id,
         }
 
     @classmethod
@@ -179,6 +183,8 @@ class TaskState:
             auto_approve_for_task=bool(data.get("auto_approve_for_task", False)),
             last_tool_name=data.get("last_tool_name", ""),
             last_tool_result=data.get("last_tool_result", ""),
+            langfuse_trace_id=data.get("langfuse_trace_id", ""),
+            langfuse_root_observation_id=data.get("langfuse_root_observation_id", ""),
         )
 
 
