@@ -63,7 +63,9 @@ class RemoteTurnResult:
     pending_reason: str = ""
     pending_arguments: dict | None = None
     pending_requires_manual: bool = False
-    auto_approve_for_task: bool = False
+    pending_approval_scope: str = ""
+    pending_approval_label: str = ""
+    permission_mode: str = "ask"
     context_used_tokens: int = 0
     context_window_tokens: int = 0
 
@@ -118,9 +120,12 @@ class RemoteManager:
         attachments: list[dict] | None = None,
         on_token=None,
         on_tool=None,
+        permission_mode: str | None = None,
     ) -> RemoteTurnResult:
         runtime = self._get_or_create_runtime(chat_id)
         with runtime.lock:
+            if permission_mode:
+                runtime.agent.set_permission_mode(permission_mode)
             message_start = len(runtime.agent.messages)
             started_at = time.monotonic()
             prepared = prepare_attachments(
@@ -155,10 +160,13 @@ class RemoteManager:
         attachments: list[dict] | None = None,
         on_token=None,
         on_tool=None,
+        permission_mode: str | None = None,
     ) -> RemoteTurnResult:
         """Edit and rerun only the last completed turn in the same session."""
         runtime = self._require_runtime(chat_id)
         with runtime.lock:
+            if permission_mode:
+                runtime.agent.set_permission_mode(permission_mode)
             started_at = time.monotonic()
             prepared = prepare_attachments(
                 self.config.workspace_root,
@@ -250,8 +258,10 @@ class RemoteManager:
         self,
         chat_id: Hashable,
         approved: bool,
-        enable_auto_approve: bool = False,
+        grant_scope: bool = False,
         hook_handler=None,
+        on_token=None,
+        on_tool=None,
     ) -> RemoteTurnResult:
         runtime = self._require_runtime(chat_id)
         with runtime.lock:
@@ -261,7 +271,9 @@ class RemoteManager:
                 reply = runtime.agent.approve_pending(
                     approved=approved,
                     approval_handler=None,
-                    enable_auto_approve=enable_auto_approve,
+                    grant_scope=grant_scope,
+                    on_token=on_token,
+                    on_tool=on_tool,
                 )
             self._annotate_turn(
                 runtime.agent,
@@ -269,6 +281,11 @@ class RemoteManager:
                 round((time.monotonic() - started_at) * 1000, 1),
             )
             return self._result_from_agent(runtime.agent, reply)
+
+    def set_permission_mode(self, chat_id: Hashable, permission_mode: str) -> str:
+        runtime = self._get_or_create_runtime(chat_id)
+        runtime.agent.set_permission_mode(permission_mode)
+        return runtime.agent.policy.permission_mode
 
     def reset_chat(self, chat_id: Hashable) -> None:
         with self._state_lock:
@@ -559,7 +576,7 @@ class RemoteManager:
                 f"Title: {task.title or '(untitled)'}\n"
                 f"Status: {task.status}\n"
                 f"Steps: {task.step_index}\n"
-                f"Approve_all: {'on' if task.auto_approve_for_task else 'off'}{suffix}"
+                f"Permission mode: {agent.policy.permission_mode}{suffix}"
             )
 
     def current_trace(self, chat_id: Hashable) -> str:
@@ -580,7 +597,12 @@ class RemoteManager:
     def list_resume_candidates(self, limit: int = 10) -> list[dict]:
         return list_sessions(workspace_root=self.config.workspace_root, limit=limit)
 
-    def resume_session(self, chat_id: Hashable, session_id: str) -> RemoteTurnResult:
+    def resume_session(
+        self,
+        chat_id: Hashable,
+        session_id: str,
+        permission_mode: str | None = None,
+    ) -> RemoteTurnResult:
         allowed_session_ids = {
             item["session_id"]
             for item in self.list_resume_candidates(limit=200)
@@ -594,6 +616,8 @@ class RemoteManager:
         session_state, messages, _saved_model = loaded
         runtime = self._get_or_create_runtime(chat_id, replace=True)
         with runtime.lock:
+            if permission_mode:
+                runtime.agent.set_permission_mode(permission_mode)
             # 远程会话恢复历史上下文，但始终使用当前 Runner 配置的模型。
             runtime.agent.restore_session(session_state, messages)
             # 首次恢复旧 checkpoint 时立即固化补齐的 message/turn/revision ID。
@@ -628,16 +652,29 @@ class RemoteManager:
 
     def _get_or_create_runtime(self, chat_id: Hashable, replace: bool = False) -> _ChatRuntime:
         previous = None
+        previous_locked = False
         with self._state_lock:
             if not replace and chat_id in self._chats:
                 return self._chats[chat_id]
             if replace:
-                previous = self._chats.pop(chat_id, None)
-            runtime = _ChatRuntime(agent=self._build_agent(), lock=threading.RLock())
+                previous = self._chats.get(chat_id)
+                if previous is not None and not previous.lock.acquire(blocking=False):
+                    raise ValueError(
+                        "当前会话仍在执行任务，请等待完成或取消后再恢复历史会话。"
+                    )
+                previous_locked = previous is not None
+            try:
+                runtime = _ChatRuntime(agent=self._build_agent(), lock=threading.RLock())
+            except Exception:
+                if previous_locked:
+                    previous.lock.release()
+                raise
             self._chats[chat_id] = runtime
         if previous is not None:
-            with previous.lock:
+            try:
                 self._close_agent(previous.agent)
+            finally:
+                previous.lock.release()
         return runtime
 
     def _close_agent(self, agent: Agent) -> None:
@@ -663,7 +700,7 @@ class RemoteManager:
             own_mcp_manager=False,
             max_context_tokens=self.config.max_context_tokens,
             workspace_root=self.config.workspace_root,
-            auto_approve=self.config.auto_approve,
+            permission_mode=self.config.permission_mode,
         )
 
     def _build_tools(self):
@@ -725,11 +762,15 @@ class RemoteManager:
         pending_reason = ""
         pending_arguments = None
         pending_requires_manual = False
+        pending_approval_scope = ""
+        pending_approval_label = ""
         if task.pending_approval:
             pending_tool = task.pending_approval.tool_name
             pending_reason = task.pending_approval.reason
             pending_arguments = task.pending_approval.arguments
             pending_requires_manual = task.pending_approval.requires_manual
+            pending_approval_scope = task.pending_approval.approval_scope
+            pending_approval_label = task.pending_approval.approval_label
         return RemoteTurnResult(
             text=text,
             session_id=agent.session_state.session_id,
@@ -739,7 +780,9 @@ class RemoteManager:
             pending_reason=pending_reason,
             pending_arguments=pending_arguments,
             pending_requires_manual=pending_requires_manual,
-            auto_approve_for_task=task.auto_approve_for_task,
+            pending_approval_scope=pending_approval_scope,
+            pending_approval_label=pending_approval_label,
+            permission_mode=agent.policy.permission_mode,
             context_used_tokens=context["used_tokens"],
             context_window_tokens=context["window_tokens"],
         )

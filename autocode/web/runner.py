@@ -208,6 +208,7 @@ class LocalRunner:
                     "image_input": True,
                     "workspace_image_tool": True,
                     "web_search": bool(self._base_config.tavily_api_key),
+                    "permission_modes": ["ask", "full_access"],
                 },
                 "diagnostics": {
                     "log_dir": str(diagnostic_log_dir()),
@@ -290,6 +291,13 @@ class LocalRunner:
                 "turn_id": expected_turn_id,
                 "queued_message": queued_message,
             }
+        if action == "permission_mode":
+            return {
+                "permission_mode": manager.set_permission_mode(
+                    payload["client_id"],
+                    str(payload.get("permission_mode", "")),
+                )
+            }
         if action == "change_action":
             workspace = self.registry.resolve(workspace_id)
             turn_id = str(payload.get("turn_id", ""))
@@ -316,11 +324,29 @@ class LocalRunner:
         if action == "approval":
             workspace = self.registry.resolve(workspace_id)
             git_before = git_turn_snapshot(workspace)
+            first_token_seen = False
+
+            def on_token(text: str) -> None:
+                nonlocal first_token_seen
+                if event_handler is None:
+                    return
+                if not first_token_seen:
+                    event_handler({"type": "stage", "stage": "first_token"})
+                    first_token_seen = True
+                event_handler({"type": "token", "text": text})
+
+            def on_hook(event: str, data: dict) -> None:
+                if event_handler is None:
+                    return
+                self._emit_hook_event(event_handler, event, data)
+
             with self._capture_output_files(str(payload["workspace_id"])) as output_files:
                 result = manager.resolve_approval(
                     payload["client_id"],
                     payload["approved"],
-                    payload["approve_all"],
+                    payload["grant_scope"],
+                    hook_handler=on_hook,
+                    on_token=on_token,
                 )
             changed_files = changed_git_files(
                 git_before,
@@ -345,7 +371,11 @@ class LocalRunner:
         if action == "sessions":
             return {"sessions": manager.list_resume_candidates(payload.get("limit", 50))}
         if action == "resume":
-            result = manager.resume_session(payload["client_id"], payload["session_id"])
+            result = manager.resume_session(
+                payload["client_id"],
+                payload["session_id"],
+                payload.get("permission_mode"),
+            )
             return {
                 "result": asdict(result),
                 "messages": manager.conversation_messages(payload["client_id"]),
@@ -474,6 +504,7 @@ class LocalRunner:
                     event_handler({"type": "stage", "stage": stage, "details": details})
 
             submit_kwargs = {"hook_handler": on_hook}
+            submit_kwargs["permission_mode"] = payload.get("permission_mode")
             if event_handler is not None:
                 submit_kwargs["on_token"] = on_token
             if attachments:
@@ -561,6 +592,51 @@ class LocalRunner:
                 }
             )
         return changed_files
+
+    @staticmethod
+    def _emit_hook_event(event_handler, event: str, data: dict) -> None:
+        if event in {"before_tool", "after_tool"}:
+            work_event = {
+                "type": "work",
+                "phase": "started" if event == "before_tool" else "completed",
+                "tool_call_id": str(data.get("tool_call_id", "")),
+                "tool_name": str(data.get("tool_name", "")),
+            }
+            if event == "before_tool":
+                work_event["arguments"] = presentation_tool_arguments(
+                    data.get("arguments")
+                )
+            else:
+                work_event.update(
+                    {
+                        "output": str(data.get("result", "")),
+                        "duration_ms": float(data.get("duration_ms", 0) or 0),
+                        "success": bool(data.get("success", False)),
+                    }
+                )
+            event_handler(work_event)
+        stage_map = {
+            "before_llm": "model_started",
+            "after_llm": "model_finished",
+            "before_tool": "tool_started",
+            "after_tool": "tool_finished",
+            "context_compaction": "context_compacted",
+        }
+        stage = stage_map.get(event)
+        if stage:
+            details = {
+                key: data[key]
+                for key in (
+                    "step_index",
+                    "tool_call_id",
+                    "tool_name",
+                    "prompt_tokens",
+                    "completion_tokens",
+                    "task_id",
+                )
+                if key in data
+            }
+            event_handler({"type": "stage", "stage": stage, "details": details})
 
     def run_forever(self) -> None:
         retry_delay = 1.0
@@ -701,7 +777,6 @@ class LocalRunner:
                 "change_action",
                 "git_action",
                 "reset",
-                "resume",
                 "delete_session",
             }
             lock = (

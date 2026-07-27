@@ -14,7 +14,7 @@ def render_turn_result(result: RemoteTurnResult) -> str:
             f"\nSession: {result.session_id or 'unknown'}\n"
             f"Task: {result.task_id or '(none)'}\n"
             f"Status: {result.status or 'unknown'}\n"
-            f"Approve_all: {'on' if result.auto_approve_for_task else 'off'}"
+            f"Permissions: {result.permission_mode}"
         )
     if result.pending_tool:
         command_block = ""
@@ -27,7 +27,7 @@ def render_turn_result(result: RemoteTurnResult) -> str:
             f"- Tool: {result.pending_tool}\n"
             f"{command_block}"
             f"- Reason: {result.pending_reason or 'confirmation required'}\n"
-            "Reply with /approve, /approve_all, or /reject."
+            "Reply with /approve, /approve_scope, or /reject."
         )
     return "\n".join(part for part in parts if part).strip()
 

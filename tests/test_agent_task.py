@@ -29,7 +29,7 @@ class _ToolLLM:
 
 
 def test_agent_uses_instance_tool_registry(tmp_path):
-    agent = Agent(llm=_ToolLLM(), tools=[_CustomTool()], workspace_root=str(tmp_path), auto_approve=True)
+    agent = Agent(llm=_ToolLLM(), tools=[_CustomTool()], workspace_root=str(tmp_path), permission_mode="full_access")
     reply = agent.chat("use custom")
     assert reply == "done"
     assert any(m.get("content") == "custom-ok" for m in agent.messages if m.get("role") == "tool")
@@ -68,12 +68,12 @@ class _BashLLM:
         return LLMResponse(content="done")
 
 
-def test_agent_approve_all_allows_workspace_local_risk_but_denies_outside_workspace(tmp_path):
+def test_agent_full_access_allows_safe_tools_but_keeps_hard_denies(tmp_path):
     calls = []
 
     def approval_handler(pending):
         calls.append((pending.tool_name, pending.requires_manual, pending.arguments.get("command")))
-        return "approve_all"
+        return "approve_scope"
 
     agent = Agent(
         llm=_BashLLM(),

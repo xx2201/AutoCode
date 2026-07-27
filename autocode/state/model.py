@@ -15,12 +15,16 @@ class PolicyDecision:
     action: str
     reason: str = ""
     requires_manual: bool = False
+    approval_scope: str = ""
+    approval_label: str = ""
 
     def to_dict(self) -> dict:
         return {
             "action": self.action,
             "reason": self.reason,
             "requires_manual": self.requires_manual,
+            "approval_scope": self.approval_scope,
+            "approval_label": self.approval_label,
         }
 
     @classmethod
@@ -29,6 +33,8 @@ class PolicyDecision:
             action=data.get("action", "deny"),
             reason=data.get("reason", ""),
             requires_manual=bool(data.get("requires_manual", False)),
+            approval_scope=data.get("approval_scope", ""),
+            approval_label=data.get("approval_label", ""),
         )
 
 
@@ -39,6 +45,8 @@ class PendingApproval:
     arguments: dict
     reason: str
     requires_manual: bool = False
+    approval_scope: str = ""
+    approval_label: str = ""
     remaining_tool_calls: list[dict] = field(default_factory=list)
     requested_at: str = field(default_factory=_now)
 
@@ -49,6 +57,8 @@ class PendingApproval:
             "arguments": self.arguments,
             "reason": self.reason,
             "requires_manual": self.requires_manual,
+            "approval_scope": self.approval_scope,
+            "approval_label": self.approval_label,
             "remaining_tool_calls": self.remaining_tool_calls,
             "requested_at": self.requested_at,
         }
@@ -61,6 +71,8 @@ class PendingApproval:
             arguments=data.get("arguments", {}),
             reason=data.get("reason", ""),
             requires_manual=bool(data.get("requires_manual", False)),
+            approval_scope=data.get("approval_scope", ""),
+            approval_label=data.get("approval_label", ""),
             remaining_tool_calls=list(data.get("remaining_tool_calls", [])),
             requested_at=data.get("requested_at", _now()),
         )
@@ -81,7 +93,7 @@ class TaskState:
     todos: list[dict] = field(default_factory=list)
     recent_failures: list[str] = field(default_factory=list)
     pending_approval: PendingApproval | None = None
-    auto_approve_for_task: bool = False
+    approval_grants: list[str] = field(default_factory=list)
     last_tool_name: str = ""
     last_tool_result: str = ""
     langfuse_trace_id: str = ""
@@ -108,12 +120,12 @@ class TaskState:
     def mark_failed(self, error: str):
         self.last_error = error
         self.note_failure(error)
-        self.auto_approve_for_task = False
+        self.approval_grants.clear()
         self.touch("failed")
 
     def mark_completed(self):
         self.clear_pending()
-        self.auto_approve_for_task = False
+        self.approval_grants.clear()
         self.touch("completed")
 
     def set_todos(self, todos: list[dict]):
@@ -132,9 +144,13 @@ class TaskState:
         self.last_error = ""
         self.touch()
 
-    def set_auto_approve(self, enabled: bool):
-        self.auto_approve_for_task = bool(enabled)
+    def grant_approval_scope(self, scope: str):
+        if scope and scope not in self.approval_grants:
+            self.approval_grants.append(scope)
         self.touch()
+
+    def has_approval_scope(self, scope: str) -> bool:
+        return bool(scope and scope in self.approval_grants)
 
     def note_tool_result(self, tool_name: str, result: str):
         self.last_tool_name = tool_name
@@ -156,7 +172,7 @@ class TaskState:
             "todos": self.todos,
             "recent_failures": self.recent_failures,
             "pending_approval": self.pending_approval.to_dict() if self.pending_approval else None,
-            "auto_approve_for_task": self.auto_approve_for_task,
+            "approval_grants": list(self.approval_grants),
             "last_tool_name": self.last_tool_name,
             "last_tool_result": self.last_tool_result,
             "langfuse_trace_id": self.langfuse_trace_id,
@@ -180,7 +196,7 @@ class TaskState:
             todos=list(data.get("todos", [])),
             recent_failures=list(data.get("recent_failures", [])),
             pending_approval=PendingApproval.from_dict(pending) if pending else None,
-            auto_approve_for_task=bool(data.get("auto_approve_for_task", False)),
+            approval_grants=list(data.get("approval_grants", [])),
             last_tool_name=data.get("last_tool_name", ""),
             last_tool_result=data.get("last_tool_result", ""),
             langfuse_trace_id=data.get("langfuse_trace_id", ""),

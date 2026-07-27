@@ -36,18 +36,18 @@ export function approvalPresentation(pending) {
   const argumentsValue = pending?.pending_arguments || {};
   const reason = textValue(pending?.pending_reason);
   const reasonLabel = KNOWN_REASONS.get(reason) || reason || "此操作需要你的许可";
-  const manual = Boolean(pending?.pending_requires_manual);
+  const scopeLabel = textValue(pending?.pending_approval_label);
   const base = {
     tool,
     toolLabel: readableToolName(tool) || "工具操作",
     reason: reasonLabel,
     detail: detailText(argumentsValue),
     detailLabel: "查看请求详情",
-    note: manual
-      ? "此操作需要单独确认，不会被本轮自动许可覆盖。"
-      : "你可以只允许这一次，或在当前任务内不再询问同类普通操作。",
+    note: scopeLabel
+      ? `你可以只允许这一次，或选择“${scopeLabel}”。`
+      : "此操作只能单独确认。",
     allowLabel: "允许一次",
-    allowAllLabel: "本轮不再询问",
+    allowAllLabel: scopeLabel ? "本任务允许" : "本任务允许同类操作",
     tone: "default",
     targetLabel: "操作",
     target: readableToolName(tool) || "执行工具",

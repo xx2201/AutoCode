@@ -46,7 +46,7 @@ class Config:
     max_context_tokens: int = 1_000_000
     provider: str = "anthropic"
     workspace_root: str = ""
-    auto_approve: bool = False
+    permission_mode: str = "ask"
     mcp_config_path: str = ""
     telegram_bot_token: str = ""
     telegram_allowed_chat_ids: tuple[int, ...] = ()
@@ -71,7 +71,11 @@ class Config:
             max_context_tokens=int(_resolve_config_value(snapshot, "AUTOCODE_MAX_CONTEXT", "1000000")),
             provider=_resolve_config_value(snapshot, "AUTOCODE_PROVIDER", "anthropic"),
             workspace_root=_resolve_config_value(snapshot, "AUTOCODE_WORKSPACE_ROOT", str(Path.cwd())),
-            auto_approve=_resolve_config_value(snapshot, "AUTOCODE_AUTO_APPROVE", "").lower() in {"1", "true", "yes", "on"},
+            permission_mode=_resolve_config_value(
+                snapshot,
+                "AUTOCODE_PERMISSION_MODE",
+                "ask",
+            ),
             mcp_config_path=_resolve_config_value(snapshot, "AUTOCODE_MCP_CONFIG"),
             telegram_bot_token=_resolve_config_value(snapshot, "AUTOCODE_TELEGRAM_BOT_TOKEN"),
             telegram_allowed_chat_ids=_parse_chat_ids(_resolve_config_value(snapshot, "AUTOCODE_TELEGRAM_ALLOWED_CHATS", "")),

@@ -146,7 +146,7 @@ class FeishuBot:
         session_key = value.get("session_key", "")
         message_id = getattr(context, "open_message_id", "") or ""
         session_id = value.get("session_id", "")
-        if command not in {"approve", "approve_all", "reject", "resume"} or not session_key or not message_id:
+        if command not in {"approve", "approve_scope", "reject", "resume"} or not session_key or not message_id:
             response.toast = self.lark["CallBackToast"]({"type": "warning", "content": "Invalid action payload."})
             return response
         if command == "resume" and not session_id:
@@ -231,7 +231,7 @@ class FeishuBot:
                 if not tasks:
                     return "No resumable sessions for the current project."
                 return _ResumeSelection(tasks=tasks, session_key=session_key, owner_open_id=sender_open_id)
-            if command in {"/approve", "/approve_all", "/reject"}:
+            if command in {"/approve", "/approve_scope", "/reject"}:
                 live = self._live_states.get(session_key)
                 hook_handler = self._make_live_hook(live) if live else None
                 if live:
@@ -246,11 +246,11 @@ class FeishuBot:
     def _resolve_command(self, session_key: str, command: str, hook_handler=None) -> RemoteTurnResult:
         if command == "approve":
             return self.manager.resolve_approval(session_key, approved=True, hook_handler=hook_handler)
-        if command == "approve_all":
+        if command == "approve_scope":
             return self.manager.resolve_approval(
                 session_key,
                 approved=True,
-                enable_auto_approve=True,
+                grant_scope=True,
                 hook_handler=hook_handler,
             )
         if command == "reject":
@@ -285,7 +285,7 @@ class FeishuBot:
                 live.session_id = result.session_id or live.session_id
                 live.task_id = result.task_id or live.task_id
                 live.status = result.status or live.status
-                live.auto_approve_for_task = result.auto_approve_for_task
+                live.permission_mode = result.permission_mode
                 live.phase = "Waiting Approval"
                 live.detail = result.pending_reason or "approval required"
                 live.last_tool = result.pending_tool
@@ -299,7 +299,7 @@ class FeishuBot:
             live.session_id = result.session_id or live.session_id
             live.task_id = result.task_id or live.task_id
             live.status = result.status or live.status or "completed"
-            live.auto_approve_for_task = result.auto_approve_for_task
+            live.permission_mode = result.permission_mode
             live.phase = "Completed"
             live.detail = "Final result sent below."
             self._patch_live_card(live, force=True, template="green")
@@ -437,7 +437,7 @@ def _help_text() -> str:
         "/task - show current session and task\n"
         "/trace - show the current session trace\n"
         "/approve - approve the pending tool call\n"
-        "/approve_all - approve this tool call and auto-approve later normal confirms\n"
+        "/approve_scope - approve and allow this scope for the current task\n"
         "/reject - reject the pending tool call\n"
         "/resume - show resumable sessions for the current project\n"
         "/reset - clear the in-memory chat session\n\n"
@@ -600,7 +600,7 @@ class _LiveStatus:
     compactions: int = 0
     cache_segments: int = 1
     last_tool: str = ""
-    auto_approve_for_task: bool = False
+    permission_mode: str = "ask"
     last_patch_at: float = 0.0
 
     @classmethod
@@ -691,7 +691,7 @@ class _LiveStatus:
             "cache_segments": self.cache_segments,
             "last_tool": self.last_tool,
             "detail": self.detail,
-            "auto_approve_for_task": self.auto_approve_for_task,
+            "permission_mode": self.permission_mode,
         }
 
 

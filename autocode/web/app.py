@@ -58,11 +58,13 @@ class ClientRequest(BaseModel):
 class ChatRequest(ClientRequest):
     prompt: str = Field(default="", max_length=32_000)
     attachments: list["AttachmentRequest"] = Field(default_factory=list, max_length=5)
+    permission_mode: Literal["ask", "full_access"] = "ask"
 
 
 class TurnEditRequest(ClientRequest):
     turn_id: str = Field(min_length=1, max_length=128)
     prompt: str = Field(min_length=1, max_length=32_000)
+    permission_mode: Literal["ask", "full_access"] = "ask"
 
 
 class TurnMessageRequest(ClientRequest):
@@ -83,11 +85,16 @@ class AttachmentRequest(BaseModel):
 
 
 class ApprovalRequest(ClientRequest):
-    action: str
+    action: Literal["approve", "approve_scope", "reject"]
+
+
+class PermissionModeRequest(ClientRequest):
+    permission_mode: Literal["ask", "full_access"]
 
 
 class ResumeRequest(ClientRequest):
     session_id: str = Field(min_length=1, max_length=128)
+    permission_mode: Literal["ask", "full_access"] = "ask"
 
 
 class DeleteSessionRequest(ResumeRequest):
@@ -256,6 +263,7 @@ def create_app(
             "client_id": client_id,
             "workspace_id": payload.workspace_id,
             "prompt": prompt,
+            "permission_mode": payload.permission_mode,
         }
         if payload.attachments:
             chat_payload["attachments"] = [item.model_dump() for item in payload.attachments]
@@ -272,6 +280,7 @@ def create_app(
                 "client_id": client_id,
                 "workspace_id": payload.workspace_id,
                 "prompt": prompt,
+                "permission_mode": payload.permission_mode,
             }
             if payload.attachments:
                 chat_payload["attachments"] = [
@@ -308,6 +317,7 @@ def create_app(
                     "workspace_id": payload.workspace_id,
                     "turn_id": payload.turn_id,
                     "prompt": prompt,
+                    "permission_mode": payload.permission_mode,
                 },
             )
         except RunnerOfflineError as exc:
@@ -344,6 +354,18 @@ def create_app(
             timeout=control_request_timeout,
         )
 
+    @app.post("/api/permission-mode", dependencies=browser_auth)
+    async def permission_mode(payload: PermissionModeRequest):
+        return await dispatch(
+            "permission_mode",
+            {
+                "client_id": _validate_client_id(payload.client_id),
+                "workspace_id": payload.workspace_id,
+                "permission_mode": payload.permission_mode,
+            },
+            timeout=control_request_timeout,
+        )
+
     @app.post("/api/changes/action", dependencies=browser_auth)
     async def change_action(payload: ChangeActionRequest):
         client_id = _validate_client_id(payload.client_id)
@@ -358,24 +380,38 @@ def create_app(
             timeout=control_request_timeout,
         )
 
-    @app.post("/api/approval", dependencies=browser_auth)
-    async def approval(payload: ApprovalRequest):
+    @app.post("/api/approval/stream", dependencies=browser_auth)
+    async def approval_stream(payload: ApprovalRequest):
         client_id = _validate_client_id(payload.client_id)
         actions = {
             "approve": (True, False),
-            "approve_all": (True, True),
+            "approve_scope": (True, True),
             "reject": (False, False),
         }
-        if payload.action not in actions:
-            raise HTTPException(status_code=422, detail="Invalid approval action.")
-        approved, approve_all = actions[payload.action]
-        return await dispatch(
-            "approval",
-            {
-                "client_id": client_id,
-                "workspace_id": payload.workspace_id,
-                "approved": approved,
-                "approve_all": approve_all,
+        approved, grant_scope = actions[payload.action]
+        try:
+            job_id = relay.start_stream(
+                "approval",
+                {
+                    "client_id": client_id,
+                    "workspace_id": payload.workspace_id,
+                    "approved": approved,
+                    "grant_scope": grant_scope,
+                },
+            )
+        except RunnerOfflineError as exc:
+            raise HTTPException(status_code=503, detail=str(exc)) from exc
+
+        def event_stream():
+            for event in relay.iter_stream(job_id, timeout=request_timeout):
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={
+                "Cache-Control": "no-cache, no-transform",
+                "X-Accel-Buffering": "no",
             },
         )
 
@@ -478,6 +514,7 @@ def create_app(
                 "client_id": _validate_client_id(payload.client_id),
                 "workspace_id": payload.workspace_id,
                 "session_id": payload.session_id,
+                "permission_mode": payload.permission_mode,
             },
             timeout=control_request_timeout,
         )

@@ -64,7 +64,7 @@ def build_live_status_card(
     cache_segments: int,
     last_tool: str = "",
     detail: str = "",
-    auto_approve_for_task: bool = False,
+    permission_mode: str = "ask",
     template: str = "blue",
 ) -> dict:
     cache_total = cache_read_tokens + cache_miss_tokens
@@ -90,7 +90,7 @@ def build_live_status_card(
         f"Last Cache Miss: `{last_cache_miss_tokens}`",
         f"Compactions: `{compactions}`",
         f"Cache Segments: `{cache_segments}`",
-        f"Approve_all: `{'on' if auto_approve_for_task else 'off'}`",
+        f"Permissions: `{permission_mode}`",
     ]
     if last_tool:
         lines.append(f"Last Tool: `{last_tool}`")
@@ -114,7 +114,7 @@ def build_approval_card(
         f"Session: `{result.session_id}`",
         f"Task: `{result.task_id}`",
         f"Status: `{result.status or 'unknown'}`",
-        f"Approve_all: `{'on' if result.auto_approve_for_task else 'off'}`",
+        f"Permissions: `{result.permission_mode}`",
         f"Tool: `{result.pending_tool or 'unknown'}`",
         f"Reason: {result.pending_reason or 'confirmation required'}",
     ]
@@ -129,7 +129,14 @@ def build_approval_card(
         markdown="\n".join(lines),
         buttons=[
             _button("Approve", "approve", session_key, owner_open_id, result.session_id, "primary"),
-            _button("Approve All", "approve_all", session_key, owner_open_id, result.session_id, "default"),
+            _button(
+                result.pending_approval_label or "Approve Scope",
+                "approve_scope",
+                session_key,
+                owner_open_id,
+                result.session_id,
+                "default",
+            ),
             _button("Reject", "reject", session_key, owner_open_id, result.session_id, "danger"),
         ],
     )

@@ -136,7 +136,7 @@ autocode --resume SESSION_ID
 
 Important interactive commands include `/help`, `/reset`, `/model`, `/tokens`,
 `/compact`, `/diff`, `/resume`, `/task`, `/todo`, `/trace`, `/mcp`,
-`/approve`, `/approve_all`, and `/reject`.
+`/approve`, `/approve_scope`, `/permissions ask|full_access`, and `/reject`.
 
 ## Web access from a phone
 
@@ -290,9 +290,12 @@ the workspace-local `.autocode/.gitignore`.
 
 ## Safety boundary
 
-The policy layer restricts built-in file tools to the active workspace,
-protects `.env` and `.git`, denies selected destructive shell commands, and
-requires confirmation for deletion and external MCP calls.
+The policy layer exposes Ask for approval and Full access modes. Ask mode
+confirms deletion, external web access, and MCP calls, and can grant a
+task-scoped permission for matching hosts or tools. Full access skips those
+confirmations. Both modes still keep paths inside the workspace, protect
+`.env` and `.git`, and hard-deny destructive shell commands such as `rm -rf`
+and `git reset --hard`.
 
 The class currently named `Sandbox` is **not an operating-system sandbox**. It
 sets the working directory, filters environment variables, applies a timeout,

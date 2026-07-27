@@ -40,7 +40,7 @@ _PROMPT_MESSAGE = [("ansibrightblue bold", "You > ")]
 _APPROVAL_PROMPT_MESSAGE = [("ansibrightyellow bold", "Approve > ")]
 _APPROVAL_OPTIONS = [
     ("/approve", "Approve the pending tool call"),
-    ("/approve_all", "Approve now and auto-approve later normal confirms"),
+    ("/approve_scope", "Approve and allow the displayed scope for this task"),
     ("/reject", "Reject the pending tool call"),
     ("/later", "Keep approval pending and return"),
 ]
@@ -67,11 +67,11 @@ class _AgentWorker:
     def start_edit(self, turn_id: str, prompt: str) -> bool:
         return self._start("edit", turn_id=turn_id, prompt=prompt)
 
-    def start_approval(self, approved: bool, *, enable_auto_approve: bool = False) -> bool:
+    def start_approval(self, approved: bool, *, grant_scope: bool = False) -> bool:
         return self._start(
             "approval",
             approved=approved,
-            enable_auto_approve=enable_auto_approve,
+            grant_scope=grant_scope,
         )
 
     def deliver(self, content: str, mode: str) -> str:
@@ -186,7 +186,7 @@ class _AgentWorker:
             elif action == "approval":
                 response = self.agent.approve_pending(
                     approved=kwargs["approved"],
-                    enable_auto_approve=kwargs.get("enable_auto_approve", False),
+                    grant_scope=kwargs.get("grant_scope", False),
                     **common,
                 )
             else:
@@ -323,7 +323,7 @@ def main():
         own_mcp_manager=True,
         max_context_tokens=config.max_context_tokens,
         workspace_root=config.workspace_root,
-        auto_approve=config.auto_approve,
+        permission_mode=config.permission_mode,
     )
 
     if args.resume:
@@ -450,8 +450,8 @@ def _repl(agent: Agent, config: Config):
             )
             return False
         return worker.start_approval(
-            approved=choice in {"approve", "approve_all"},
-            enable_auto_approve=choice == "approve_all",
+            approved=choice in {"approve", "approve_scope"},
+            grant_scope=choice == "approve_scope",
         )
 
     with patch_stdout(raw=True):
@@ -498,7 +498,7 @@ def _repl(agent: Agent, config: Config):
             ):
                 console.print(
                     "[yellow]Approval is pending. Choose an action in the dialog or use "
-                    "/approve, /approve_all, or /reject.[/yellow]"
+                    "/approve, /approve_scope, or /reject.[/yellow]"
                 )
                 continue
 
@@ -600,14 +600,13 @@ def _repl(agent: Agent, config: Config):
                     pending = ""
                     if agent.task_state.pending_approval:
                         pending = f"  pending: {agent.task_state.pending_approval.tool_name}"
-                    auto = "on" if agent.task_state.auto_approve_for_task else "off"
                     console.print(
                         f"Session: [cyan]{agent.session_state.session_id}[/cyan]  "
                         f"Task: [cyan]{agent.task_state.task_id}[/cyan]  "
                         f"title: [bold]{agent.task_state.title or '(untitled)'}[/bold]  "
                         f"status: [yellow]{agent.task_state.status}[/yellow]  "
                         f"steps: [bold]{agent.task_state.step_index}[/bold]  "
-                        f"approve_all: [bold]{auto}[/bold]{pending}"
+                        f"permissions: [bold]{agent.policy.permission_mode}[/bold]{pending}"
                     )
                 continue
             if user_input == "/todo":
@@ -681,8 +680,17 @@ def _repl(agent: Agent, config: Config):
             if user_input == "/approve":
                 worker.start_approval(True)
                 continue
-            if user_input == "/approve_all":
-                worker.start_approval(True, enable_auto_approve=True)
+            if user_input == "/approve_scope":
+                worker.start_approval(True, grant_scope=True)
+                continue
+            if user_input == "/permissions" or user_input.startswith("/permissions "):
+                requested = user_input[len("/permissions"):].strip()
+                if requested not in {"ask", "full_access"}:
+                    console.print("[yellow]Usage: /permissions ask|full_access[/yellow]")
+                    continue
+                agent.set_permission_mode(requested)
+                config.permission_mode = requested
+                console.print(f"[green]Permission mode: {requested}[/green]")
                 continue
             if user_input == "/reject":
                 worker.start_approval(False)
@@ -777,7 +785,8 @@ def _show_help():
         "  /undo [turn]   Undo one turn's workspace changes\n"
         "  /reapply [turn] Reapply a previously undone turn\n"
         "  /approve       Approve the pending tool call\n"
-        "  /approve_all   Approve this tool call and auto-approve later normal confirms\n"
+        "  /approve_scope Approve and allow this scope for the current task\n"
+        "  /permissions   Set ask or full_access tool permissions\n"
         "  /reject        Reject the pending tool call\n"
         "  quit           Exit AutoCode\n"
         "\n"
@@ -882,9 +891,9 @@ def _prompt_approval(pending) -> str | bool | None:
             return None
         if result == "/approve":
             return "approve"
-        if result == "/approve_all":
-            return "approve_all"
+        if result == "/approve_scope":
+            return "approve_scope"
         if result == "/reject":
             return False
-        console.print("[yellow]Choose /approve, /approve_all, /reject, or /later.[/yellow]")
+        console.print("[yellow]Choose /approve, /approve_scope, /reject, or /later.[/yellow]")
 

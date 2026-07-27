@@ -51,15 +51,16 @@ def test_build_approval_card_embeds_actions():
         pending_reason="command is not in allowlist",
         pending_arguments={"command": "python app.py"},
         pending_requires_manual=True,
-        auto_approve_for_task=False,
+        pending_approval_scope="tool:bash",
+        pending_approval_label="本任务允许运行此类命令",
     )
     card = build_approval_card(result, "user:ou_xxx", "ou_owner")
     actions = []
     for column in card["body"]["elements"][1]["columns"]:
         actions.append(column["elements"][0]["value"]["command"])
-    assert actions == ["approve", "approve_all", "reject"]
+    assert actions == ["approve", "approve_scope", "reject"]
     assert "python app.py" in card["body"]["elements"][0]["content"]
-    assert "Approve_all" in card["body"]["elements"][0]["content"]
+    assert "Permissions" in card["body"]["elements"][0]["content"]
     assert "session_123" in card["body"]["elements"][0]["content"]
 
 
@@ -85,7 +86,7 @@ def test_build_live_status_card_shows_runtime_progress():
         cache_segments=2,
         last_tool="read_file",
         detail="Executing read_file.",
-        auto_approve_for_task=False,
+        permission_mode="ask",
     )
     content = card["body"]["elements"][0]["content"]
     assert "Running Tool" in content

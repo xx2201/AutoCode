@@ -59,7 +59,7 @@ class Agent:
         max_context_tokens: int = 1_000_000,
         max_rounds: int = 50,
         workspace_root: str | None = None,
-        auto_approve: bool = False,
+        permission_mode: str = "ask",
         turn_controller: TurnController | None = None,
     ):
         self.llm = llm
@@ -109,7 +109,10 @@ class Agent:
             self.hooks.on(event, self.trace.handle)
         self.hooks.on("task_status", self._handle_lifecycle_event)
         self.hooks.on("task_error", self._handle_lifecycle_event)
-        self.policy = Policy(workspace_root=self.workspace_root, auto_approve=auto_approve)
+        self.policy = Policy(
+            workspace_root=self.workspace_root,
+            permission_mode=permission_mode,
+        )
         self._sync_mcp_tools()
         self.runtime = Runtime(
             self.tool_registry,
@@ -282,17 +285,8 @@ class Agent:
         session.current_task.touch("running")
         session.touch()
 
-    def enable_auto_approve_for_current_task(self):
-        if self.task_state is None:
-            self._ensure_task()
-        self.task_state.set_auto_approve(True)
-        self.persist_session()
-
-    def disable_auto_approve_for_current_task(self):
-        if self.task_state is None:
-            return
-        self.task_state.set_auto_approve(False)
-        self.persist_session()
+    def set_permission_mode(self, permission_mode: str) -> None:
+        self.policy.set_permission_mode(permission_mode)
 
     def persist_session(self):
         if self.session_state is None:
@@ -399,7 +393,7 @@ class Agent:
         metadata = self._event_payload(
             workspace_root=str(self.fs.workspace_root),
             llm_backend=type(self.llm).__name__,
-            auto_approve=self.policy.auto_approve,
+            permission_mode=self.policy.permission_mode,
             task_status=self.task_state.status if self.task_state else None,
             step_index=self.task_state.step_index if self.task_state else None,
         )
@@ -439,7 +433,7 @@ class Agent:
             metadata=self._event_payload(
                 workspace_root=str(self.fs.workspace_root),
                 llm_backend=type(self.llm).__name__,
-                auto_approve=self.policy.auto_approve,
+                permission_mode=self.policy.permission_mode,
                 task_status=self.task_state.status if self.task_state else None,
                 step_index=self.task_state.step_index if self.task_state else None,
             ),
@@ -600,7 +594,7 @@ class Agent:
         on_tool=None,
         on_token=None,
         approval_handler=None,
-        enable_auto_approve: bool = False,
+        grant_scope: bool = False,
     ) -> str:
         if self.task_state is None or self.task_state.pending_approval is None:
             return "No pending approval."
@@ -609,7 +603,7 @@ class Agent:
             name="agent.approve_pending",
             input_payload={
                 "approved": approved,
-                "enable_auto_approve": enable_auto_approve,
+                "grant_scope": grant_scope,
                 "pending_tool": self.task_state.pending_approval.tool_name,
             },
             tags=["autocode", "approval"],
@@ -619,8 +613,8 @@ class Agent:
                 pending = self.task_state.pending_approval
                 remaining_tool_calls = self._deserialize_tool_calls(pending.remaining_tool_calls)
                 self.task_state.clear_pending()
-                if enable_auto_approve and approved:
-                    self.task_state.set_auto_approve(True)
+                if grant_scope and approved:
+                    self.task_state.grant_approval_scope(pending.approval_scope)
 
                 tool_call = ToolCall(
                     id=pending.tool_call_id,
@@ -632,7 +626,13 @@ class Agent:
                     result = self._execute_tool_call(
                         tool_call,
                         on_tool=on_tool,
-                        decision=PolicyDecision("confirm", pending.reason, requires_manual=pending.requires_manual),
+                        decision=PolicyDecision(
+                            "confirm",
+                            pending.reason,
+                            requires_manual=pending.requires_manual,
+                            approval_scope=pending.approval_scope,
+                            approval_label=pending.approval_label,
+                        ),
                     )
                 else:
                     result = self.runtime.blocked_result(tool_call.name, PolicyDecision("deny", "approval denied by user"))
@@ -810,6 +810,15 @@ class Agent:
                 self.runtime.evaluate_tool_call(self.task_state, tool_call, self.session_state.session_id)
             )
 
+        decisions = [
+            (
+                PolicyDecision("allow", decision.reason)
+                if decision is not None and self._is_scope_approved(decision)
+                else decision
+            )
+            for decision in decisions
+        ]
+
         if len(tool_calls) > 1 and decisions and all(
             decision is not None and decision.action == "allow" for decision in decisions
         ):
@@ -833,9 +842,6 @@ class Agent:
                 result = self._execute_tool_call(tool_call, on_tool=on_tool)
             elif decision.action == "deny":
                 result = self.runtime.blocked_result(tool_call.name, decision)
-            elif self._should_auto_approve(decision):
-                result = self._execute_tool_call(tool_call, on_tool=on_tool, decision=decision)
-                self.hooks.emit("approval_resolved", self._event_payload(tool_name=tool_call.name, approved=True))
             else:
                 self.task_state.mark_waiting(
                     PendingApproval(
@@ -844,6 +850,8 @@ class Agent:
                         arguments=tool_call.arguments,
                         reason=decision.reason,
                         requires_manual=decision.requires_manual,
+                        approval_scope=decision.approval_scope,
+                        approval_label=decision.approval_label,
                         remaining_tool_calls=[
                             self._serialize_tool_call(item)
                             for item in tool_calls[index + 1:]
@@ -856,11 +864,11 @@ class Agent:
                     return f"(waiting for approval: {tool_call.name} - {decision.reason or 'confirmation required'})"
 
                 approval_response = approval_handler(self.task_state.pending_approval)
-                enable_auto_approve = approval_response == "approve_all"
-                approved = approval_response in {True, "approve", "approve_all"}
+                grant_scope = approval_response == "approve_scope"
+                approved = approval_response in {True, "approve", "approve_scope"}
                 self.task_state.clear_pending()
-                if enable_auto_approve and approved:
-                    self.task_state.set_auto_approve(True)
+                if grant_scope and approved:
+                    self.task_state.grant_approval_scope(decision.approval_scope)
 
                 if approved:
                     result = self._execute_tool_call(tool_call, on_tool=on_tool, decision=decision)
@@ -903,12 +911,11 @@ class Agent:
             self.task_state.note_failure(f"{tool_call.name} interrupted by user")
         return self._INTERRUPTED_TOOL_RESULT
 
-    def _should_auto_approve(self, decision: PolicyDecision) -> bool:
+    def _is_scope_approved(self, decision: PolicyDecision) -> bool:
         return bool(
             self.task_state
-            and self.task_state.auto_approve_for_task
             and decision.action == "confirm"
-            and not decision.requires_manual
+            and self.task_state.has_approval_scope(decision.approval_scope)
         )
 
     def _summarize_round_limit(self, on_token=None) -> str:

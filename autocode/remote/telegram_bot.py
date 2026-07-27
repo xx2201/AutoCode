@@ -37,7 +37,7 @@ def _build_application(config: Config):
     app.add_handler(telegram["CommandHandler"]("tasks", _tasks))
     app.add_handler(telegram["CommandHandler"]("trace", _trace))
     app.add_handler(telegram["CommandHandler"]("approve", _approve))
-    app.add_handler(telegram["CommandHandler"]("approve_all", _approve_all))
+    app.add_handler(telegram["CommandHandler"]("approve_scope", _approve_scope))
     app.add_handler(telegram["CommandHandler"]("reject", _reject))
     app.add_handler(telegram["CommandHandler"]("resume", _resume))
     app.add_handler(
@@ -97,7 +97,7 @@ async def _start(update, context):
         "/tasks - list recent sessions\n"
         "/trace - show trace for the current session\n"
         "/approve - approve the pending tool call\n"
-        "/approve_all - approve this tool call and auto-approve later normal confirms\n"
+        "/approve_scope - approve and allow this scope for the current task\n"
         "/reject - reject the pending tool call\n"
         "/resume <session_id> - restore a session into this chat\n"
         "/reset - clear the in-memory chat session\n\n"
@@ -148,15 +148,15 @@ async def _approve(update, context):
     await _handle_approval(update, context, approved=True)
 
 
-async def _approve_all(update, context):
-    await _handle_approval(update, context, approved=True, enable_auto_approve=True)
+async def _approve_scope(update, context):
+    await _handle_approval(update, context, approved=True, grant_scope=True)
 
 
 async def _reject(update, context):
     await _handle_approval(update, context, approved=False)
 
 
-async def _handle_approval(update, context, approved: bool, enable_auto_approve: bool = False):
+async def _handle_approval(update, context, approved: bool, grant_scope: bool = False):
     if not _is_allowed_chat(update, context):
         return
     manager: RemoteManager = context.application.bot_data["manager"]
@@ -165,7 +165,7 @@ async def _handle_approval(update, context, approved: bool, enable_auto_approve:
             manager.resolve_approval,
             update.effective_chat.id,
             approved,
-            enable_auto_approve,
+            grant_scope,
         )
         text = render_turn_result(result)
     except ValueError as exc:

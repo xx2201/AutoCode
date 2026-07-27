@@ -63,6 +63,58 @@ def test_policy_requires_manual_confirmation_for_web_fetch(tmp_path):
     )
     assert decision.action == "confirm"
     assert decision.requires_manual is True
+    assert decision.approval_scope == "web_fetch:https://example.com:443"
+    assert "example.com" in decision.approval_label
+
+
+def test_policy_groups_web_fetch_by_protocol_host_and_port(tmp_path):
+    policy = Policy(workspace_root=str(tmp_path))
+    first = policy.evaluate_tool_call(
+        "web_fetch",
+        {"url": "https://example.com/a"},
+    )
+    second = policy.evaluate_tool_call(
+        "web_fetch",
+        {"url": "https://example.com/b"},
+    )
+    other_port = policy.evaluate_tool_call(
+        "web_fetch",
+        {"url": "https://example.com:8443/b"},
+    )
+
+    assert first.approval_scope == second.approval_scope
+    assert first.approval_scope != other_port.approval_scope
+
+
+def test_full_access_skips_confirmations_but_keeps_hard_denies(tmp_path):
+    policy = Policy(workspace_root=str(tmp_path), permission_mode="full_access")
+    target = tmp_path / "generated.txt"
+
+    assert policy.evaluate_tool_call(
+        "web_fetch",
+        {"url": "https://example.com"},
+    ).action == "allow"
+    assert policy.evaluate_tool_call(
+        "delete_path",
+        {"path": str(target)},
+    ).action == "allow"
+    assert policy.evaluate_tool_call(
+        "bash",
+        {"command": "rm -rf *"},
+    ).action == "deny"
+    assert policy.evaluate_tool_call(
+        "write_file",
+        {"file_path": str(tmp_path / ".env")},
+    ).action == "deny"
+
+
+def test_policy_rejects_unknown_permission_mode(tmp_path):
+    try:
+        Policy(workspace_root=str(tmp_path), permission_mode="unrestricted")
+    except ValueError as exc:
+        assert "Unsupported permission mode" in str(exc)
+    else:
+        raise AssertionError("invalid permission mode must fail")
 
 
 def test_policy_does_not_mistake_embedded_del_text_for_shell_delete(tmp_path):

@@ -301,6 +301,6 @@ def test_cleanup_all_stops_persistent_processes_on_manager_close(tmp_path):
 
 
 def test_policy_allows_background_process(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path), auto_approve=False)
+    policy = Policy(workspace_root=str(tmp_path), permission_mode="ask")
     decision = policy.evaluate_tool_call("start_process", {"command": "python receive.py"})
     assert decision.action == "allow"

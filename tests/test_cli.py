@@ -79,9 +79,9 @@ def test_prompt_approval_accepts_dialog_approve(monkeypatch):
     assert _prompt_approval(_Pending()) == "approve"
 
 
-def test_prompt_approval_accepts_dialog_approve_all(monkeypatch):
-    monkeypatch.setattr("autocode.cli.pt_prompt", lambda *args, **kwargs: "/approve_all")
-    assert _prompt_approval(_Pending()) == "approve_all"
+def test_prompt_approval_accepts_dialog_approve_scope(monkeypatch):
+    monkeypatch.setattr("autocode.cli.pt_prompt", lambda *args, **kwargs: "/approve_scope")
+    assert _prompt_approval(_Pending()) == "approve_scope"
 
 
 def test_prompt_approval_rejects_dialog_selection(monkeypatch):

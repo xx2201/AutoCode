@@ -129,7 +129,7 @@ autocode --resume SESSION_ID
 
 主要交互命令包括 `/help`、`/reset`、`/model`、`/tokens`、`/compact`、
 `/diff`、`/resume`、`/task`、`/todo`、`/trace`、`/mcp`、`/approve`、
-`/approve_all` 和 `/reject`。
+`/approve_scope`、`/permissions ask|full_access` 和 `/reject`。
 
 ## 从手机访问 Web
 
@@ -270,8 +270,11 @@ Web 上传文件保存在 `<workspace>/.autocode/uploads/`，并由工作区内�
 
 ## 安全边界
 
-策略层会把内置文件工具限制在当前工作区，保护 `.env` 和 `.git`，拒绝部分
-破坏性 Shell 命令，并要求用户确认删除操作和外部 MCP 调用。
+策略层提供“请求批准”和“完全访问”两种用户可见权限。“请求批准”会确认
+删除、外部网页和 MCP 等风险操作，并可按当前任务内的目标站点或工具范围
+一次授权同类请求；“完全访问”会跳过这些确认。两种模式都继续限制路径在
+当前工作区内，保护 `.env` 和 `.git`，并拒绝 `rm -rf`、`git reset --hard`
+等不可绕过的破坏性 Shell 命令。
 
 当前名为 `Sandbox` 的类**不是操作系统级沙箱**。它只负责设置工作目录、
 过滤环境变量、限制执行时间和截断命令输出；子进程仍然拥有启动 AutoCoder

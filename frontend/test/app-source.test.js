@@ -16,6 +16,9 @@ test("App JSX compiles after adding interaction controls", async () => {
   assert.ok(transformed.code.includes("/api/turn/edit/stream"));
   assert.ok(transformed.code.includes("/api/turn/message"));
   assert.ok(transformed.code.includes("/api/changes/action"));
+  assert.ok(transformed.code.includes("/api/approval/stream"));
+  assert.ok(transformed.code.includes("/api/permission-mode"));
+  assert.ok(transformed.code.includes("full_access"));
 });
 
 test("approval request is rendered in the conversation instead of a page-wide banner", async () => {

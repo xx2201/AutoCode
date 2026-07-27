@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from ..state import PolicyDecision
 
@@ -28,32 +29,50 @@ _STREAMING_COMMAND_PATTERNS = [
 ]
 
 
+PERMISSION_MODES = {"ask", "full_access"}
+
+
 class Policy:
-    def __init__(self, workspace_root: str | None = None, auto_approve: bool = False):
+    def __init__(self, workspace_root: str | None = None, permission_mode: str = "ask"):
         self.workspace_root = Path(workspace_root or os.getcwd()).expanduser().resolve()
-        self.auto_approve = auto_approve
+        self.set_permission_mode(permission_mode)
+
+    def set_permission_mode(self, permission_mode: str) -> None:
+        if permission_mode not in PERMISSION_MODES:
+            raise ValueError(f"Unsupported permission mode: {permission_mode}")
+        self.permission_mode = permission_mode
 
     def evaluate_tool_call(self, tool_name: str, arguments: dict) -> PolicyDecision:
         if tool_name.startswith("mcp_"):
-            return PolicyDecision("confirm", "external MCP tool call", requires_manual=False)
+            return self._apply_mode(
+                PolicyDecision(
+                    "confirm",
+                    "external MCP tool call",
+                    approval_scope=f"mcp:{tool_name}",
+                    approval_label=f"本任务允许 {tool_name}",
+                )
+            )
         if tool_name == "bash":
             return self._evaluate_bash(arguments.get("command", ""))
         if tool_name in {"read", "write_file", "edit_file"}:
             return self._evaluate_path(arguments.get("file_path"))
         if tool_name == "web_fetch":
-            return PolicyDecision(
-                "confirm",
-                "fetching content from an external website",
-                requires_manual=True,
+            return self._apply_mode(
+                self._web_fetch_decision(arguments.get("url", ""))
             )
         if tool_name == "delete_path":
             decision = self._evaluate_path(arguments.get("path"))
             if decision.action == "deny":
                 return decision
-            return PolicyDecision(
-                "confirm",
-                "deleting files modifies the workspace",
-                requires_manual=True,
+            parent = self._resolved_path(arguments.get("path")).parent
+            return self._apply_mode(
+                PolicyDecision(
+                    "confirm",
+                    "deleting files modifies the workspace",
+                    requires_manual=True,
+                    approval_scope=f"delete_path:{parent}",
+                    approval_label=f"本任务允许删除 {parent} 内的项目文件",
+                )
             )
         if tool_name in {"grep", "glob"}:
             path = arguments.get("path")
@@ -61,6 +80,31 @@ class Policy:
                 return PolicyDecision("allow")
             return self._evaluate_path(path, allow_protected=False)
         return PolicyDecision("allow")
+
+    def _apply_mode(self, decision: PolicyDecision) -> PolicyDecision:
+        if self.permission_mode == "full_access" and decision.action == "confirm":
+            return PolicyDecision("allow", decision.reason)
+        return decision
+
+    def _web_fetch_decision(self, raw_url: str) -> PolicyDecision:
+        parsed = urlsplit(raw_url)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return PolicyDecision("deny", "web_fetch requires a valid HTTP(S) URL")
+        port = parsed.port or (443 if parsed.scheme == "https" else 80)
+        target = f"{parsed.scheme}://{parsed.hostname.lower()}:{port}"
+        return PolicyDecision(
+            "confirm",
+            "fetching content from an external website",
+            requires_manual=True,
+            approval_scope=f"web_fetch:{target}",
+            approval_label=f"本任务允许访问 {target}",
+        )
+
+    def _resolved_path(self, raw_path: str | None) -> Path:
+        path = Path(raw_path or ".").expanduser()
+        if not path.is_absolute():
+            path = self.workspace_root / path
+        return path.resolve()
 
     def _evaluate_path(self, raw_path: str | None, allow_protected: bool = False) -> PolicyDecision:
         if not raw_path:

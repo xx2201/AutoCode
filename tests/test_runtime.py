@@ -109,7 +109,12 @@ class _RecordingLLM(_FakeLLM):
 
 class _ConfirmAllPolicy(Policy):
     def evaluate_tool_call(self, tool_name: str, arguments: dict) -> PolicyDecision:
-        return PolicyDecision("confirm", "test approval")
+        return PolicyDecision(
+            "confirm",
+            "test approval",
+            approval_scope=f"tool:{tool_name}",
+            approval_label=f"allow {tool_name}",
+        )
 
 
 def test_runtime_emits_hooks(tmp_path):
@@ -213,7 +218,7 @@ def test_agent_returns_explicit_error_for_invalid_tool_call_json(tmp_path):
     assert "[recovery]" in tool_result
 
 
-def test_agent_approve_all_completes_remaining_tool_calls_before_next_llm(tmp_path):
+def test_agent_scope_approval_completes_matching_tool_calls_before_next_llm(tmp_path):
     llm = _RecordingLLM([
         LLMResponse(content="", tool_calls=[
             ToolCall(id="1", name="bash", arguments={"command": "python --version"}),
@@ -235,7 +240,7 @@ def test_agent_approve_all_completes_remaining_tool_calls_before_next_llm(tmp_pa
     assert agent.task_state.pending_approval is not None
     assert len(agent.task_state.pending_approval.remaining_tool_calls) == 1
 
-    reply = agent.approve_pending(True, approval_handler=None, enable_auto_approve=True)
+    reply = agent.approve_pending(True, approval_handler=None, grant_scope=True)
 
     assert reply == "done"
     assert len(llm.calls) == 2
@@ -285,7 +290,7 @@ def test_agent_todo_tool_updates_task_state(tmp_path):
     agent = Agent(
         llm=_FakeLLM(responses),
         workspace_root=str(tmp_path),
-        auto_approve=True,
+        permission_mode="full_access",
     )
     reply = agent.chat("plan the work")
     assert reply == "planned"
@@ -302,7 +307,7 @@ def test_agent_summarizes_when_max_rounds_reached(tmp_path):
         llm=_FakeLLM(responses),
         tools=[_EchoTool()],
         workspace_root=str(tmp_path),
-        auto_approve=True,
+        permission_mode="full_access",
         max_rounds=1,
     )
 
@@ -319,7 +324,7 @@ def test_todo_write_rejects_completed_after_blocked_or_failed_tool(tmp_path):
     agent = Agent(
         llm=_FakeLLM([]),
         workspace_root=str(tmp_path),
-        auto_approve=True,
+        permission_mode="full_access",
     )
     agent._ensure_task("plan the work")
     assert agent.task_state is not None
@@ -342,7 +347,7 @@ def test_agent_backfills_placeholder_tool_result_after_interrupt(tmp_path):
         llm=_FakeLLM(responses),
         tools=[_InterruptTool()],
         workspace_root=str(tmp_path),
-        auto_approve=True,
+        permission_mode="full_access",
     )
 
     reply = agent.chat("run echo")
@@ -391,7 +396,7 @@ def test_agent_writes_trace_and_audit(tmp_path, monkeypatch):
         llm=_FakeLLM(responses),
         tools=[_EchoTool()],
         workspace_root=str(tmp_path),
-        auto_approve=True,
+        permission_mode="full_access",
     )
     reply = agent.chat("run echo")
     assert reply == "done"
@@ -416,7 +421,7 @@ def test_agent_reuses_same_session_id_and_rotates_current_task_after_completion(
     agent = Agent(
         llm=_FakeLLM(responses),
         workspace_root=str(tmp_path),
-        auto_approve=True,
+        permission_mode="full_access",
     )
 
     first = agent.chat("first prompt")
@@ -441,7 +446,7 @@ def test_agent_schedules_project_memory_refresh_in_background(tmp_path):
     agent = Agent(
         llm=_FakeLLM(responses),
         workspace_root=str(tmp_path),
-        auto_approve=True,
+        permission_mode="full_access",
     )
     agent.llm._call_with_retry = object()
     calls = []
@@ -462,7 +467,7 @@ def test_agent_cleans_temporary_processes_when_task_completes(tmp_path):
     agent = Agent(
         llm=_FakeLLM([LLMResponse(content="done")]),
         workspace_root=str(tmp_path),
-        auto_approve=True,
+        permission_mode="full_access",
     )
     cleaned = []
     agent.processes.cleanup_task_processes = lambda task_id: cleaned.append(task_id) or []
@@ -482,7 +487,7 @@ def test_agent_cleans_temporary_processes_when_task_fails(tmp_path):
         ]),
         tools=[_EchoTool()],
         workspace_root=str(tmp_path),
-        auto_approve=True,
+        permission_mode="full_access",
         max_rounds=1,
     )
     cleaned = []
@@ -500,7 +505,7 @@ def test_agent_reset_cleans_all_managed_processes(tmp_path):
     agent = Agent(
         llm=_FakeLLM([]),
         workspace_root=str(tmp_path),
-        auto_approve=True,
+        permission_mode="full_access",
     )
     calls = []
     agent.processes.cleanup_all = lambda include_persistent=True: calls.append(include_persistent) or []

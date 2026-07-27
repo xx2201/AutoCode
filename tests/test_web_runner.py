@@ -31,20 +31,24 @@ class _FakeManager:
     def list_resume_candidates(self, limit=10):
         return [{"session_id": "session_1"}][:limit]
 
-    def submit(self, client_id, prompt, hook_handler=None, on_token=None, attachments=None):
+    def submit(self, client_id, prompt, hook_handler=None, on_token=None, attachments=None, permission_mode=None):
         self.calls.append(("chat", client_id, prompt))
         return self.result
 
-    def resolve_approval(self, client_id, approved, approve_all):
-        self.calls.append(("approval", client_id, approved, approve_all))
+    def resolve_approval(self, client_id, approved, grant_scope, hook_handler=None, on_token=None, on_tool=None):
+        self.calls.append(("approval", client_id, approved, grant_scope))
         return replace(self.result, text="approved")
 
     def annotate_turn_changes(self, client_id, changed_files):
         self.changed_files.extend(changed_files)
 
-    def resume_session(self, client_id, session_id):
+    def resume_session(self, client_id, session_id, permission_mode=None):
         self.calls.append(("resume", client_id, session_id))
         return replace(self.result, text="resumed")
+
+    def set_permission_mode(self, client_id, permission_mode):
+        self.calls.append(("permission_mode", client_id, permission_mode))
+        return permission_mode
 
     def delete_session(self, session_id):
         self.calls.append(("delete_session", session_id))
@@ -200,7 +204,7 @@ def test_runner_executes_chat_and_approval_in_selected_workspace(tmp_path):
     chat = runner.execute("chat", {**payload, "prompt": "inspect project"})
     approval = runner.execute(
         "approval",
-        {**payload, "approved": True, "approve_all": True},
+        {**payload, "approved": True, "grant_scope": True},
     )
     manager = managers[str((tmp_path / "project-a").resolve())]
 
@@ -246,7 +250,7 @@ def test_runner_captures_undo_and_reapply_for_one_turn(tmp_path, monkeypatch):
     manager = runner._manager(workspace.workspace_id)
     manager.current_session_id = lambda client_id: "session_1"
 
-    def submit(client_id, prompt, hook_handler=None, on_token=None):
+    def submit(client_id, prompt, hook_handler=None, on_token=None, permission_mode=None):
         hook_handler(
             "turn_started",
             {
@@ -285,7 +289,7 @@ def test_runner_converts_tool_hooks_to_work_events(tmp_path):
     runner, workspace, managers = _runner(tmp_path)
     manager = runner._manager(workspace.workspace_id)
 
-    def submit(client_id, prompt, hook_handler=None, on_token=None):
+    def submit(client_id, prompt, hook_handler=None, on_token=None, permission_mode=None):
         manager.calls.append(("chat", client_id, prompt))
         hook_handler(
             "before_tool",

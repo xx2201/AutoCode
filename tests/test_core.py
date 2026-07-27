@@ -54,7 +54,7 @@ def test_config_defaults(monkeypatch):
         "AUTOCODE_BASE_URL",
         "AUTOCODE_PROVIDER",
         "AUTOCODE_MAX_TOKENS",
-        "AUTOCODE_AUTO_APPROVE",
+        "AUTOCODE_PERMISSION_MODE",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "LANGFUSE_PUBLIC_KEY",
@@ -77,7 +77,7 @@ def test_config_defaults(monkeypatch):
     assert c.max_tokens == 4096
     assert c.max_context_tokens == 1_000_000
     assert c.temperature == 0.0
-    assert c.auto_approve is False
+    assert c.permission_mode == "ask"
 
     os.environ.update(saved)
 
@@ -238,7 +238,7 @@ def test_agent_passes_last_real_prompt_tokens_into_compression(tmp_path):
             self.total_cache_read_tokens = 0
             self.total_cache_miss_tokens = 0
 
-    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), auto_approve=True)
+    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
     agent._last_prompt_tokens = 4321
     captured = {}
 
@@ -457,7 +457,7 @@ def test_agent_request_messages_keep_rules_in_system_and_runtime_state_in_tail(t
             self.total_cache_read_tokens = 0
             self.total_cache_miss_tokens = 0
 
-    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), auto_approve=True)
+    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
     agent._ensure_task("处理任务")
     agent.task_state.todos = [{"content": "读文件", "status": "pending"}]
     agent.messages = [{"role": "user", "content": "开始"}]

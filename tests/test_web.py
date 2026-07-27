@@ -145,6 +145,7 @@ def test_chat_is_relayed_to_runner(relay_client):
         "client_id": CLIENT_ID,
         "workspace_id": WORKSPACE_ID,
         "prompt": "inspect project",
+        "permission_mode": "ask",
     }
 
 
@@ -317,6 +318,81 @@ def test_streaming_chat_relays_tokens_stages_and_final_result(relay_client):
     final = next(event for event in holder["events"] if event.get("type") == "result")
     assert final["data"]["text"] == "hello"
     assert final["timings"]["relay_total_ms"] >= 0
+
+
+def test_streaming_approval_can_outlive_control_timeout(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+    holder = {}
+
+    def browser_request():
+        with client.stream(
+            "POST",
+            "/api/approval/stream",
+            headers=_browser_headers(),
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "action": "approve_scope",
+            },
+        ) as response:
+            holder["status"] = response.status_code
+            holder["events"] = [
+                json.loads(line[6:])
+                for line in response.iter_lines()
+                if line.startswith("data: ")
+            ]
+
+    thread = threading.Thread(target=browser_request)
+    thread.start()
+    job = client.get(
+        "/api/runner/next",
+        params={"wait": 1},
+        headers=_runner_headers(),
+    ).json()
+    assert job["action"] == "approval"
+    assert job["stream"] is True
+    assert job["payload"]["approved"] is True
+    assert job["payload"]["grant_scope"] is True
+    client.post(
+        f"/api/runner/event/{job['job_id']}",
+        headers=_runner_headers(),
+        json={"type": "stage", "stage": "model_started"},
+    )
+    client.post(
+        f"/api/runner/result/{job['job_id']}",
+        headers=_runner_headers(),
+        json={"success": True, "result": {"text": "continued", "status": "completed"}},
+    )
+    thread.join(timeout=3)
+
+    assert not thread.is_alive()
+    assert holder["status"] == 200
+    assert any(event.get("stage") == "model_started" for event in holder["events"])
+    final = next(event for event in holder["events"] if event["type"] == "result")
+    assert final["data"]["text"] == "continued"
+
+
+def test_permission_mode_is_relayed_to_runner(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+    response, job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/permission-mode",
+            headers=_browser_headers(),
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "permission_mode": "full_access",
+            },
+        ),
+        "permission_mode",
+        {"permission_mode": "full_access"},
+    )
+
+    assert response.status_code == 200
+    assert job["payload"]["permission_mode"] == "full_access"
 
 
 def test_turn_controls_and_change_actions_are_relayed(relay_client):

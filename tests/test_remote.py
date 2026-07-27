@@ -402,11 +402,13 @@ def test_render_turn_result_includes_approval_hint():
             "pending_reason": "confirmation required",
             "pending_arguments": {"command": "python app.py"},
             "pending_requires_manual": False,
-            "auto_approve_for_task": False,
+            "pending_approval_scope": "tool:bash",
+            "pending_approval_label": "本任务允许运行 bash",
+            "permission_mode": "ask",
         })()
     )
     assert "/approve" in text
-    assert "/approve_all" in text
+    assert "/approve_scope" in text
     assert "session_123" in text
     assert "task_123" in text
     assert "python app.py" in text
@@ -418,7 +420,7 @@ def test_split_message_respects_limit():
     assert all(len(chunk) <= 1000 for chunk in chunks)
 
 
-def test_remote_manager_approve_all_marks_task_state(tmp_path):
+def test_remote_manager_scope_approval_marks_task_grant(tmp_path):
     llm = _FakeLLM([
         LLMResponse(content="", tool_calls=[ToolCall(id="1", name="agent", arguments={"task": "inspect"})]),
         LLMResponse(content="done"),
@@ -426,10 +428,41 @@ def test_remote_manager_approve_all_marks_task_state(tmp_path):
     manager = _ConfirmingRemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[_DelegationTool()])
     manager.submit(404, "run delegated task")
 
-    result = manager.resolve_approval(404, approved=True, enable_auto_approve=True)
-    assert result.auto_approve_for_task is False
+    result = manager.resolve_approval(404, approved=True, grant_scope=True)
+    assert result.permission_mode == "ask"
     summary = manager.current_task_summary(404)
-    assert "Approve_all: off" in summary
+    assert "Permission mode: ask" in summary
+
+
+def test_replacing_busy_runtime_fails_fast_instead_of_blocking(tmp_path):
+    manager = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: _FakeLLM([]),
+        tools=[],
+    )
+    runtime = manager._get_or_create_runtime(505)
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_runtime():
+        with runtime.lock:
+            locked.set()
+            release.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_runtime)
+    holder.start()
+    assert locked.wait(timeout=2)
+    try:
+        try:
+            manager._get_or_create_runtime(505, replace=True)
+        except ValueError as exc:
+            assert "仍在执行任务" in str(exc)
+        else:
+            raise AssertionError("busy runtime replacement must fail immediately")
+    finally:
+        release.set()
+        holder.join(timeout=2)
+        manager.close()
 
 
 def test_remote_manager_temporary_hook_receives_events_and_unsubscribes(tmp_path):

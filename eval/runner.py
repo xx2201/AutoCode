@@ -94,7 +94,12 @@ def _load_eval_config() -> Config:
         max_context_tokens=int(_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_MAX_CONTEXT", "AUTOCODE_MAX_CONTEXT", "1000000")),
         provider=_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_PROVIDER", "AUTOCODE_PROVIDER", "openai"),
         workspace_root=_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_WORKSPACE_ROOT", "AUTOCODE_WORKSPACE_ROOT", str(Path.cwd())),
-        auto_approve=_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_AUTO_APPROVE", "AUTOCODE_AUTO_APPROVE", "").lower() in {"1", "true", "yes", "on"},
+        permission_mode=_resolve_eval_agent_setting(
+            snapshot,
+            "AUTOCODE_EVAL_AGENT_PERMISSION_MODE",
+            "AUTOCODE_PERMISSION_MODE",
+            "ask",
+        ),
         mcp_config_path=_resolve_eval_agent_setting(snapshot, "AUTOCODE_EVAL_AGENT_MCP_CONFIG", "AUTOCODE_MCP_CONFIG"),
     )
 

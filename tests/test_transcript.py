@@ -54,7 +54,7 @@ def test_agent_writes_raw_transcript_messages(tmp_path, monkeypatch):
         tools=[_EchoTool()],
         workspace_root=str(tmp_path),
         max_context_tokens=120,
-        auto_approve=True,
+        permission_mode="full_access",
     )
 
     reply = agent.chat("message-0-" + ("x" * 200))
@@ -77,7 +77,7 @@ def test_checkpoint_and_task_record_publish_transcript_file(tmp_path, monkeypatc
     agent = Agent(
         llm=_DoneLLM(),
         workspace_root=str(tmp_path),
-        auto_approve=True,
+        permission_mode="full_access",
     )
     reply = agent.chat("hello")
     assert reply == "done"
@@ -114,7 +114,7 @@ def test_edit_last_completed_turn_supersedes_context_but_not_workspace(tmp_path,
             ),
         },
     )()
-    agent = Agent(llm=llm, workspace_root=str(tmp_path), auto_approve=True)
+    agent = Agent(llm=llm, workspace_root=str(tmp_path), permission_mode="full_access")
 
     assert agent.chat("original prompt") == "original answer"
     original_turn_id = agent.task_state.task_id
@@ -145,7 +145,7 @@ def test_edit_last_completed_turn_supersedes_context_but_not_workspace(tmp_path,
 
 def test_edit_rejects_non_latest_or_incomplete_turn(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
-    agent = Agent(llm=_DoneLLM(), workspace_root=str(tmp_path), auto_approve=True)
+    agent = Agent(llm=_DoneLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
     agent.chat("hello")
 
     try:

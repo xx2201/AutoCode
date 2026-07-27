@@ -57,6 +57,7 @@ const TOKEN_KEY = "autocode_web_token";
 const WORKSPACE_KEY = "autocode_workspace_id";
 const CLIENT_MAP_KEY = "autocode_workspace_clients";
 const SESSION_MAP_KEY = "autocode_workspace_sessions";
+const PERMISSION_MODE_KEY = "autocode_permission_mode";
 
 function createClientId() {
   if (window.crypto?.randomUUID) {
@@ -137,12 +138,12 @@ function ApprovalRequest({ pending, busy, onResolve }) {
           >
             {view.allowLabel}
           </button>
-          {!pending.pending_requires_manual && (
+          {pending.pending_approval_scope && (
             <button
               className="approval-allow"
               type="button"
               disabled={busy}
-              onClick={() => onResolve("approve_all")}
+              onClick={() => onResolve("approve_scope")}
             >
               {view.allowAllLabel}
             </button>
@@ -204,7 +205,11 @@ function storeSessionId(workspaceId, sessionId) {
 }
 
 async function request(token, path, options = {}) {
-  const { timeoutMs = 0, ...fetchOptions } = options;
+  const {
+    timeoutMs = 0,
+    timeoutMessage = "请求超时，请稍后重试。",
+    ...fetchOptions
+  } = options;
   const headers = new Headers(options.headers || {});
   headers.set("Authorization", `Bearer ${token}`);
   if (options.body) headers.set("Content-Type", "application/json");
@@ -227,7 +232,7 @@ async function request(token, path, options = {}) {
     return data;
   } catch (error) {
     if (error.name === "AbortError") {
-      const timeoutError = new Error("恢复会话超时，请确认本机 Runner 正常后重试。");
+      const timeoutError = new Error(timeoutMessage);
       timeoutError.status = 408;
       throw timeoutError;
     }
@@ -961,6 +966,9 @@ export default function App() {
   const [selectedId, setSelectedId] = useState(
     () => localStorage.getItem(WORKSPACE_KEY) || "",
   );
+  const [permissionMode, setPermissionMode] = useState(
+    () => localStorage.getItem(PERMISSION_MODE_KEY) || "ask",
+  );
   const [projectPickerOpen, setProjectPickerOpen] = useState(false);
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [runnerOnline, setRunnerOnline] = useState(false);
@@ -1149,10 +1157,12 @@ export default function App() {
         const data = await request(token, "/api/resume", {
           method: "POST",
           timeoutMs: 20_000,
+          timeoutMessage: "恢复会话超时；本机任务可能仍在运行，请稍后重试。",
           body: JSON.stringify({
             client_id: clientId,
             workspace_id: selectedWorkspace.workspace_id,
             session_id: savedSessionId,
+            permission_mode: permissionMode,
           }),
         });
         if (ignore) return;
@@ -1326,6 +1336,7 @@ export default function App() {
         workspace_id: selectedWorkspace.workspace_id,
         turn_id: turnId,
         prompt: cleanPrompt,
+        permission_mode: permissionMode,
       }, (streamEvent) => {
         const startedTurnId = streamEvent.type === "turn"
           ? streamEvent.turn_id
@@ -1491,6 +1502,7 @@ export default function App() {
           workspace_id: selectedWorkspace.workspace_id,
           prompt: cleanPrompt,
           attachments: encodedAttachments,
+          permission_mode: permissionMode,
         },
         (event) => {
           if (event.type === "turn" && event.phase === "queued_starting") {
@@ -1683,14 +1695,29 @@ export default function App() {
     if (!pending || busy || !selectedWorkspace) return;
     setBusy(true);
     try {
-      const result = await request(token, "/api/approval", {
-        method: "POST",
-        body: JSON.stringify({
+      let result = null;
+      let streamed = "";
+      await streamRequest(token, "/api/approval/stream", {
           client_id: clientId,
           workspace_id: selectedWorkspace.workspace_id,
           action,
-        }),
+        }, (event) => {
+          if (event.type === "token") {
+            streamed += event.text || "";
+            setStreamText(streamed);
+          } else if (event.type === "stage") {
+            setRunStage(event.stage || "");
+          } else if (event.type === "work") {
+            setLiveWork((items) => mergeWorkEvent(items, event));
+          } else if (event.type === "result") {
+            result = event.data;
+          } else if (event.type === "error") {
+            const streamError = new Error(event.error || "审批后继续执行失败。");
+            streamError.status = event.status_code;
+            throw streamError;
+          }
       });
+      if (!result) throw new Error("审批流结束但没有最终结果。");
       let synchronized = [];
       try {
         synchronized = await refreshMessages();
@@ -1736,6 +1763,31 @@ export default function App() {
       showToast(error.message);
     } finally {
       setBusy(false);
+      setStreamText("");
+      setRunStage("");
+      setLiveWork([]);
+    }
+  }
+
+  async function changePermissionMode(nextMode) {
+    if (!selectedWorkspace || nextMode === permissionMode) return;
+    const previous = permissionMode;
+    setPermissionMode(nextMode);
+    localStorage.setItem(PERMISSION_MODE_KEY, nextMode);
+    try {
+      await request(token, "/api/permission-mode", {
+        method: "POST",
+        body: JSON.stringify({
+          client_id: clientId,
+          workspace_id: selectedWorkspace.workspace_id,
+          permission_mode: nextMode,
+        }),
+      });
+      showToast(nextMode === "full_access" ? "已启用完全访问" : "已启用请求批准");
+    } catch (error) {
+      setPermissionMode(previous);
+      localStorage.setItem(PERMISSION_MODE_KEY, previous);
+      showToast(error.message);
     }
   }
 
@@ -1750,10 +1802,12 @@ export default function App() {
       const data = await request(token, "/api/resume", {
         method: "POST",
         timeoutMs: 20_000,
+        timeoutMessage: "恢复会话超时；本机任务可能仍在运行，请稍后重试。",
         body: JSON.stringify({
           client_id: clientId,
           workspace_id: selectedWorkspace.workspace_id,
           session_id: sessionId,
+          permission_mode: permissionMode,
         }),
       });
       setMessages(data.messages || []);
@@ -2316,12 +2370,17 @@ export default function App() {
                   >下一轮</button>
                 </div>
               ) : (
-                <span>
-                  <TerminalSquare size={15} />
-                  {lastTimings
-                    ? `本机完成 · ${Math.round(lastTimings.relay_total_ms || 0)} ms`
-                    : "本机安全执行"}
-                </span>
+                <label className="permission-mode">
+                  <ShieldCheck size={14} />
+                  <select
+                    value={permissionMode}
+                    onChange={(event) => changePermissionMode(event.target.value)}
+                    aria-label="工具权限"
+                  >
+                    <option value="ask">请求批准</option>
+                    <option value="full_access">完全访问</option>
+                  </select>
+                </label>
               )}
               <div className="composer-actions">
                 <input

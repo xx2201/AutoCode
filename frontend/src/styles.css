@@ -879,6 +879,21 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .composer-bottom .delivery-mode { display: inline-flex; gap: 3px; padding: 3px; border-radius: 9px; background: #f0f1f5; }
 .composer-bottom .delivery-mode button { width: auto; height: 29px; padding: 0 9px; border-radius: 7px; color: #777c8d; background: transparent; font-size: 9px; font-weight: 750; }
 .composer-bottom .delivery-mode button.active { color: #5559c7; background: white; box-shadow: 0 1px 4px rgba(53, 57, 91, 0.12); }
+.permission-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #74798a;
+}
+.permission-mode select {
+  border: 0;
+  outline: 0;
+  color: #666b7c;
+  background: transparent;
+  cursor: pointer;
+  font: 750 10px/1.2 inherit;
+}
+.permission-mode:focus-within { color: var(--primary); }
 .composer-actions { display: flex; align-items: center; gap: 5px; }
 .composer-bottom .attach-button { color: #777d93; background: transparent; }
 .composer-bottom .attach-button:hover:not(:disabled) { color: var(--primary); background: var(--primary-soft); }
