@@ -383,7 +383,14 @@ class Agent:
         return result
 
     @contextmanager
-    def _turn_trace(self, *, name: str, input_payload: dict, tags: list[str]):
+    def _turn_trace(
+        self,
+        *,
+        name: str,
+        input_payload: dict,
+        tags: list[str],
+        continue_turn: bool = False,
+    ):
         tracer = getattr(self.llm, "tracer", None)
         if tracer is None or not tracer.enabled or self.session_state is None:
             yield None
@@ -396,6 +403,14 @@ class Agent:
             task_status=self.task_state.status if self.task_state else None,
             step_index=self.task_state.step_index if self.task_state else None,
         )
+        task = self.task_state
+        trace_context = None
+        # 审批来自后续请求；复用已持久化的根观测，避免同一 turn 被拆成多条 trace。
+        if continue_turn and task is not None and task.langfuse_trace_id:
+            trace_context = {"trace_id": task.langfuse_trace_id}
+            if task.langfuse_root_observation_id:
+                trace_context["parent_span_id"] = task.langfuse_root_observation_id
+
         with tracer.start_agent_turn(
             name=name,
             input_payload=input_payload,
@@ -403,7 +418,11 @@ class Agent:
             trace_name="autocode-agent-turn",
             metadata=metadata,
             tags=tags,
+            trace_context=trace_context,
         ) as observation:
+            if task is not None and not task.langfuse_trace_id:
+                task.langfuse_trace_id = str(getattr(observation, "trace_id", "") or "")
+                task.langfuse_root_observation_id = str(getattr(observation, "id", "") or "")
             yield observation
 
     def _finalize_turn_trace(self, observation, response_text: str):
@@ -594,6 +613,7 @@ class Agent:
                 "pending_tool": self.task_state.pending_approval.tool_name,
             },
             tags=["autocode", "approval"],
+            continue_turn=True,
         ) as observation:
             try:
                 pending = self.task_state.pending_approval

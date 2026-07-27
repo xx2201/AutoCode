@@ -2,9 +2,11 @@ import sys
 import types as builtin_types
 
 from autocode.agent import Agent
-from autocode.llm import LLM, ToolCall
-from autocode.runtime import Runtime
-from autocode.state import TaskState
+from autocode.llm import LLM, LLMResponse, ToolCall
+from autocode.observability import LangfuseTracer
+from autocode.runtime import Policy, Runtime
+from autocode.state import PolicyDecision, TaskState, load_checkpoint
+from autocode.state import checkpoint as checkpoint_module
 from autocode.tools.base import Tool
 
 
@@ -23,13 +25,26 @@ class _EchoTool(Tool):
 
 def _install_fake_langfuse(monkeypatch):
     events: list[dict] = []
+    observation_counter = 0
 
     class _Observation:
         def __init__(self, kwargs):
+            nonlocal observation_counter
+            observation_counter += 1
             self.kwargs = dict(kwargs)
+            trace_context = kwargs.get("trace_context") or {}
+            self.trace_id = trace_context.get("trace_id") or f"{observation_counter:032x}"
+            self.id = f"{observation_counter:016x}"
 
         def __enter__(self):
-            events.append({"event": "enter", "kwargs": dict(self.kwargs)})
+            events.append(
+                {
+                    "event": "enter",
+                    "kwargs": dict(self.kwargs),
+                    "trace_id": self.trace_id,
+                    "observation_id": self.id,
+                }
+            )
             return self
 
         def __exit__(self, exc_type, exc, tb):
@@ -70,6 +85,27 @@ def _install_fake_langfuse(monkeypatch):
     fake.propagate_attributes = lambda **kwargs: _Propagation(kwargs)
     monkeypatch.setitem(sys.modules, "langfuse", fake)
     return events
+
+
+class _ConfirmPolicy(Policy):
+    def evaluate_tool_call(self, tool_name: str, arguments: dict) -> PolicyDecision:
+        return PolicyDecision("confirm", "test approval")
+
+
+class _ScriptedLLM:
+    def __init__(self, responses, tracer):
+        self._responses = list(responses)
+        self.tracer = tracer
+        self.model = "fake-model"
+        self.api_format = "chat_completions"
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+
+    def chat(self, messages, tools=None, on_token=None):
+        response = self._responses.pop(0)
+        if on_token and response.content:
+            on_token(response.content)
+        return response
 
 
 def _content_chunk(content: str):
@@ -162,6 +198,104 @@ def test_agent_chat_batches_turn_trace_until_shutdown(monkeypatch, tmp_path):
     agent.close()
     assert any(item["event"] == "shutdown" for item in events)
     assert not any(item["event"] == "get_current_trace_id" for item in events)
+
+
+def test_approval_continues_original_turn_trace_after_checkpoint_restore(monkeypatch, tmp_path):
+    events = _install_fake_langfuse(monkeypatch)
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    first_tracer = LangfuseTracer(public_key="pk-test", secret_key="sk-lf-test")
+    first_agent = Agent(
+        llm=_ScriptedLLM(
+            [
+                LLMResponse(
+                    content="",
+                    tool_calls=[ToolCall(id="call-1", name="echo", arguments={"text": "hello"})],
+                )
+            ],
+            first_tracer,
+        ),
+        tools=[_EchoTool()],
+        workspace_root=str(tmp_path),
+    )
+    first_agent.policy = _ConfirmPolicy(workspace_root=str(tmp_path))
+    first_agent.runtime.policy = first_agent.policy
+
+    waiting = first_agent.chat("run echo")
+
+    assert "waiting for approval" in waiting
+    assert first_agent.task_state is not None
+    root_trace_id = first_agent.task_state.langfuse_trace_id
+    root_observation_id = first_agent.task_state.langfuse_root_observation_id
+    assert len(root_trace_id) == 32
+    assert len(root_observation_id) == 16
+    session_id = first_agent.session_state.session_id
+    loaded = load_checkpoint(session_id)
+    assert loaded is not None
+
+    restored_state, restored_messages, _ = loaded
+    continuation_tracer = LangfuseTracer(public_key="pk-test", secret_key="sk-lf-test")
+    restored_agent = Agent(
+        llm=_ScriptedLLM([LLMResponse(content="done")], continuation_tracer),
+        tools=[_EchoTool()],
+        workspace_root=str(tmp_path),
+    )
+    restored_agent.restore_session(restored_state, restored_messages)
+
+    reply = restored_agent.approve_pending(True)
+
+    assert reply == "done"
+    approval_enter = next(
+        item
+        for item in events
+        if item["event"] == "enter" and item["kwargs"].get("name") == "agent.approve_pending"
+    )
+    assert approval_enter["trace_id"] == root_trace_id
+    assert approval_enter["kwargs"]["trace_context"] == {
+        "trace_id": root_trace_id,
+        "parent_span_id": root_observation_id,
+    }
+
+
+def test_multiple_approvals_remain_children_of_the_original_turn_trace(monkeypatch, tmp_path):
+    events = _install_fake_langfuse(monkeypatch)
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+    tracer = LangfuseTracer(public_key="pk-test", secret_key="sk-lf-test")
+    agent = Agent(
+        llm=_ScriptedLLM(
+            [
+                LLMResponse(
+                    content="",
+                    tool_calls=[
+                        ToolCall(id="call-1", name="echo", arguments={"text": "one"}),
+                        ToolCall(id="call-2", name="echo", arguments={"text": "two"}),
+                    ],
+                ),
+                LLMResponse(content="done"),
+            ],
+            tracer,
+        ),
+        tools=[_EchoTool()],
+        workspace_root=str(tmp_path),
+    )
+    agent.policy = _ConfirmPolicy(workspace_root=str(tmp_path))
+    agent.runtime.policy = agent.policy
+
+    assert "waiting for approval" in agent.chat("run both")
+    assert "waiting for approval" in agent.approve_pending(True)
+    assert agent.approve_pending(True) == "done"
+
+    assert agent.task_state is not None
+    expected_context = {
+        "trace_id": agent.task_state.langfuse_trace_id,
+        "parent_span_id": agent.task_state.langfuse_root_observation_id,
+    }
+    approval_enters = [
+        item
+        for item in events
+        if item["event"] == "enter" and item["kwargs"].get("name") == "agent.approve_pending"
+    ]
+    assert len(approval_enters) == 2
+    assert all(item["kwargs"]["trace_context"] == expected_context for item in approval_enters)
 
 
 def test_llm_clone_reuses_tracer_without_shutting_it_down(monkeypatch, tmp_path):

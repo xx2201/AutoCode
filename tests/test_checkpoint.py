@@ -20,6 +20,8 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
             task_id="task_demo",
             status="running",
             step_index=3,
+            langfuse_trace_id="a" * 32,
+            langfuse_root_observation_id="b" * 16,
             pending_approval=PendingApproval(
                 tool_call_id="call_1",
                 tool_name="bash",
@@ -40,6 +42,8 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
     assert loaded_state.current_task is not None
     assert loaded_state.current_task.task_id == "task_demo"
     assert loaded_state.current_task.step_index == 3
+    assert loaded_state.current_task.langfuse_trace_id == "a" * 32
+    assert loaded_state.current_task.langfuse_root_observation_id == "b" * 16
     assert loaded_state.current_task.pending_approval is not None
     assert loaded_state.current_task.pending_approval.remaining_tool_calls[0]["id"] == "call_2"
     assert loaded_messages == messages

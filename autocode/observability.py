@@ -25,6 +25,7 @@ def _clean_mapping(data: dict[str, Any] | None) -> dict[str, Any] | None:
 
 class _NoopObservation:
     trace_id = None
+    id = None
 
     def update(self, **kwargs):
         return None
@@ -124,6 +125,7 @@ class LangfuseTracer:
         trace_name: str = "",
         metadata: dict[str, Any] | None = None,
         tags: list[str] | None = None,
+        trace_context: dict[str, str] | None = None,
     ):
         if not self.enabled:
             yield _NoopObservation()
@@ -132,13 +134,16 @@ class LangfuseTracer:
         metadata = _clean_mapping(metadata)
         tags = [tag for tag in (tags or []) if tag]
         nested = _ACTIVE_OBSERVATION_DEPTH.get() > 0
+        observation_kwargs = {
+            "name": name,
+            "as_type": "agent",
+            "input": input_payload,
+        }
+        if trace_context and not nested:
+            observation_kwargs["trace_context"] = trace_context
         if nested:
             with self._observation_scope():
-                with self._client.start_as_current_observation(
-                    name=name,
-                    as_type="agent",
-                    input=input_payload,
-                ) as observation:
+                with self._client.start_as_current_observation(**observation_kwargs) as observation:
                     if metadata:
                         observation.update(metadata=metadata)
                     yield observation
@@ -161,11 +166,7 @@ class LangfuseTracer:
         )
         if propagation is None:
             with self._observation_scope():
-                with self._client.start_as_current_observation(
-                    name=name,
-                    as_type="agent",
-                    input=input_payload,
-                ) as observation:
+                with self._client.start_as_current_observation(**observation_kwargs) as observation:
                     if metadata:
                         observation.update(metadata=metadata)
                     yield observation
@@ -173,11 +174,7 @@ class LangfuseTracer:
 
         with propagation:
             with self._observation_scope():
-                with self._client.start_as_current_observation(
-                    name=name,
-                    as_type="agent",
-                    input=input_payload,
-                ) as observation:
+                with self._client.start_as_current_observation(**observation_kwargs) as observation:
                     if metadata:
                         observation.update(metadata=metadata)
                     yield observation
