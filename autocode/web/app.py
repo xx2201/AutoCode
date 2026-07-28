@@ -16,7 +16,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, Res
 from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import FileResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from .. import __version__
 from .files import MAX_WEB_FILE_BYTES
@@ -144,11 +144,26 @@ class RunnerResultRequest(BaseModel):
 
 
 class RunnerEventRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     type: str = Field(min_length=1, max_length=40)
     stage: str = Field(default="", max_length=80)
     text: str = Field(default="", max_length=50_000)
     elapsed_ms: float | None = Field(default=None, ge=0)
     details: dict[str, Any] = Field(default_factory=dict)
+    phase: str = Field(default="", max_length=80)
+    work_id: str = Field(default="", max_length=256)
+    content: str = Field(default="", max_length=50_000)
+    tool_call_id: str = Field(default="", max_length=256)
+    tool_name: str = Field(default="", max_length=256)
+    arguments: dict[str, Any] = Field(default_factory=dict)
+    output: str = Field(default="", max_length=50_000)
+    duration_ms: float | None = Field(default=None, ge=0)
+    success: bool | None = None
+    turn_id: str = Field(default="", max_length=256)
+    revision_id: str = Field(default="", max_length=256)
+    message_id: str = Field(default="", max_length=256)
+    queued: bool | None = None
 
 
 def _validate_client_id(client_id: str) -> str:
@@ -629,7 +644,10 @@ def create_app(
 
     @app.post("/api/runner/event/{job_id}", dependencies=runner_auth)
     async def runner_event(job_id: str, payload: RunnerEventRequest):
-        accepted = relay.publish(job_id, payload.model_dump())
+        accepted = relay.publish(
+            job_id,
+            payload.model_dump(exclude_defaults=True, exclude_none=True),
+        )
         if not accepted:
             raise HTTPException(status_code=404, detail="Relay stream not found or expired.")
         return {"accepted": True}
