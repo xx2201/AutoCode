@@ -46,7 +46,7 @@ test("approval batch keeps decisions independent from turn continuation", async 
   );
 });
 
-test("workspace initialization leaves history selection to the user", async () => {
+test("workspace initialization only restores a session from the current page", async () => {
   const source = await readFile(appPath, "utf8");
   const initializeStart = source.indexOf("async function initializeWorkspace");
   const initializeEnd = source.indexOf("initializeWorkspace();", initializeStart);
@@ -54,10 +54,13 @@ test("workspace initialization leaves history selection to the user", async () =
 
   assert.ok(initializeStart >= 0, "expected explicit workspace initialization");
   assert.doesNotMatch(source, /SESSION_MAP_KEY|storedSessionId|storeSessionId/);
-  assert.doesNotMatch(initializeWorkspace, /\/api\/resume/);
-  assert.match(initializeWorkspace, /setActiveSessionId\(""\)/);
+  assert.match(source, /readPageSessionId/);
+  assert.match(source, /storePageSessionId/);
+  assert.match(source, /clearPageSessionId/);
+  assert.match(initializeWorkspace, /requestSessionResume/);
+  assert.match(initializeWorkspace, /availableSessions\.some/);
   assert.match(initializeWorkspace, /setSessions\(\[\]\)/);
-  assert.match(initializeWorkspace, /renewClientId\(selectedWorkspace\.workspace_id\)/);
+  assert.match(initializeWorkspace, /renewClientId\(workspaceId\)/);
   assert.match(source, /sessionsLoading/);
   assert.match(source, /sessionRequestsRef\.current\.isCurrent\(requestTicket\)/);
   assert.match(source, /async function openSessionsPanel\(\)/);

@@ -43,7 +43,12 @@ import FilePanel from "./FilePanel";
 import GitPanel from "./GitPanel";
 import RichText from "./markdown";
 import { approvalPresentation } from "./approval";
-import { createSessionRequestCoordinator } from "./session-history";
+import {
+  clearPageSessionId,
+  createSessionRequestCoordinator,
+  readPageSessionId,
+  storePageSessionId,
+} from "./session-history";
 import {
   createPendingInput,
   formatDuration,
@@ -225,6 +230,29 @@ async function request(token, path, options = {}) {
   } finally {
     if (timeoutId !== null) window.clearTimeout(timeoutId);
   }
+}
+
+function requestSessionResume(token, {
+  clientId,
+  workspaceId,
+  sessionId,
+  permissionMode,
+}) {
+  return request(token, "/api/resume", {
+    method: "POST",
+    timeoutMs: 20_000,
+    timeoutMessage: "恢复会话超时；本机任务可能仍在运行，请稍后重试。",
+    body: JSON.stringify({
+      client_id: clientId,
+      workspace_id: workspaceId,
+      session_id: sessionId,
+      permission_mode: permissionMode,
+    }),
+  });
+}
+
+function isTransientRestoreError(error) {
+  return !error.status || [408, 409, 429, 502, 503, 504].includes(error.status);
 }
 
 async function streamRequest(token, path, payload, onEvent) {
@@ -1009,6 +1037,22 @@ export default function App() {
     window.setTimeout(() => setToast(""), 2800);
   }, []);
 
+  const applyResumedSession = useCallback((workspaceId, sessionId, data) => {
+    setMessages(data.messages || []);
+    setPending(hasPendingApprovals(data.result) ? data.result : null);
+    setStatus(data.result?.status || "idle");
+    setContextUsage({
+      used_tokens: data.result?.context_used_tokens || 0,
+      window_tokens:
+        data.result?.context_window_tokens
+        || bootstrap.context_window_tokens
+        || 0,
+    });
+    setActiveSessionId(sessionId);
+    storePageSessionId(window.history, workspaceId, sessionId);
+    setPanel(null);
+  }, [bootstrap.context_window_tokens]);
+
   const loadBootstrap = useCallback(
     async (activeToken) => {
       const data = await request(activeToken, "/api/bootstrap");
@@ -1067,7 +1111,7 @@ export default function App() {
   const refreshSessions = useCallback(async () => {
     if (!selectedWorkspace || !runnerOnline) {
       setSessionsLoading(false);
-      return false;
+      return [];
     }
     const workspaceId = selectedWorkspace.workspace_id;
     const requestTicket = sessionRequestsRef.current.begin(workspaceId);
@@ -1077,11 +1121,12 @@ export default function App() {
         token,
         `/api/sessions?workspace_id=${encodeURIComponent(workspaceId)}`,
       );
-      if (!sessionRequestsRef.current.isCurrent(requestTicket)) return false;
-      setSessions(data.sessions || []);
-      return true;
+      if (!sessionRequestsRef.current.isCurrent(requestTicket)) return [];
+      const nextSessions = data.sessions || [];
+      setSessions(nextSessions);
+      return nextSessions;
     } catch (error) {
-      if (!sessionRequestsRef.current.isCurrent(requestTicket)) return false;
+      if (!sessionRequestsRef.current.isCurrent(requestTicket)) return [];
       throw error;
     } finally {
       if (sessionRequestsRef.current.isCurrent(requestTicket)) {
@@ -1118,8 +1163,9 @@ export default function App() {
     if (!selectedWorkspace) return;
     let ignore = false;
     async function initializeWorkspace() {
-      sessionRequestsRef.current.selectWorkspace(selectedWorkspace.workspace_id);
-      renewClientId(selectedWorkspace.workspace_id);
+      const workspaceId = selectedWorkspace.workspace_id;
+      sessionRequestsRef.current.selectWorkspace(workspaceId);
+      const restoreClientId = renewClientId(workspaceId);
       setMessages([]);
       setSessions([]);
       setSessionsLoading(true);
@@ -1134,7 +1180,38 @@ export default function App() {
       });
       setActiveSessionId("");
       try {
-        await Promise.all([refreshSessions(), refreshGit()]);
+        const [availableSessions] = await Promise.all([refreshSessions(), refreshGit()]);
+        if (ignore) return;
+        const pageSessionId = readPageSessionId(window.history, workspaceId);
+        if (!pageSessionId) return;
+        if (!availableSessions.some((session) => session.session_id === pageSessionId)) {
+          clearPageSessionId(window.history);
+          return;
+        }
+        setBusy(true);
+        setResumingSessionId(pageSessionId);
+        try {
+          const data = await requestSessionResume(token, {
+            clientId: restoreClientId,
+            workspaceId,
+            sessionId: pageSessionId,
+            permissionMode,
+          });
+          if (ignore) return;
+          applyResumedSession(workspaceId, pageSessionId, data);
+          showToast("已恢复上次会话");
+        } catch (error) {
+          if (ignore) return;
+          if (!isTransientRestoreError(error)) {
+            clearPageSessionId(window.history);
+          }
+          showToast(`自动恢复会话失败：${error.message}`);
+        } finally {
+          if (!ignore) {
+            setResumingSessionId("");
+            setBusy(false);
+          }
+        }
       } catch (error) {
         if (!ignore) showToast(error.message);
       }
@@ -1143,7 +1220,15 @@ export default function App() {
     return () => {
       ignore = true;
     };
-  }, [refreshGit, refreshSessions, selectedWorkspace, showToast]);
+  }, [
+    applyResumedSession,
+    permissionMode,
+    refreshGit,
+    refreshSessions,
+    selectedWorkspace,
+    showToast,
+    token,
+  ]);
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -1189,6 +1274,7 @@ export default function App() {
   }
 
   function selectWorkspace(workspace) {
+    clearPageSessionId(window.history);
     sessionRequestsRef.current.selectWorkspace(workspace.workspace_id);
     localStorage.setItem(WORKSPACE_KEY, workspace.workspace_id);
     setSessions([]);
@@ -1553,6 +1639,11 @@ export default function App() {
       });
       if (result.session_id) {
         setActiveSessionId(result.session_id);
+        storePageSessionId(
+          window.history,
+          selectedWorkspace.workspace_id,
+          result.session_id,
+        );
       }
       streamTextRef.current = "";
       setStreamText("");
@@ -1814,29 +1905,14 @@ export default function App() {
     setChangeActionStates({});
     setResumingSessionId(sessionId);
     try {
-      const data = await request(token, "/api/resume", {
-        method: "POST",
-        timeoutMs: 20_000,
-        timeoutMessage: "恢复会话超时；本机任务可能仍在运行，请稍后重试。",
-        body: JSON.stringify({
-          client_id: clientId,
-          workspace_id: selectedWorkspace.workspace_id,
-          session_id: sessionId,
-          permission_mode: permissionMode,
-        }),
+      const workspaceId = selectedWorkspace.workspace_id;
+      const data = await requestSessionResume(token, {
+        clientId,
+        workspaceId,
+        sessionId,
+        permissionMode,
       });
-      setMessages(data.messages || []);
-      setPending(hasPendingApprovals(data.result) ? data.result : null);
-      setStatus(data.result?.status || "idle");
-      setContextUsage({
-        used_tokens: data.result?.context_used_tokens || 0,
-        window_tokens:
-          data.result?.context_window_tokens
-          || bootstrap.context_window_tokens
-          || 0,
-      });
-      setActiveSessionId(sessionId);
-      setPanel(null);
+      applyResumedSession(workspaceId, sessionId, data);
       showToast("会话已恢复");
     } catch (error) {
       showToast(error.message);
@@ -1860,6 +1936,7 @@ export default function App() {
       if (error.status !== 503) showToast(error.message);
     }
     renewClientId(selectedWorkspace.workspace_id);
+    clearPageSessionId(window.history);
     setActiveSessionId("");
     setMessages([]);
     setPendingInputs([]);
@@ -1893,6 +1970,7 @@ export default function App() {
       });
       if (activeSessionId === sessionId) {
         renewClientId(selectedWorkspace.workspace_id);
+        clearPageSessionId(window.history);
         setActiveSessionId("");
         setMessages([]);
         setPending(null);
