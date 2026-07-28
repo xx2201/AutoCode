@@ -320,6 +320,95 @@ def test_streaming_chat_relays_tokens_stages_and_final_result(relay_client):
     assert final["timings"]["relay_total_ms"] >= 0
 
 
+def test_streaming_chat_preserves_live_work_event_contract(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+    holder = {}
+
+    def browser_request():
+        with client.stream(
+            "POST",
+            "/api/chat/stream",
+            headers=_browser_headers(),
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "prompt": "show live work",
+            },
+        ) as response:
+            holder["status"] = response.status_code
+            holder["events"] = [
+                json.loads(line[6:])
+                for line in response.iter_lines()
+                if line.startswith("data: ")
+            ]
+
+    thread = threading.Thread(target=browser_request)
+    thread.start()
+    job = client.get(
+        "/api/runner/next",
+        params={"wait": 1},
+        headers=_runner_headers(),
+    ).json()
+
+    narrative = {
+        "type": "work",
+        "phase": "narrative",
+        "work_id": "step-1-narrative",
+        "content": "先查看文件。",
+    }
+    planned = {
+        "type": "work",
+        "phase": "planned",
+        "tool_call_id": "call-1",
+        "tool_name": "glob",
+        "arguments": {"pattern": "**/*.py"},
+    }
+    completed = {
+        **planned,
+        "phase": "completed",
+        "output": "main.py",
+        "duration_ms": 12.5,
+        "success": True,
+    }
+    turn = {
+        "type": "turn",
+        "phase": "started",
+        "turn_id": "turn-1",
+        "revision_id": "revision-1",
+        "queued": False,
+    }
+    for event in (turn, narrative, planned, completed):
+        response = client.post(
+            f"/api/runner/event/{job['job_id']}",
+            headers=_runner_headers(),
+            json=event,
+        )
+        assert response.status_code == 200
+
+    rejected = client.post(
+        f"/api/runner/event/{job['job_id']}",
+        headers=_runner_headers(),
+        json={"type": "work", "unknown_protocol_field": "must fail"},
+    )
+    assert rejected.status_code == 422
+
+    client.post(
+        f"/api/runner/result/{job['job_id']}",
+        headers=_runner_headers(),
+        json={"success": True, "result": {"text": "done", "status": "completed"}},
+    )
+    thread.join(timeout=3)
+
+    assert not thread.is_alive()
+    assert holder["status"] == 200
+    streamed = holder["events"]
+    assert turn in streamed
+    assert narrative in streamed
+    assert planned in streamed
+    assert completed in streamed
+
+
 def test_streaming_approval_continuation_can_outlive_control_timeout(relay_client):
     client, _ = relay_client
     _connect_runner(client)
