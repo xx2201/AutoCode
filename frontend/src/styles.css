@@ -1544,6 +1544,7 @@ button:focus-visible, input:focus-visible, textarea:focus-visible {
 .session-list strong { font-size: 11px; }
 .session-list small { display: flex; align-items: center; gap: 5px; margin-top: 5px; color: #999eaf; font-size: 8px; }
 .panel-empty { padding: 55px 20px; color: #999eaf; text-align: center; font-size: 11px; }
+.session-loading { display: flex; align-items: center; justify-content: center; gap: 8px; }
 .confirm-layer { z-index: 80; }
 .confirm-dialog { width: min(420px, 100%); padding: 28px; border: 1px solid #ece4e6; border-radius: 22px; background: white; box-shadow: var(--shadow); text-align: center; }
 .confirm-icon { display: grid; width: 48px; height: 48px; margin: 0 auto 15px; place-items: center; border-radius: 15px; color: #c74255; background: #fff0f2; }

@@ -56,8 +56,12 @@ test("workspace initialization leaves history selection to the user", async () =
   assert.doesNotMatch(source, /SESSION_MAP_KEY|storedSessionId|storeSessionId/);
   assert.doesNotMatch(initializeWorkspace, /\/api\/resume/);
   assert.match(initializeWorkspace, /setActiveSessionId\(""\)/);
+  assert.match(initializeWorkspace, /setSessions\(\[\]\)/);
   assert.match(initializeWorkspace, /renewClientId\(selectedWorkspace\.workspace_id\)/);
-  assert.match(source, /refreshSessions\(\).*setPanel\("sessions"\)/s);
+  assert.match(source, /sessionsLoading/);
+  assert.match(source, /sessionRequestsRef\.current\.isCurrent\(requestTicket\)/);
+  assert.match(source, /async function openSessionsPanel\(\)/);
+  assert.match(source, /setPanel\("sessions"\).*await refreshSessions\(\)/s);
 });
 
 test("elapsed timer is isolated from the conversation app state", async () => {

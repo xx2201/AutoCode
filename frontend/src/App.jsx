@@ -43,6 +43,7 @@ import FilePanel from "./FilePanel";
 import GitPanel from "./GitPanel";
 import RichText from "./markdown";
 import { approvalPresentation } from "./approval";
+import { createSessionRequestCoordinator } from "./session-history";
 import {
   createPendingInput,
   formatDuration,
@@ -939,6 +940,7 @@ export default function App() {
   const [runnerOnline, setRunnerOnline] = useState(false);
   const [messages, setMessages] = useState([]);
   const [sessions, setSessions] = useState([]);
+  const [sessionsLoading, setSessionsLoading] = useState(false);
   const [pending, setPending] = useState(null);
   const [approvalBusyIds, setApprovalBusyIds] = useState({});
   const [prompt, setPrompt] = useState("");
@@ -985,6 +987,10 @@ export default function App() {
   const messageEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const promptInputRef = useRef(null);
+  const sessionRequestsRef = useRef(null);
+  if (!sessionRequestsRef.current) {
+    sessionRequestsRef.current = createSessionRequestCoordinator(selectedId);
+  }
 
   const selectedWorkspace = useMemo(
     () => bootstrap.workspaces.find((item) => item.workspace_id === selectedId) || null,
@@ -1058,12 +1064,29 @@ export default function App() {
   }, [loadBootstrap, showToast, token]);
 
   const refreshSessions = useCallback(async () => {
-    if (!selectedWorkspace || !runnerOnline) return;
-    const data = await request(
-      token,
-      `/api/sessions?workspace_id=${encodeURIComponent(selectedWorkspace.workspace_id)}`,
-    );
-    setSessions(data.sessions || []);
+    if (!selectedWorkspace || !runnerOnline) {
+      setSessionsLoading(false);
+      return false;
+    }
+    const workspaceId = selectedWorkspace.workspace_id;
+    const requestTicket = sessionRequestsRef.current.begin(workspaceId);
+    setSessionsLoading(true);
+    try {
+      const data = await request(
+        token,
+        `/api/sessions?workspace_id=${encodeURIComponent(workspaceId)}`,
+      );
+      if (!sessionRequestsRef.current.isCurrent(requestTicket)) return false;
+      setSessions(data.sessions || []);
+      return true;
+    } catch (error) {
+      if (!sessionRequestsRef.current.isCurrent(requestTicket)) return false;
+      throw error;
+    } finally {
+      if (sessionRequestsRef.current.isCurrent(requestTicket)) {
+        setSessionsLoading(false);
+      }
+    }
   }, [runnerOnline, selectedWorkspace, token]);
 
   const refreshMessages = useCallback(async () => {
@@ -1094,8 +1117,11 @@ export default function App() {
     if (!selectedWorkspace) return;
     let ignore = false;
     async function initializeWorkspace() {
+      sessionRequestsRef.current.selectWorkspace(selectedWorkspace.workspace_id);
       renewClientId(selectedWorkspace.workspace_id);
       setMessages([]);
+      setSessions([]);
+      setSessionsLoading(true);
       setPendingInputs([]);
       setEditingTurnId("");
       setChangeActionStates({});
@@ -1162,7 +1188,10 @@ export default function App() {
   }
 
   function selectWorkspace(workspace) {
+    sessionRequestsRef.current.selectWorkspace(workspace.workspace_id);
     localStorage.setItem(WORKSPACE_KEY, workspace.workspace_id);
+    setSessions([]);
+    setSessionsLoading(true);
     setSelectedId(workspace.workspace_id);
     setProjectPickerOpen(false);
     setMobileNavOpen(false);
@@ -1176,6 +1205,15 @@ export default function App() {
       await loadBootstrap(token);
     } catch (error) {
       setRunnerOnline(false);
+      showToast(error.message);
+    }
+  }
+
+  async function openSessionsPanel() {
+    setPanel("sessions");
+    try {
+      await refreshSessions();
+    } catch (error) {
       showToast(error.message);
     }
   }
@@ -2127,10 +2165,7 @@ export default function App() {
           </button>
           <button
             type="button"
-            onClick={() => {
-              refreshSessions().catch((error) => showToast(error.message));
-              setPanel("sessions");
-            }}
+            onClick={openSessionsPanel}
           >
             <History size={18} /> 历史会话
             {sessions.length > 0 && <em>{sessions.length}</em>}
@@ -2475,7 +2510,12 @@ export default function App() {
                   <Plus size={18} /> 新建会话
                 </button>
                 <div className="session-list">
-                  {sessions.map((session) => (
+                  {sessionsLoading ? (
+                    <div className="panel-empty session-loading" role="status">
+                      <RefreshCw className="spin" size={17} />
+                      正在加载当前项目的历史会话…
+                    </div>
+                  ) : sessions.map((session) => (
                     <div
                       key={session.session_id}
                       className={`session-row ${
@@ -2513,7 +2553,9 @@ export default function App() {
                       </button>
                     </div>
                   ))}
-                  {!sessions.length && <div className="panel-empty">这个项目还没有可恢复的会话。</div>}
+                  {!sessionsLoading && !sessions.length && (
+                    <div className="panel-empty">这个项目还没有可恢复的会话。</div>
+                  )}
                 </div>
               </div>
             ) : (
