@@ -45,3 +45,24 @@ test("approval batch keeps decisions independent from turn continuation", async 
       < resolver.indexOf("await continueApprovalBatch(batch)"),
   );
 });
+
+test("workspace initialization leaves history selection to the user", async () => {
+  const source = await readFile(appPath, "utf8");
+  const initializeStart = source.indexOf("async function initializeWorkspace");
+  const initializeEnd = source.indexOf("initializeWorkspace();", initializeStart);
+  const initializeWorkspace = source.slice(initializeStart, initializeEnd);
+
+  assert.ok(initializeStart >= 0, "expected explicit workspace initialization");
+  assert.doesNotMatch(source, /SESSION_MAP_KEY|storedSessionId|storeSessionId/);
+  assert.doesNotMatch(initializeWorkspace, /\/api\/resume/);
+  assert.match(initializeWorkspace, /setActiveSessionId\(""\)/);
+  assert.match(initializeWorkspace, /renewClientId\(selectedWorkspace\.workspace_id\)/);
+  assert.match(source, /refreshSessions\(\).*setPanel\("sessions"\)/s);
+});
+
+test("elapsed timer is isolated from the conversation app state", async () => {
+  const source = await readFile(appPath, "utf8");
+
+  assert.match(source, /function LiveElapsed\(\{ startedAt \}\)/);
+  assert.doesNotMatch(source, /runElapsedMs|setRunElapsedMs/);
+});

@@ -1,9 +1,19 @@
 import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import test from "node:test";
 
 import RichText from "../src/markdown.js";
+
+const markdownPath = new URL("../src/markdown.js", import.meta.url);
+
+test("memoizes unchanged Markdown answers", async () => {
+  const source = await readFile(markdownPath, "utf8");
+
+  assert.match(source, /import \{ createElement, memo \} from "react"/);
+  assert.match(source, /export default memo\(RichText\)/);
+});
 
 test("renders assistant Markdown as semantic HTML", () => {
   const html = renderToStaticMarkup(createElement(RichText, {

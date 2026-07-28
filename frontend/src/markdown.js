@@ -1,4 +1,4 @@
-import { createElement } from "react";
+import { createElement, memo } from "react";
 import Markdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -19,7 +19,7 @@ const MARKDOWN_COMPONENTS = {
   a: MarkdownLink,
 };
 
-export default function RichText({ content }) {
+function RichText({ content }) {
   return createElement(
     "div",
     { className: "rich-text" },
@@ -33,3 +33,5 @@ export default function RichText({ content }) {
     ),
   );
 }
+
+export default memo(RichText);

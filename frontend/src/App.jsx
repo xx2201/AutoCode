@@ -57,7 +57,6 @@ import {
 const TOKEN_KEY = "autocode_web_token";
 const WORKSPACE_KEY = "autocode_workspace_id";
 const CLIENT_MAP_KEY = "autocode_workspace_clients";
-const SESSION_MAP_KEY = "autocode_workspace_sessions";
 const PERMISSION_MODE_KEY = "autocode_permission_mode";
 
 function createClientId() {
@@ -187,30 +186,6 @@ function renewClientId(workspaceId) {
   clients[workspaceId] = createClientId();
   localStorage.setItem(CLIENT_MAP_KEY, JSON.stringify(clients));
   return clients[workspaceId];
-}
-
-function storedSessionId(workspaceId) {
-  try {
-    const sessions = JSON.parse(localStorage.getItem(SESSION_MAP_KEY) || "{}");
-    return sessions[workspaceId] || "";
-  } catch {
-    return "";
-  }
-}
-
-function storeSessionId(workspaceId, sessionId) {
-  let sessions = {};
-  try {
-    sessions = JSON.parse(localStorage.getItem(SESSION_MAP_KEY) || "{}");
-  } catch {
-    sessions = {};
-  }
-  if (sessionId) {
-    sessions[workspaceId] = sessionId;
-  } else {
-    delete sessions[workspaceId];
-  }
-  localStorage.setItem(SESSION_MAP_KEY, JSON.stringify(sessions));
 }
 
 async function request(token, path, options = {}) {
@@ -616,7 +591,20 @@ function WorkItem({ item }) {
   );
 }
 
-function WorkBlock({ items, elapsedMs, active = false, liveText = "", stage = "" }) {
+function LiveElapsed({ startedAt }) {
+  const [elapsedMs, setElapsedMs] = useState(() => Math.max(0, Date.now() - startedAt));
+
+  useEffect(() => {
+    const updateElapsed = () => setElapsedMs(Math.max(0, Date.now() - startedAt));
+    updateElapsed();
+    const timer = window.setInterval(updateElapsed, 250);
+    return () => window.clearInterval(timer);
+  }, [startedAt]);
+
+  return <span>{`Working for ${formatDuration(elapsedMs)}`}</span>;
+}
+
+function WorkBlock({ items, elapsedMs, active = false, liveText = "", stage = "", startedAt = 0 }) {
   const hasContent = items.length > 0 || liveText || active;
   if (!hasContent) return null;
   const stageText = {
@@ -627,15 +615,11 @@ function WorkBlock({ items, elapsedMs, active = false, liveText = "", stage = ""
     tool_started: "执行工具",
     persisted: "保存会话",
   }[stage] || "正在处理";
-  const workLabel = active
-    ? `Working for ${formatDuration(elapsedMs)}`
-    : elapsedMs > 0
-      ? `Worked for ${formatDuration(elapsedMs)}`
-      : "Worked";
+  const workLabel = elapsedMs > 0 ? `Worked for ${formatDuration(elapsedMs)}` : "Worked";
   return (
     <details className={`work-block ${active ? "is-active" : ""}`} open={active}>
       <summary>
-        <span>{workLabel}</span>
+        {active ? <LiveElapsed startedAt={startedAt} /> : <span>{workLabel}</span>}
         {active && <i className="work-pulse" />}
         <ChevronDown size={16} />
       </summary>
@@ -769,7 +753,7 @@ function ConversationTurn({
   active,
   liveWork,
   liveText,
-  liveElapsedMs,
+  liveStartedAt,
   stage,
   onFileAction,
   onOpenChanges,
@@ -801,10 +785,11 @@ function ConversationTurn({
       <div className="turn-response">
         <WorkBlock
           items={active ? liveWork : turn.work}
-          elapsedMs={active ? liveElapsedMs : turn.elapsedMs}
+          elapsedMs={turn.elapsedMs}
           active={active}
           liveText={active ? liveText : ""}
           stage={stage}
+          startedAt={active ? liveStartedAt : 0}
         />
         {!active && (
           <AssistantAnswer
@@ -968,7 +953,6 @@ export default function App() {
   const [runStage, setRunStage] = useState("");
   const [liveWork, setLiveWork] = useState([]);
   const [runStartedAt, setRunStartedAt] = useState(0);
-  const [runElapsedMs, setRunElapsedMs] = useState(0);
   const [activeTurnId, setActiveTurnId] = useState("");
   const [deliveryMode, setDeliveryMode] = useState("steer");
   const [pendingInputs, setPendingInputs] = useState([]);
@@ -1012,14 +996,6 @@ export default function App() {
     () => latestCompletedTurnId(conversationTurns, busy),
     [busy, conversationTurns],
   );
-
-  useEffect(() => {
-    if (!busy || !runStartedAt) return undefined;
-    const updateElapsed = () => setRunElapsedMs(Date.now() - runStartedAt);
-    updateElapsed();
-    const timer = window.setInterval(updateElapsed, 250);
-    return () => window.clearInterval(timer);
-  }, [busy, runStartedAt]);
 
   const showToast = useCallback((message) => {
     setToast(message);
@@ -1117,7 +1093,8 @@ export default function App() {
   useEffect(() => {
     if (!selectedWorkspace) return;
     let ignore = false;
-    async function restoreWorkspace() {
+    async function initializeWorkspace() {
+      renewClientId(selectedWorkspace.workspace_id);
       setMessages([]);
       setPendingInputs([]);
       setEditingTurnId("");
@@ -1128,49 +1105,14 @@ export default function App() {
         used_tokens: 0,
         window_tokens: bootstrap.context_window_tokens || 0,
       });
-      const savedSessionId = storedSessionId(selectedWorkspace.workspace_id);
-      setActiveSessionId(savedSessionId);
+      setActiveSessionId("");
       try {
         await Promise.all([refreshSessions(), refreshGit()]);
-        if (!savedSessionId || !runnerOnline || ignore) return;
-        setBusy(true);
-        setResumingSessionId(savedSessionId);
-        const data = await request(token, "/api/resume", {
-          method: "POST",
-          timeoutMs: 20_000,
-          timeoutMessage: "恢复会话超时；本机任务可能仍在运行，请稍后重试。",
-          body: JSON.stringify({
-            client_id: clientId,
-            workspace_id: selectedWorkspace.workspace_id,
-            session_id: savedSessionId,
-            permission_mode: permissionMode,
-          }),
-        });
-        if (ignore) return;
-        setMessages(data.messages || []);
-        setPending(hasPendingApprovals(data.result) ? data.result : null);
-        setStatus(data.result?.status || "idle");
-        setContextUsage({
-          used_tokens: data.result?.context_used_tokens || 0,
-          window_tokens:
-            data.result?.context_window_tokens
-            || bootstrap.context_window_tokens
-            || 0,
-        });
       } catch (error) {
-        if (!ignore) {
-          storeSessionId(selectedWorkspace.workspace_id, "");
-          setActiveSessionId("");
-          showToast(error.message);
-        }
-      } finally {
-        if (!ignore) {
-          setBusy(false);
-          setResumingSessionId("");
-        }
+        if (!ignore) showToast(error.message);
       }
     }
-    restoreWorkspace();
+    initializeWorkspace();
     return () => {
       ignore = true;
     };
@@ -1307,7 +1249,6 @@ export default function App() {
     setRunStage("queued");
     setLiveWork([]);
     setRunStartedAt(Date.now());
-    setRunElapsedMs(0);
     setActiveTurnId(turnId);
     try {
       let payload = null;
@@ -1467,7 +1408,6 @@ export default function App() {
     setRunStage("queued");
     setLiveWork([]);
     setRunStartedAt(Date.now());
-    setRunElapsedMs(0);
     setLastTimings(null);
     try {
       const encodedAttachments = await Promise.all(
@@ -1557,7 +1497,6 @@ export default function App() {
           || 0,
       });
       if (result.session_id) {
-        storeSessionId(selectedWorkspace.workspace_id, result.session_id);
         setActiveSessionId(result.session_id);
       }
       setStreamText("");
@@ -1839,7 +1778,6 @@ export default function App() {
           || bootstrap.context_window_tokens
           || 0,
       });
-      storeSessionId(selectedWorkspace.workspace_id, sessionId);
       setActiveSessionId(sessionId);
       setPanel(null);
       showToast("会话已恢复");
@@ -1865,7 +1803,6 @@ export default function App() {
       if (error.status !== 503) showToast(error.message);
     }
     renewClientId(selectedWorkspace.workspace_id);
-    storeSessionId(selectedWorkspace.workspace_id, "");
     setActiveSessionId("");
     setMessages([]);
     setPendingInputs([]);
@@ -1875,7 +1812,6 @@ export default function App() {
     setStatus("idle");
     setLiveWork([]);
     setRunStartedAt(0);
-    setRunElapsedMs(0);
     setContextUsage({
       used_tokens: 0,
       window_tokens: bootstrap.context_window_tokens || 0,
@@ -1899,7 +1835,6 @@ export default function App() {
       });
       if (activeSessionId === sessionId) {
         renewClientId(selectedWorkspace.workspace_id);
-        storeSessionId(selectedWorkspace.workspace_id, "");
         setActiveSessionId("");
         setMessages([]);
         setPending(null);
@@ -2295,7 +2230,7 @@ export default function App() {
                     active={busy && index === conversationTurns.length - 1}
                     liveWork={liveWork}
                     liveText={streamText}
-                    liveElapsedMs={runElapsedMs}
+                    liveStartedAt={runStartedAt}
                     stage={runStage}
                     onFileAction={handleOutputFile}
                     onOpenChanges={(path) => openFilePanel("changed", path)}
