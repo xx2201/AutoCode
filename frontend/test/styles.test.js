@@ -1,8 +1,17 @@
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
+import { readFileSync, readdirSync } from "node:fs";
 import test from "node:test";
 
-const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
+const styleDirectory = new URL("../src/styles/", import.meta.url);
+const styleSources = Object.fromEntries(
+  readdirSync(styleDirectory)
+    .filter((name) => name.endsWith(".css"))
+    .map((name) => [
+      name,
+      readFileSync(new URL(name, styleDirectory), "utf8"),
+    ]),
+);
+const styles = Object.values(styleSources).join("\n");
 
 test("assistant prose inherits the Codex-style answer typography", () => {
   const rule = styles.match(/\.turn-answer \.rich-text\s*\{([^}]*)\}/)?.[1];
@@ -39,7 +48,8 @@ test("approval request uses a neutral inline card instead of the legacy warning 
 });
 
 test("mobile approval actions fit the viewport without horizontal scrolling", () => {
-  const mobile = styles.match(/@media \(max-width: 720px\)\s*\{([\s\S]*)\}\s*$/)?.[1];
+  const mobile = styleSources["responsive.css"]
+    .match(/@media \(max-width: 720px\)\s*\{([\s\S]*)\}\s*$/)?.[1];
 
   assert.ok(mobile, "expected the mobile media query");
   assert.match(mobile, /\.approval-request-actions\s*\{[^}]*grid-template-columns:\s*1fr 1fr/);

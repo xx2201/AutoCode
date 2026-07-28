@@ -1,0 +1,7 @@
+autocode/web/static/*.js text eol=lf whitespace=-blank-at-eol
+autocode/web/static/*.css text eol=lf
+autocode/web/static/*.html text eol=lf
+frontend/**/*.js text eol=lf
+frontend/**/*.jsx text eol=lf
+frontend/**/*.css text eol=lf
+frontend/**/*.md text eol=lf
