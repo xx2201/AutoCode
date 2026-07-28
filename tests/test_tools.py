@@ -1,9 +1,11 @@
 """Tests for the tool system."""
 
 import os
+import subprocess
 import shutil
 import sys
 import tempfile
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -46,6 +48,37 @@ def test_bash_timeout():
     bash = get_tool("bash")
     r = bash.execute(command=f'"{sys.executable}" -c "import time; time.sleep(10)"', timeout=1)
     assert "timed out" in r
+
+
+def test_bash_timeout_kills_child_process_tree(tmp_path):
+    flag = tmp_path / "child-survived.txt"
+    child = tmp_path / "child.py"
+    child.write_text(
+        "import time\n"
+        "from pathlib import Path\n"
+        "time.sleep(25)\n"
+        f"Path(r'{flag.as_posix()}').write_text('alive', encoding='utf-8')\n",
+        encoding="utf-8",
+    )
+    launcher = tmp_path / "launcher.py"
+    launcher.write_text(
+        "import subprocess, sys, time\n"
+        f"subprocess.Popen([sys.executable, r'{child.as_posix()}'])\n"
+        "time.sleep(30)\n",
+        encoding="utf-8",
+    )
+    bash = get_tool("bash")
+    started = time.monotonic()
+
+    result = bash.execute(
+        command=subprocess.list2cmdline([sys.executable, str(launcher)]),
+        timeout=1,
+    )
+
+    assert "timed out" in result
+    assert time.monotonic() - started < 25
+    time.sleep(4)
+    assert not flag.exists()
 
 
 def test_bash_leaves_rm_rf_to_policy_layer():

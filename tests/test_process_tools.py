@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from autocode.infra import BackgroundProcessManager, WorkspaceFS
+from autocode.infra import process_control as process_control_module
 from autocode.infra import processes as process_module
 from autocode.runtime import Policy
 from autocode.tools.process import (
@@ -108,20 +109,21 @@ def test_stop_process_uses_taskkill_tree_on_windows(tmp_path, monkeypatch):
     class _Completed:
         returncode = 0
 
-    monkeypatch.setattr(process_module.os, "name", "nt")
+    monkeypatch.setattr(process_control_module.os, "name", "nt")
 
     def _fake_run(*args, **kwargs):
         captured["args"] = args[0]
         captured["kwargs"] = kwargs
         return _Completed()
 
-    monkeypatch.setattr(process_module.subprocess, "run", _fake_run)
+    monkeypatch.setattr(process_control_module.subprocess, "run", _fake_run)
 
     manager._terminate_process_tree(_Proc())
 
     assert captured["args"] == ["taskkill", "/PID", "12345", "/T", "/F"]
-    assert captured["kwargs"]["stdout"] is process_module.subprocess.DEVNULL
-    assert captured["kwargs"]["stderr"] is process_module.subprocess.DEVNULL
+    assert captured["kwargs"]["stdout"] is process_control_module.subprocess.DEVNULL
+    assert captured["kwargs"]["stderr"] is process_control_module.subprocess.DEVNULL
+    assert captured["kwargs"]["timeout"] == 15
     assert captured["wait_timeout"] == 5
 
 

@@ -8,6 +8,8 @@ import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
+from .process_control import process_group_options, terminate_process_tree
+
 
 @dataclass
 class SandboxResult:
@@ -41,23 +43,30 @@ class Sandbox:
 
     def run(self, command: str, timeout: int = 120) -> SandboxResult:
         cwd = self.cwd
+        popen_options = {
+            "shell": True,
+            "stdout": subprocess.PIPE,
+            "stderr": subprocess.PIPE,
+            "cwd": cwd,
+            "env": self._build_env(),
+            **process_group_options(),
+        }
+        proc = subprocess.Popen(command, **popen_options)
         try:
-            proc = subprocess.run(
-                command,
-                shell=True,
-                capture_output=True,
-                timeout=timeout,
-                cwd=cwd,
-                env=self._build_env(),
-            )
+            stdout, stderr = proc.communicate(timeout=timeout)
         except subprocess.TimeoutExpired as e:
+            terminate_process_tree(proc, env=popen_options["env"])
+            try:
+                proc.communicate(timeout=5)
+            except subprocess.TimeoutExpired:
+                terminate_process_tree(proc, env=popen_options["env"])
             raise TimeoutError(str(e)) from e
         if proc.returncode == 0:
             self._update_cwd(command, cwd)
 
-        out = decode_output(proc.stdout)
-        if proc.stderr:
-            out += f"\n[stderr]\n{decode_output(proc.stderr)}"
+        out = decode_output(stdout)
+        if stderr:
+            out += f"\n[stderr]\n{decode_output(stderr)}"
         if proc.returncode != 0:
             out += f"\n[exit code: {proc.returncode}]"
         if len(out) > 15_000:

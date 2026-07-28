@@ -465,6 +465,33 @@ def test_replacing_busy_runtime_fails_fast_instead_of_blocking(tmp_path):
         manager.close()
 
 
+def test_current_task_summary_does_not_wait_for_busy_runtime(tmp_path):
+    manager = RemoteManager(
+        _config(tmp_path),
+        llm_factory=lambda: _FakeLLM([]),
+        tools=[],
+    )
+    runtime = manager._get_or_create_runtime(506)
+    locked = threading.Event()
+    release = threading.Event()
+
+    def hold_runtime():
+        with runtime.lock:
+            locked.set()
+            release.wait(timeout=5)
+
+    holder = threading.Thread(target=hold_runtime)
+    holder.start()
+    assert locked.wait(timeout=2)
+    try:
+        summary = manager.current_task_summary(506)
+        assert summary == "Current task is still running; detailed status is temporarily unavailable."
+    finally:
+        release.set()
+        holder.join(timeout=2)
+        manager.close()
+
+
 def test_remote_manager_temporary_hook_receives_events_and_unsubscribes(tmp_path):
     llm = _FakeLLM([LLMResponse(content="done")])
     manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
