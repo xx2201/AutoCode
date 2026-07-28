@@ -156,19 +156,69 @@ def test_list_sessions_reuses_unchanged_checkpoint_metadata(tmp_path, monkeypatc
         "m1",
         workspace_root=str(tmp_path),
     )
+    index_files = list((tmp_path / ".workspace-index").rglob("*.json"))
+    assert len(index_files) == 1
     checkpoint_module._CHECKPOINT_CACHE.clear()
-    reads = []
+    checkpoint_reads = []
     original_read_json = checkpoint_module._read_json
 
     def counting_read_json(path):
-        reads.append(path)
+        if path.name == "checkpoint.json":
+            checkpoint_reads.append(path)
         return original_read_json(path)
 
     monkeypatch.setattr(checkpoint_module, "_read_json", counting_read_json)
 
     assert len(list_sessions(workspace_root=str(tmp_path))) == 1
     assert len(list_sessions(workspace_root=str(tmp_path))) == 1
-    assert len(reads) == 1
+    assert checkpoint_reads == []
+
+
+def test_session_index_avoids_reading_unrelated_workspace_checkpoints(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
+    save_checkpoint(
+        SessionState(session_id="session_target", title="target"),
+        [],
+        "m1",
+        workspace_root="G:/repo/target",
+    )
+    for index in range(20):
+        save_checkpoint(
+            SessionState(session_id=f"session_other_{index:02d}", title="other"),
+            [],
+            "m1",
+            workspace_root="G:/repo/other",
+        )
+
+    checkpoint_module._CHECKPOINT_CACHE.clear()
+    original_read_json = checkpoint_module._read_json
+
+    def reject_checkpoint_scan(path):
+        if path.name == "checkpoint.json":
+            raise AssertionError(f"unexpected checkpoint scan: {path}")
+        return original_read_json(path)
+
+    monkeypatch.setattr(checkpoint_module, "_read_json", reject_checkpoint_scan)
+
+    entries = list_sessions(workspace_root="G:/repo/target")
+    assert [entry["session_id"] for entry in entries] == ["session_target"]
+
+
+def test_corrupt_session_index_is_rebuilt_from_existing_checkpoints(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
+    save_checkpoint(
+        SessionState(session_id="session_recovered", title="recovered"),
+        [],
+        "m1",
+        workspace_root="G:/repo/recovered",
+    )
+    index_path = next((tmp_path / ".workspace-index").rglob("*.json"))
+    index_path.write_text("not-json", encoding="utf-8")
+
+    entries = list_sessions(workspace_root="G:/repo/recovered")
+
+    assert [entry["session_id"] for entry in entries] == ["session_recovered"]
+    assert "session_recovered" in index_path.read_text(encoding="utf-8")
 
 
 def test_checkpoint_is_written_as_utf8(tmp_path, monkeypatch):
