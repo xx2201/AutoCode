@@ -142,6 +142,7 @@ def test_runtime_emits_hooks(tmp_path):
     assert events[1][0] == "after_tool"
     assert events[1][1]["tool_call_id"] == "1"
     assert events[1][1]["tool_name"] == "echo"
+    assert events[1][1]["arguments"] == {"text": "hi"}
     assert events[1][1]["result"] == "echo:hi"
     assert events[1][1]["duration_ms"] >= 0
     assert events[1][1]["success"] is True
@@ -164,6 +165,27 @@ def test_agent_waits_for_approval(tmp_path):
     assert agent.task_state.status == "waiting_approval"
     assert agent.task_state.pending_tool_batch is not None
     assert len(agent.task_state.pending_tool_batch.approvals) == 1
+
+
+def test_agent_emits_ordered_assistant_step_before_tool_execution(tmp_path):
+    response = LLMResponse(
+        content="I will inspect the repository.",
+        tool_calls=[ToolCall(id="call_1", name="echo", arguments={"text": "hi"})],
+    )
+    agent = Agent(
+        llm=_FakeLLM([response, LLMResponse(content="done")]),
+        tools=[_EchoTool()],
+        workspace_root=str(tmp_path),
+        permission_mode="full_access",
+    )
+    events = []
+    agent.hooks.on("assistant_step", lambda event, payload: events.append(payload))
+
+    assert agent.chat("inspect") == "done"
+    assert events[0]["content"] == "I will inspect the repository."
+    assert events[0]["tool_calls"] == [
+        {"id": "call_1", "name": "echo", "arguments": {"text": "hi"}}
+    ]
 
 
 def test_agent_approves_pending_tool(tmp_path):

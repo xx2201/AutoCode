@@ -326,6 +326,22 @@ def test_runner_converts_tool_hooks_to_work_events(tmp_path):
 
     def submit(client_id, prompt, hook_handler=None, on_token=None, permission_mode=None):
         manager.calls.append(("chat", client_id, prompt))
+        if on_token:
+            on_token("I will inspect the repository.")
+        hook_handler(
+            "assistant_step",
+            {
+                "step_index": 1,
+                "content": "I will inspect the repository.",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "name": "bash",
+                        "arguments": {"command": "git status"},
+                    }
+                ],
+            },
+        )
         hook_handler(
             "before_tool",
             {
@@ -339,6 +355,7 @@ def test_runner_converts_tool_hooks_to_work_events(tmp_path):
             {
                 "tool_call_id": "call_1",
                 "tool_name": "bash",
+                "arguments": {"command": "git status"},
                 "result": "clean",
                 "duration_ms": 1250,
                 "success": True,
@@ -362,6 +379,19 @@ def test_runner_converts_tool_hooks_to_work_events(tmp_path):
     assert work_events == [
         {
             "type": "work",
+            "phase": "narrative",
+            "work_id": "step-1-narrative",
+            "content": "I will inspect the repository.",
+        },
+        {
+            "type": "work",
+            "phase": "planned",
+            "tool_call_id": "call_1",
+            "tool_name": "bash",
+            "arguments": {"command": "git status"},
+        },
+        {
+            "type": "work",
             "phase": "started",
             "tool_call_id": "call_1",
             "tool_name": "bash",
@@ -372,6 +402,7 @@ def test_runner_converts_tool_hooks_to_work_events(tmp_path):
             "phase": "completed",
             "tool_call_id": "call_1",
             "tool_name": "bash",
+            "arguments": {"command": "git status"},
             "output": "clean",
             "duration_ms": 1250.0,
             "success": True,

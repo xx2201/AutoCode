@@ -509,6 +509,11 @@ def test_remote_manager_temporary_hook_receives_events_and_unsubscribes(tmp_path
     for event in manager._HOOK_EVENTS:
         assert _hook not in runtime.agent.hooks._handlers.get(event, [])
 
+    with manager._temporary_hook(runtime.agent, _hook):
+        runtime.agent.hooks.emit("assistant_step", {"content": "inspect", "tool_calls": []})
+    assert "assistant_step" in events
+    assert _hook not in runtime.agent.hooks._handlers.get("assistant_step", [])
+
 
 def test_remote_manager_reuses_same_session_id_within_same_chat(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)

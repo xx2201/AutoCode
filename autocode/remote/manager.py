@@ -86,6 +86,7 @@ class RemoteManager:
         "turn_started",
         "before_llm",
         "after_llm",
+        "assistant_step",
         "context_compaction",
         "policy_decision",
         "before_tool",

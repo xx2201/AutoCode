@@ -129,6 +129,15 @@ export function groupConversation(messages) {
 }
 
 export function mergeWorkEvent(items, event) {
+  if (event.phase === "narrative") {
+    const content = String(event.content || "");
+    if (!content) return items;
+    const id = event.work_id || `narrative-${items.length}`;
+    const index = items.findIndex((item) => item.id === id);
+    const narrative = { id, type: "narrative", content };
+    if (index < 0) return [...items, narrative];
+    return items.map((item, itemIndex) => (itemIndex === index ? narrative : item));
+  }
   const id = event.tool_call_id || `${event.tool_name || "tool"}-${items.length}`;
   const index = items.findIndex((item) => item.id === id);
   const next = {
@@ -142,15 +151,21 @@ export function mergeWorkEvent(items, event) {
     success: event.success !== false,
   };
   if (index < 0) return [...items, next];
-  return items.map((item, itemIndex) => (
-    itemIndex === index
-      ? {
-          ...item,
-          ...next,
-          arguments: Object.keys(next.arguments).length ? next.arguments : item.arguments,
-        }
-      : item
-  ));
+  const phaseRank = { planned: 0, started: 1, completed: 2 };
+  return items.map((item, itemIndex) => {
+    if (itemIndex !== index) return item;
+    const advances = (phaseRank[next.status] ?? 0) >= (phaseRank[item.status] ?? 0);
+    return {
+      ...item,
+      ...next,
+      toolName: next.toolName || item.toolName,
+      arguments: Object.keys(next.arguments).length ? next.arguments : item.arguments,
+      content: next.content || item.content,
+      durationMs: advances ? next.durationMs : item.durationMs,
+      status: advances ? next.status : item.status,
+      success: advances ? next.success : item.success,
+    };
+  });
 }
 
 export function latestCompletedTurnId(turns, busy = false) {

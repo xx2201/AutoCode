@@ -801,6 +801,23 @@ class Agent:
             self._last_prompt_tokens = resp.prompt_tokens
             self.session_state.context_used_tokens = max(0, resp.prompt_tokens)
 
+            if resp.tool_calls:
+                self.hooks.emit(
+                    "assistant_step",
+                    self._event_payload(
+                        step_index=self.task_state.step_index,
+                        content=resp.content,
+                        tool_calls=[
+                            {
+                                "id": tool_call.id,
+                                "name": tool_call.name,
+                                "arguments": tool_call.arguments,
+                            }
+                            for tool_call in resp.tool_calls
+                        ],
+                    ),
+                )
+
             if not resp.tool_calls:
                 self._append_message(resp.message)
                 steer_items, finished = self.turn_controller.drain_steer_or_finish(
