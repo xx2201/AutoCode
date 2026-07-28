@@ -465,51 +465,7 @@ class LocalRunner:
                             "queued": queued_turn,
                         }
                     )
-                if event in {"before_tool", "after_tool"}:
-                    work_event = {
-                        "type": "work",
-                        "phase": "started" if event == "before_tool" else "completed",
-                        "tool_call_id": str(data.get("tool_call_id", "")),
-                        "tool_name": str(data.get("tool_name", "")),
-                    }
-                    if event == "before_tool":
-                        work_event["arguments"] = presentation_tool_arguments(
-                            data.get("arguments")
-                        )
-                    else:
-                        work_event.update(
-                            {
-                                "output": str(data.get("result", "")),
-                                "duration_ms": float(data.get("duration_ms", 0) or 0),
-                                "success": bool(data.get("success", False)),
-                            }
-                        )
-                    event_handler(work_event)
-                stage_map = {
-                    "before_llm": "model_started",
-                    "after_llm": "model_finished",
-                    "before_tool": "tool_started",
-                    "after_tool": "tool_finished",
-                    "context_compaction": "context_compacted",
-                    "turn_started": "turn_started",
-                }
-                stage = stage_map.get(event)
-                if stage:
-                    details = {
-                        key: data[key]
-                        for key in (
-                            "step_index",
-                            "tool_call_id",
-                            "tool_name",
-                            "prompt_tokens",
-                            "completion_tokens",
-                            "task_id",
-                            "turn_id",
-                            "revision_id",
-                        )
-                        if key in data
-                    }
-                    event_handler({"type": "stage", "stage": stage, "details": details})
+                self._emit_hook_event(event_handler, event, data)
 
             submit_kwargs = {"hook_handler": on_hook}
             submit_kwargs["permission_mode"] = payload.get("permission_mode")
@@ -603,6 +559,32 @@ class LocalRunner:
 
     @staticmethod
     def _emit_hook_event(event_handler, event: str, data: dict) -> None:
+        if event == "assistant_step":
+            tool_calls = data.get("tool_calls") or []
+            if tool_calls:
+                content = str(data.get("content", ""))
+                step_index = int(data.get("step_index", 0) or 0)
+                if content:
+                    event_handler(
+                        {
+                            "type": "work",
+                            "phase": "narrative",
+                            "work_id": f"step-{step_index}-narrative",
+                            "content": content,
+                        }
+                    )
+                for tool_call in tool_calls:
+                    event_handler(
+                        {
+                            "type": "work",
+                            "phase": "planned",
+                            "tool_call_id": str(tool_call.get("id", "")),
+                            "tool_name": str(tool_call.get("name", "")),
+                            "arguments": presentation_tool_arguments(
+                                tool_call.get("arguments")
+                            ),
+                        }
+                    )
         if event in {"before_tool", "after_tool"}:
             work_event = {
                 "type": "work",
@@ -610,11 +592,10 @@ class LocalRunner:
                 "tool_call_id": str(data.get("tool_call_id", "")),
                 "tool_name": str(data.get("tool_name", "")),
             }
-            if event == "before_tool":
-                work_event["arguments"] = presentation_tool_arguments(
-                    data.get("arguments")
-                )
-            else:
+            work_event["arguments"] = presentation_tool_arguments(
+                data.get("arguments")
+            )
+            if event == "after_tool":
                 work_event.update(
                     {
                         "output": str(data.get("result", "")),
@@ -629,6 +610,7 @@ class LocalRunner:
             "before_tool": "tool_started",
             "after_tool": "tool_finished",
             "context_compaction": "context_compacted",
+            "turn_started": "turn_started",
         }
         stage = stage_map.get(event)
         if stage:
@@ -641,6 +623,8 @@ class LocalRunner:
                     "prompt_tokens",
                     "completion_tokens",
                     "task_id",
+                    "turn_id",
+                    "revision_id",
                 )
                 if key in data
             }

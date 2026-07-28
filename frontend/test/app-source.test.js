@@ -66,3 +66,15 @@ test("elapsed timer is isolated from the conversation app state", async () => {
   assert.match(source, /function LiveElapsed\(\{ startedAt \}\)/);
   assert.doesNotMatch(source, /runElapsedMs|setRunElapsedMs/);
 });
+
+test("live narrative stays at the end of the current work timeline", async () => {
+  const source = await readFile(appPath, "utf8");
+  const workBlockStart = source.indexOf("function WorkBlock");
+  const workBlockEnd = source.indexOf("function ChangedFileRow", workBlockStart);
+  const workBlock = source.slice(workBlockStart, workBlockEnd);
+
+  const itemsIndex = workBlock.indexOf("{items.map");
+  const liveTextIndex = workBlock.indexOf("{liveText &&");
+  assert.ok(itemsIndex >= 0, "expected work items in the timeline");
+  assert.ok(liveTextIndex > itemsIndex, "streaming narrative should follow completed work items");
+});

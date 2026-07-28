@@ -75,6 +75,38 @@ test("merges started and completed events using the tool call id", () => {
   assert.equal(completed[0].durationMs, 1250);
 });
 
+test("keeps live narrative and planned tools in model order", () => {
+  const narrative = mergeWorkEvent([], {
+    type: "work",
+    phase: "narrative",
+    work_id: "step-1-narrative",
+    content: "我先检查文件，再删除目标。",
+  });
+  const planned = mergeWorkEvent(narrative, {
+    type: "work",
+    phase: "planned",
+    tool_call_id: "call_1",
+    tool_name: "delete_path",
+    arguments: { path: "zjh.txt" },
+  });
+  const completed = mergeWorkEvent(planned, {
+    type: "work",
+    phase: "completed",
+    tool_call_id: "call_1",
+    tool_name: "delete_path",
+    arguments: { path: "zjh.txt" },
+    output: "Deleted zjh.txt",
+    duration_ms: 20,
+    success: true,
+  });
+
+  assert.deepEqual(completed.map((item) => item.type), ["narrative", "tool"]);
+  assert.equal(completed[0].content, "我先检查文件，再删除目标。");
+  assert.equal(completed[1].toolName, "delete_path");
+  assert.deepEqual(completed[1].arguments, { path: "zjh.txt" });
+  assert.equal(completed[1].status, "completed");
+});
+
 test("formats compact work durations", () => {
   assert.equal(formatDuration(200), "<1s");
   assert.equal(formatDuration(25000), "25s");

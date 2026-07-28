@@ -624,11 +624,6 @@ function WorkBlock({ items, elapsedMs, active = false, liveText = "", stage = ""
         <ChevronDown size={16} />
       </summary>
       <div className="work-content">
-        {liveText && (
-          <div className="work-narrative">
-            <RichText content={liveText} />
-          </div>
-        )}
         {items.map((item) => (
           item.type === "narrative" ? (
             <div className="work-narrative" key={item.id}>
@@ -638,6 +633,11 @@ function WorkBlock({ items, elapsedMs, active = false, liveText = "", stage = ""
             <WorkItem item={item} key={item.id} />
           )
         ))}
+        {liveText && (
+          <div className="work-narrative">
+            <RichText content={liveText} />
+          </div>
+        )}
         {active && !liveText && items.length === 0 && (
           <div className="work-stage">
             <i /><i /><i />
@@ -950,6 +950,7 @@ export default function App() {
   const [deletingSessionId, setDeletingSessionId] = useState("");
   const [status, setStatus] = useState("idle");
   const [streamText, setStreamText] = useState("");
+  const streamTextRef = useRef("");
   const [runStage, setRunStage] = useState("");
   const [liveWork, setLiveWork] = useState([]);
   const [runStartedAt, setRunStartedAt] = useState(0);
@@ -1221,6 +1222,25 @@ export default function App() {
     }
   }
 
+  function resetLiveTimeline() {
+    streamTextRef.current = "";
+    setStreamText("");
+    setLiveWork([]);
+  }
+
+  function appendLiveToken(text) {
+    streamTextRef.current += text || "";
+    setStreamText(streamTextRef.current);
+  }
+
+  function acceptLiveWorkEvent(event) {
+    if (event.phase === "narrative") {
+      streamTextRef.current = "";
+      setStreamText("");
+    }
+    setLiveWork((items) => mergeWorkEvent(items, event));
+  }
+
   function beginEditTurn(turn) {
     setEditingTurnId(turn.id);
     setEditDraft(turn.user?.content || "");
@@ -1245,6 +1265,7 @@ export default function App() {
     setEditBusy(true);
     setBusy(true);
     setStatus("running");
+    streamTextRef.current = "";
     setStreamText("");
     setRunStage("queued");
     setLiveWork([]);
@@ -1252,7 +1273,6 @@ export default function App() {
     setActiveTurnId(turnId);
     try {
       let payload = null;
-      let streamed = "";
       await streamRequest(token, "/api/turn/edit/stream", {
         client_id: clientId,
         workspace_id: selectedWorkspace.workspace_id,
@@ -1265,12 +1285,11 @@ export default function App() {
           : streamEvent.details?.turn_id;
         if (startedTurnId) setActiveTurnId(startedTurnId);
         if (streamEvent.type === "token") {
-          streamed += streamEvent.text || "";
-          setStreamText(streamed);
+          appendLiveToken(streamEvent.text);
         } else if (streamEvent.type === "stage") {
           setRunStage(streamEvent.stage || "");
         } else if (streamEvent.type === "work") {
-          setLiveWork((items) => mergeWorkEvent(items, streamEvent));
+          acceptLiveWorkEvent(streamEvent);
         } else if (streamEvent.type === "result") {
           payload = streamEvent.data;
         } else if (streamEvent.type === "error") {
@@ -1317,6 +1336,7 @@ export default function App() {
     } finally {
       setEditBusy(false);
       setBusy(false);
+      streamTextRef.current = "";
       setStreamText("");
       setRunStage("");
       setLiveWork([]);
@@ -1404,6 +1424,7 @@ export default function App() {
     setAttachments([]);
     setBusy(true);
     setStatus("running");
+    streamTextRef.current = "";
     setStreamText("");
     setRunStage("queued");
     setLiveWork([]);
@@ -1414,7 +1435,6 @@ export default function App() {
         pendingAttachments.map(({ file }) => encodeAttachment(file)),
       );
       let result = null;
-      let streamed = "";
       await streamRequest(
         token,
         "/api/chat/stream",
@@ -1427,16 +1447,13 @@ export default function App() {
         },
         (event) => {
           if (event.type === "turn" && event.phase === "queued_starting") {
-            streamed = "";
-            setStreamText("");
-            setLiveWork([]);
+            resetLiveTimeline();
           } else if (event.type === "token") {
-            streamed += event.text || "";
-            setStreamText(streamed);
+            appendLiveToken(event.text);
           } else if (event.type === "stage") {
             setRunStage(event.stage || "");
           } else if (event.type === "work") {
-            setLiveWork((items) => mergeWorkEvent(items, event));
+            acceptLiveWorkEvent(event);
           } else if (event.type === "result") {
             result = event.data;
             setLastTimings(event.timings || null);
@@ -1499,6 +1516,7 @@ export default function App() {
       if (result.session_id) {
         setActiveSessionId(result.session_id);
       }
+      streamTextRef.current = "";
       setStreamText("");
       setRunStage("");
       setLiveWork([]);
@@ -1521,6 +1539,7 @@ export default function App() {
     } finally {
       setBusy(false);
       setActiveTurnId("");
+      streamTextRef.current = "";
       setStreamText("");
       setRunStage("");
       setLiveWork([]);
@@ -1613,9 +1632,9 @@ export default function App() {
 
   async function continueApprovalBatch(batch) {
     setBusy(true);
+    resetLiveTimeline();
     try {
       let result = null;
-      let streamed = "";
       await streamRequest(token, "/api/turn/continue/stream", {
           client_id: clientId,
           workspace_id: selectedWorkspace.workspace_id,
@@ -1623,12 +1642,11 @@ export default function App() {
           batch_id: batch.batch_id || pending.approval_batch_id,
         }, (event) => {
           if (event.type === "token") {
-            streamed += event.text || "";
-            setStreamText(streamed);
+            appendLiveToken(event.text);
           } else if (event.type === "stage") {
             setRunStage(event.stage || "");
           } else if (event.type === "work") {
-            setLiveWork((items) => mergeWorkEvent(items, event));
+            acceptLiveWorkEvent(event);
           } else if (event.type === "result") {
             result = event.data;
           } else if (event.type === "error") {
@@ -1683,6 +1701,7 @@ export default function App() {
       showToast(error.message);
     } finally {
       setBusy(false);
+      streamTextRef.current = "";
       setStreamText("");
       setRunStage("");
       setLiveWork([]);
@@ -1810,6 +1829,7 @@ export default function App() {
     setChangeActionStates({});
     setPending(null);
     setStatus("idle");
+    streamTextRef.current = "";
     setLiveWork([]);
     setRunStartedAt(0);
     setContextUsage({
