@@ -1,0 +1,95 @@
+.composer-area { padding: 0 24px calc(13px + env(safe-area-inset-bottom)); background: white; }
+.pending-inputs { width: min(900px, 100%); margin: 0 auto 8px; display: grid; gap: 5px; }
+.pending-input {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 10px;
+  border: 1px solid #dfe1ec;
+  border-radius: 11px;
+  color: #686d7d;
+  background: #fafaff;
+  font-size: 10px;
+}
+.pending-input > span { padding: 3px 7px; border-radius: 999px; color: #5559c7; background: var(--primary-soft); font-weight: 750; white-space: nowrap; }
+.pending-input p { min-width: 0; margin: 0; overflow: hidden; color: #3d414d; text-overflow: ellipsis; white-space: nowrap; }
+.pending-input small { color: #8b90a0; white-space: nowrap; }
+.pending-input.pending-failed, .pending-input.pending-rejected { border-color: #f1c9cf; background: #fff8f9; }
+.pending-input.pending-failed small, .pending-input.pending-rejected small { color: var(--danger); }
+.composer { width: min(900px, 100%); margin: 0 auto; padding: 11px 12px 8px 15px; border: 1px solid #dfe1ec; border-radius: 17px; background: white; box-shadow: 0 9px 30px rgba(53, 57, 91, 0.1); }
+.composer:focus-within { border-color: #bfc1ef; box-shadow: 0 9px 30px rgba(53, 57, 91, 0.12), 0 0 0 4px rgba(91, 92, 226, 0.06); }
+.attachment-strip {
+  display: flex;
+  gap: 8px;
+  margin: 0 0 9px;
+  overflow-x: auto;
+  scrollbar-width: thin;
+}
+.attachment-chip {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 30px minmax(60px, 140px) 22px;
+  align-items: center;
+  gap: 7px;
+  padding: 5px 6px;
+  border: 1px solid #e2e3ef;
+  border-radius: 11px;
+  color: #747a90;
+  background: #f8f9fd;
+}
+.attachment-chip img {
+  width: 30px;
+  height: 30px;
+  border-radius: 7px;
+  object-fit: cover;
+}
+.attachment-chip > svg { margin: 7px; color: var(--primary); }
+.attachment-chip b {
+  overflow: hidden;
+  font-size: 9px;
+  font-weight: 700;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-chip button {
+  display: grid;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  place-items: center;
+  border: 0;
+  border-radius: 7px;
+  color: #9ba0b2;
+  background: transparent;
+  cursor: pointer;
+}
+.attachment-chip button:hover { color: var(--danger); background: #fff0f3; }
+.composer textarea { width: 100%; min-height: 39px; max-height: 130px; resize: none; border: 0; outline: 0; color: var(--text); background: transparent; font-size: 13px; line-height: 1.55; }
+.composer textarea::placeholder { color: #a8adbd; }
+.composer-bottom { display: flex; align-items: center; justify-content: space-between; }
+.composer-bottom span { display: inline-flex; align-items: center; gap: 6px; color: #9ba0b2; font-size: 9px; }
+.composer-bottom button { display: grid; width: 36px; height: 36px; place-items: center; border: 0; border-radius: 11px; color: white; background: var(--primary); cursor: pointer; }
+.composer-bottom button:disabled { color: #b3b7c7; background: #eceef3; cursor: not-allowed; }
+.composer-bottom .delivery-mode { display: inline-flex; gap: 3px; padding: 3px; border-radius: 9px; background: #f0f1f5; }
+.composer-bottom .delivery-mode button { width: auto; height: 29px; padding: 0 9px; border-radius: 7px; color: #777c8d; background: transparent; font-size: 9px; font-weight: 750; }
+.composer-bottom .delivery-mode button.active { color: #5559c7; background: white; box-shadow: 0 1px 4px rgba(53, 57, 91, 0.12); }
+.permission-mode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: #74798a;
+}
+.permission-mode select {
+  border: 0;
+  outline: 0;
+  color: #666b7c;
+  background: transparent;
+  cursor: pointer;
+  font: 750 10px/1.2 inherit;
+}
+.permission-mode:focus-within { color: var(--primary); }
+.composer-actions { display: flex; align-items: center; gap: 5px; }
+.composer-bottom .attach-button { color: #777d93; background: transparent; }
+.composer-bottom .attach-button:hover:not(:disabled) { color: var(--primary); background: var(--primary-soft); }
+.composer-area > p { margin: 7px 0 0; color: #adb1bf; text-align: center; font-size: 8px; }

@@ -1,0 +1,84 @@
+:root {
+  font-family:
+    Inter, "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei",
+    system-ui, sans-serif;
+  color: #202335;
+  background: #f4f6fb;
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  --primary: #5b5ce2;
+  --primary-dark: #4546c7;
+  --primary-soft: #eeeeff;
+  --mint: #37b98b;
+  --danger: #e85f75;
+  --text: #202335;
+  --muted: #7e849c;
+  --line: #e7e9f2;
+  --surface: #ffffff;
+  --soft: #f7f8fc;
+  --shadow: 0 24px 70px rgba(69, 71, 111, 0.13);
+}
+
+* { box-sizing: border-box; }
+html, body, #root { min-height: 100%; }
+body { margin: 0; min-width: 320px; background: #f4f6fb; }
+button, input, textarea { font: inherit; }
+button { color: inherit; }
+button:focus-visible, input:focus-visible, textarea:focus-visible {
+  outline: 3px solid rgba(91, 92, 226, 0.2);
+  outline-offset: 2px;
+}
+
+.spin { animation: spin 0.9s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.logo-mark {
+  display: grid;
+  width: 42px;
+  height: 42px;
+  place-items: center;
+  border-radius: 14px;
+  color: white;
+  background: linear-gradient(145deg, #7374ee, #4f50d1);
+  box-shadow: 0 10px 26px rgba(91, 92, 226, 0.28);
+}
+
+.overline {
+  display: block;
+  color: var(--primary);
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.15em;
+}
+
+.icon-button {
+  display: grid;
+  width: 40px;
+  height: 40px;
+  padding: 0;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  color: #666c83;
+  background: white;
+  cursor: pointer;
+}
+.icon-button:hover { color: var(--primary); border-color: #d7d8f7; background: #fafaff; }
+
+.primary-action {
+  display: inline-flex;
+  min-height: 44px;
+  align-items: center;
+  justify-content: center;
+  gap: 9px;
+  padding: 0 18px;
+  border: 0;
+  border-radius: 13px;
+  color: white;
+  background: linear-gradient(135deg, #6768e9, #5051d3);
+  box-shadow: 0 12px 28px rgba(91, 92, 226, 0.24);
+  font-weight: 750;
+  cursor: pointer;
+}
+.primary-action:hover { transform: translateY(-1px); box-shadow: 0 15px 32px rgba(91, 92, 226, 0.3); }
+.primary-action:disabled { opacity: 0.55; cursor: not-allowed; transform: none; }
