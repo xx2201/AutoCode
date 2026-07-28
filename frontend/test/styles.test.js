@@ -5,11 +5,19 @@ import test from "node:test";
 const styles = readFileSync(new URL("../src/styles.css", import.meta.url), "utf8");
 
 test("assistant prose inherits the Codex-style answer typography", () => {
-  const rule = styles.match(/\.turn-answer \.rich-text p\s*\{([^}]*)\}/)?.[1];
+  const rule = styles.match(/\.turn-answer \.rich-text\s*\{([^}]*)\}/)?.[1];
 
   assert.ok(rule, "expected a dedicated assistant prose rule");
   assert.match(rule, /font-size:\s*inherit/);
   assert.match(rule, /line-height:\s*inherit/);
+});
+
+test("Markdown headings, lists, tables, quotes, and inline code have semantic styles", () => {
+  assert.match(styles, /\.rich-text h1,/);
+  assert.match(styles, /\.rich-text ul,/);
+  assert.match(styles, /\.rich-text blockquote\s*\{/);
+  assert.match(styles, /\.rich-text :not\(pre\) > code\s*\{/);
+  assert.match(styles, /\.rich-text table\s*\{/);
 });
 
 test("markdown code blocks render as light inline work instead of a dark panel", () => {

@@ -41,6 +41,7 @@ import {
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import FilePanel from "./FilePanel";
 import GitPanel from "./GitPanel";
+import RichText from "./markdown";
 import { approvalPresentation } from "./approval";
 import {
   createPendingInput,
@@ -296,35 +297,6 @@ async function encodeAttachment(file) {
     media_type: file.type || "application/octet-stream",
     data_base64: window.btoa(binary),
   };
-}
-
-function RichText({ content }) {
-  const blocks = String(content || "").split("```");
-  return (
-    <div className="rich-text">
-      {blocks.map((block, index) =>
-        index % 2 ? (
-          <pre key={`${index}-${block.slice(0, 12)}`}>
-            <code>{block.replace(/^[a-zA-Z0-9_+-]+\n/, "")}</code>
-          </pre>
-        ) : (
-          block
-            .split(/\n{2,}/)
-            .filter(Boolean)
-            .map((paragraph, paragraphIndex) => (
-              <p key={`${index}-${paragraphIndex}`}>
-                {paragraph.split("\n").map((line, lineIndex) => (
-                  <span key={`${lineIndex}-${line.slice(0, 8)}`}>
-                    {line}
-                    {lineIndex < paragraph.split("\n").length - 1 && <br />}
-                  </span>
-                ))}
-              </p>
-            ))
-        ),
-      )}
-    </div>
-  );
 }
 
 function ProjectPicker({ open, workspaces, onSelect, onClose, onRefresh, required }) {

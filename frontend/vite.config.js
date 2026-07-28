@@ -9,5 +9,12 @@ export default defineConfig({
     outDir: fileURLToPath(new URL("../autocode/web/static", import.meta.url)),
     assetsDir: ".",
     emptyOutDir: true,
+    rollupOptions: {
+      output: {
+        manualChunks: {
+          "markdown-vendor": ["react-markdown", "remark-gfm"],
+        },
+      },
+    },
   },
 });
