@@ -40,20 +40,24 @@ def test_sandbox_decodes_utf8_subprocess_output(tmp_path, monkeypatch):
 
     class _Proc:
         returncode = 0
-        stdout = "hello 世界".encode("utf-8")
-        stderr = b""
 
-    def _fake_run(*args, **kwargs):
+        @staticmethod
+        def communicate(timeout=None):
+            captured["timeout"] = timeout
+            return "hello 世界".encode("utf-8"), b""
+
+    def _fake_popen(*args, **kwargs):
         captured.update(kwargs)
         return _Proc()
 
-    monkeypatch.setattr(sandbox_module.subprocess, "run", _fake_run)
+    monkeypatch.setattr(sandbox_module.subprocess, "Popen", _fake_popen)
 
     result = Sandbox(str(tmp_path)).run("python -c \"print('hello')\"")
     assert result.output == "hello 世界"
     assert "text" not in captured
     assert "encoding" not in captured
     assert "errors" not in captured
+    assert captured["timeout"] == 120
 
 
 def test_decode_output_falls_back_to_gb18030():

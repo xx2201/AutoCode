@@ -626,7 +626,9 @@ class RemoteManager:
 
     def current_task_summary(self, chat_id: Hashable) -> str:
         runtime = self._require_runtime(chat_id)
-        with runtime.lock:
+        if not runtime.lock.acquire(blocking=False):
+            return "Current task is still running; detailed status is temporarily unavailable."
+        try:
             agent = runtime.agent
             if agent.session_state is None:
                 return "No active session."
@@ -649,6 +651,8 @@ class RemoteManager:
                 f"Steps: {task.step_index}\n"
                 f"Permission mode: {agent.policy.permission_mode}{suffix}"
             )
+        finally:
+            runtime.lock.release()
 
     def current_trace(self, chat_id: Hashable) -> str:
         runtime = self._require_runtime(chat_id)

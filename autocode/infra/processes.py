@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import re
-import signal
 import subprocess
 import threading
 import time
@@ -13,6 +11,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .filesystem import WorkspaceFS
+from .process_control import process_group_options, terminate_process_tree
 from .sandbox import Sandbox, decode_output
 
 _SAFE_PROCESS_RE = re.compile(r"[^A-Za-z0-9._-]+")
@@ -60,10 +59,8 @@ class BackgroundProcessManager:
             "stdout": log_handle,
             "stderr": subprocess.STDOUT,
             "env": Sandbox._build_env(),
-            "start_new_session": True,
+            **process_group_options(),
         }
-        if hasattr(subprocess, "CREATE_NEW_PROCESS_GROUP"):
-            popen_kwargs["creationflags"] = subprocess.CREATE_NEW_PROCESS_GROUP
 
         proc = subprocess.Popen(command, **popen_kwargs)
         meta = BackgroundProcess(
@@ -143,36 +140,7 @@ class BackgroundProcessManager:
         return stopped
 
     def _terminate_process_tree(self, proc: subprocess.Popen) -> None:
-        if proc.poll() is not None:
-            return
-
-        if os.name == "nt":
-            completed = subprocess.run(
-                ["taskkill", "/PID", str(proc.pid), "/T", "/F"],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                env=Sandbox._build_env(),
-            )
-            if completed.returncode == 0:
-                try:
-                    proc.wait(timeout=5)
-                except subprocess.TimeoutExpired:
-                    pass
-                return
-
-            if proc.poll() is None:
-                proc.kill()
-                proc.wait(timeout=5)
-            return
-
-        try:
-            os.killpg(proc.pid, signal.SIGTERM)
-            proc.wait(timeout=5)
-        except ProcessLookupError:
-            return
-        except subprocess.TimeoutExpired:
-            os.killpg(proc.pid, signal.SIGKILL)
-            proc.wait(timeout=5)
+        terminate_process_tree(proc, env=Sandbox._build_env())
 
     def _resolve_log_path(self, log_file: str | None, process_id: str) -> Path:
         if log_file:
