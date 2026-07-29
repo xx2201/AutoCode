@@ -22,6 +22,10 @@ const sourcePaths = {
     "../src/features/conversation/ConversationPane.jsx",
     import.meta.url,
   ),
+  workspaceBootstrap: new URL(
+    "../src/features/workspaces/useWorkspaceBootstrap.js",
+    import.meta.url,
+  ),
   sessions: new URL(
     "../src/features/sessions/SessionPanel.jsx",
     import.meta.url,
@@ -116,15 +120,34 @@ test("workspace initialization restores only a session from the current page", a
 test("page session restoration renders loading before the welcome screen", async () => {
   const { app, conversationPane } = await readSources();
   const restoreBranch = conversationPane.indexOf("sessionRestoring ? (");
+  const emptyWorkspaceBranch = conversationPane.indexOf("!selectedWorkspace ? (");
   const welcomeBranch = conversationPane.indexOf("messages.length === 0 ? (");
   const initializeStart = app.indexOf("async function initializeWorkspace");
   const initializeEnd = app.indexOf("initializeWorkspace();", initializeStart);
   const initializeWorkspace = app.slice(initializeStart, initializeEnd);
 
   assert.ok(restoreBranch >= 0, "expected a page-session restoring branch");
+  assert.ok(
+    restoreBranch < emptyWorkspaceBranch,
+    "restore loading must remain visible while workspace bootstrap is pending",
+  );
   assert.ok(restoreBranch < welcomeBranch, "restore loading must precede welcome");
   assert.match(initializeWorkspace, /setPageSessionRestoring\(Boolean\(pageSessionId\)\)/);
   assert.match(conversationPane, /正在恢复历史会话/);
+});
+
+test("saved-token bootstrap completes before the workbench becomes ready", async () => {
+  const { workspaceBootstrap } = await readSources();
+  const verifyStart = workspaceBootstrap.indexOf("async function verifySavedToken");
+  const verifyEnd = workspaceBootstrap.indexOf("verifySavedToken();", verifyStart);
+  const verifySavedToken = workspaceBootstrap.slice(verifyStart, verifyEnd);
+
+  assert.ok(verifyStart >= 0, "expected saved-token bootstrap flow");
+  assert.ok(
+    verifySavedToken.indexOf("await loadBootstrap(token)")
+      < verifySavedToken.indexOf('setAuthState("ready")'),
+    "workbench must not render before its workspace bootstrap finishes",
+  );
 });
 
 test("elapsed timer and live narrative ordering live in the conversation feature", async () => {

@@ -36,7 +36,14 @@ export default function ConversationPane({
   return (
     <section className="conversation">
       <div className="conversation-inner">
-        {!selectedWorkspace ? (
+        {sessionRestoring ? (
+          <div className="session-restore-screen" role="status">
+            <RefreshCw className="spin" size={24} />
+            <span className="overline">SESSION HISTORY</span>
+            <h1>正在恢复历史会话</h1>
+            <p>正在加载消息、工具记录和任务状态…</p>
+          </div>
+        ) : !selectedWorkspace ? (
           <div className="select-project-empty">
             <FolderGit2 size={36} />
             <h1>先打开一个本机项目</h1>
@@ -44,13 +51,6 @@ export default function ConversationPane({
             <button className="primary-action" type="button" onClick={onOpenProjects}>
               <Folder size={18} /> 选择项目
             </button>
-          </div>
-        ) : sessionRestoring ? (
-          <div className="session-restore-screen" role="status">
-            <RefreshCw className="spin" size={24} />
-            <span className="overline">SESSION HISTORY</span>
-            <h1>正在恢复历史会话</h1>
-            <p>正在加载消息、工具记录和任务状态…</p>
           </div>
         ) : messages.length === 0 ? (
           <Welcome workspace={selectedWorkspace} onPrompt={onSubmit} />
