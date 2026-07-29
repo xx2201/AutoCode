@@ -122,11 +122,20 @@ test("page session restoration renders loading before the welcome screen", async
   const restoreBranch = conversationPane.indexOf("sessionRestoring ? (");
   const emptyWorkspaceBranch = conversationPane.indexOf("!selectedWorkspace ? (");
   const welcomeBranch = conversationPane.indexOf("messages.length === 0 ? (");
+  const conversationStart = app.indexOf("<ConversationPane");
+  const conversationEnd = app.indexOf("/>", conversationStart);
+  const conversationProps = app.slice(conversationStart, conversationEnd);
   const initializeStart = app.indexOf("async function initializeWorkspace");
   const initializeEnd = app.indexOf("initializeWorkspace();", initializeStart);
   const initializeWorkspace = app.slice(initializeStart, initializeEnd);
 
   assert.ok(restoreBranch >= 0, "expected a page-session restoring branch");
+  assert.ok(conversationStart >= 0, "expected ConversationPane rendering");
+  assert.match(
+    conversationProps,
+    /sessionRestoring=\{pageSessionRestoring\}/,
+    "App must pass page restore state into the conversation view",
+  );
   assert.ok(
     restoreBranch < emptyWorkspaceBranch,
     "restore loading must remain visible while workspace bootstrap is pending",

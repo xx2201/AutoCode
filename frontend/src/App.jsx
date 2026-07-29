@@ -876,6 +876,7 @@ export default function App() {
         />
         <ConversationPane
           selectedWorkspace={selectedWorkspace}
+          sessionRestoring={pageSessionRestoring}
           turns={conversationTurns}
           messages={messages}
           busy={busy}
