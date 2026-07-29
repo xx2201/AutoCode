@@ -269,15 +269,25 @@ under `~/.autocode`:
 ├── workspaces.json
 ├── logs/
 └── sessions/
-    └── <session_id>/
-        ├── checkpoint.json
-        ├── session.json
-        ├── current_task.json
-        ├── transcript.jsonl
-        ├── audit.jsonl
-        └── trace.json
+    ├── projects/
+    │   └── G--mycode-AutoCoder/
+    │       ├── project.json
+    │       └── sessions/
+    │           └── <session_id>/
+    │               ├── checkpoint.json
+    │               ├── session.json
+    │               ├── current_task.json
+    │               ├── transcript.jsonl
+    │               ├── audit.jsonl
+    │               └── trace.json
+    └── .session-locations/
+        └── <session_id>.json
 ```
 
+- `projects/<readable-workspace-path>/` physically isolates full sessions by
+  normalized workspace. For example, `G:/mycode/AutoCoder` is stored under
+  `G--mycode-AutoCoder/`; a short hash is added only if two expanded names collide.
+- `.session-locations/` stores only the location pointer used to resume by `session_id`.
 - `checkpoint.json` stores recoverable agent state.
 - `session.json` stores session summary metadata.
 - `transcript.jsonl` is the complete ordered conversation record.

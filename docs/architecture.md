@@ -64,7 +64,12 @@ flowchart LR
 
 ## 4. 状态与日志取舍
 
-会话状态默认位于 `~/.autocode/sessions/<session_id>/`。
+会话状态默认位于
+`~/.autocode/sessions/projects/<可读项目路径>/sessions/<session_id>/`。
+项目目录采用与 Claude Code 相同思路的路径展开形式，例如
+`G:/mycode/AutoCoder` 对应 `G--mycode-AutoCoder`；只有展开名称发生冲突时才追加短哈希。全局
+`.session-locations/<session_id>.json` 只保存恢复会话所需的位置指针。
+Runner 启动时会把旧版根目录下的 Session 原子迁移到项目分区。
 
 | 文件 | 当前用途 | 决策 |
 | --- | --- | --- |

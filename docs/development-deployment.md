@@ -23,6 +23,38 @@ The systemd service runs as `dev:dev` and uses:
 └── workspace/
 ```
 
+The local Runner stores complete session data in workspace partitions:
+
+```text
+~/.autocode/sessions/
+├── projects/
+│   └── <sha256-normalized-workspace>/
+│       ├── project.json
+│       └── sessions/
+│           └── <session-id>/
+├── .session-locations/
+│   └── <session-id>.json
+└── .layout.json
+```
+
+`.session-locations` contains only small location pointers for APIs that resume
+a session by id. Checkpoints, transcripts, traces, audit logs, and ChangeSets
+live below the owning project directory.
+
+Runner startup moves legacy root-level session directories into this layout
+before connecting to the Relay. Migration uses same-volume atomic directory
+moves, is safe to rerun after interruption, and removes the obsolete
+`.workspace-index` only after every legacy session has moved.
+
+Before downgrading to a release that predates project-partitioned storage, stop
+the Runner and restore the legacy layout while the current release remains
+installed:
+
+```powershell
+& "G:/mycode/AutoCoder/.venv/Scripts/python.exe" -c `
+  "from autocode.state import restore_flat_session_layout; print(restore_flat_session_layout())"
+```
+
 The installed service configuration is represented by
 `deploy/corecoder-web.service`:
 
@@ -188,6 +220,14 @@ then restart and repeat the verification checks.
 发布过程中不得覆盖。Runner 代码发生变化时，还需要重启 Windows 计划任务
 `AutoCodeLocalWebRunner`。部署完成后必须同时检查 systemd 状态、公网页面
 资产、健康接口中的 `runner_connected`，以及 Runner heartbeat/轮询日志。
+
+本机完整 Session 已按 workspace 物理分区存放在
+`~/.autocode/sessions/projects/<可读项目路径>/sessions/`，例如
+`G:/mycode/AutoCoder` 对应 `G--mycode-AutoCoder`。全局
+`.session-locations` 只保存通过 `session_id` 恢复会话所需的位置指针，不保存
+消息正文。Runner 启动时会先把旧版根目录下的 Session 原子移动到项目目录，
+完成后才连接 Relay；迁移可中断后重跑。若要降级到不认识新布局的旧版本，
+必须先停止 Runner，并使用上方 `restore_flat_session_layout` 命令恢复旧布局。
 
 开发机公网 IP 证书由 `/opt/certbot` 中的 Certbot 管理。系统定时器
 `certbot-autocode-renew.timer` 每天检查两次；续期成功后，

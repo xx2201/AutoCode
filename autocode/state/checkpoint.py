@@ -1,6 +1,5 @@
 """Checkpoint persistence for in-flight sessions."""
 
-import hashlib
 import json
 import os
 import re
@@ -11,6 +10,7 @@ import uuid
 from pathlib import Path
 
 from .model import SessionState
+from .session_layout import SessionLayout
 from ..message_content import content_text
 
 SESSIONS_DIR = Path(
@@ -20,9 +20,7 @@ _SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _SAFE_TASK_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _CHECKPOINT_CACHE: dict[Path, tuple[int, int, dict]] = {}
 _CHECKPOINT_CACHE_LOCK = threading.Lock()
-_SESSION_INDEX_LOCK = threading.RLock()
 _TURN_QUEUE_LOCK = threading.Lock()
-_SESSION_INDEX_VERSION = 1
 
 
 def new_session_id() -> str:
@@ -41,30 +39,37 @@ def _normalize_name(value: str, pattern: re.Pattern[str]) -> str:
 
 
 def session_dir(session_id: str) -> Path:
-    root = SESSIONS_DIR.resolve()
-    target = (root / _normalize_name(session_id, _SAFE_SESSION_RE)).resolve()
-    if target.parent != root:
-        raise ValueError("Invalid session id")
-    return target
+    return _session_layout().resolve_session(
+        _normalize_name(session_id, _SAFE_SESSION_RE)
+    )
 
 
 def _normalize_workspace_root(workspace_root: str | None) -> str:
     if not workspace_root:
         return ""
     try:
-        return Path(workspace_root).expanduser().resolve().as_posix().lower()
+        return Path(workspace_root).expanduser().resolve().as_posix()
     except OSError:
-        return Path(workspace_root).expanduser().as_posix().lower()
+        return Path(workspace_root).expanduser().as_posix()
+
+
+def _workspace_identity(workspace_root: str | None) -> str:
+    normalized = _normalize_workspace_root(workspace_root)
+    return normalized.casefold() if os.name == "nt" else normalized
 
 
 def save_checkpoint(session_state: SessionState, messages: list[dict], model: str, workspace_root: str):
-    directory = session_dir(session_state.session_id)
+    normalized_workspace = _normalize_workspace_root(workspace_root)
+    directory = _session_layout().assign_session(
+        _normalize_name(session_state.session_id, _SAFE_SESSION_RE),
+        normalized_workspace,
+    )
     directory.mkdir(parents=True, exist_ok=True)
     payload = {
         "session": session_state.to_dict(),
         "messages": messages,
         "model": model,
-        "workspace_root": _normalize_workspace_root(workspace_root),
+        "workspace_root": normalized_workspace,
         "transcript_file": "transcript.jsonl",
         "saved_at": time.strftime("%Y-%m-%d %H:%M:%S"),
     }
@@ -76,7 +81,6 @@ def save_checkpoint(session_state: SessionState, messages: list[dict], model: st
     stat = path.stat()
     with _CHECKPOINT_CACHE_LOCK:
         _CHECKPOINT_CACHE[path] = (stat.st_mtime_ns, stat.st_size, payload)
-    _upsert_workspace_index(_session_summary(payload, directory.name))
 
 
 def save_turn_queue(session_id: str, queued_inputs: list[dict]) -> None:
@@ -128,27 +132,21 @@ def list_sessions(workspace_root: str | None = None, limit: int = 20) -> list[di
 
     workspace_filter = _normalize_workspace_root(workspace_root)
     if workspace_filter:
-        with _SESSION_INDEX_LOCK:
-            entries = list(_load_workspace_index(workspace_filter).values())
-        return sorted(entries, key=lambda item: item["session_id"], reverse=True)[:limit]
+        directories = _session_layout().workspace_session_directories(workspace_filter)
+        return _scan_session_directories(directories)[:limit]
 
-    return _scan_sessions()[:limit]
+    return _scan_session_directories(
+        _session_layout().all_session_directories()
+    )[:limit]
 
 
-def _scan_sessions(workspace_filter: str = "") -> list[dict]:
+def _scan_session_directories(directories: list[Path]) -> list[dict]:
     entries = []
-    for directory in sorted(SESSIONS_DIR.iterdir(), reverse=True):
-        if not directory.is_dir():
-            continue
+    for directory in sorted(directories, key=lambda item: item.name, reverse=True):
         path = directory / "checkpoint.json"
-        if not path.exists():
-            continue
         try:
             data = _read_cached_json(path)
             entry = _session_summary(data, directory.name)
-            item_workspace = entry["workspace_root"]
-            if workspace_filter and item_workspace != workspace_filter:
-                continue
             entries.append(entry)
         except (UnicodeDecodeError, json.JSONDecodeError, KeyError):
             continue
@@ -164,14 +162,18 @@ def delete_session(session_id: str, workspace_root: str) -> None:
     data = _read_cached_json(path)
     expected_workspace = _normalize_workspace_root(workspace_root)
     actual_workspace = _normalize_workspace_root(data.get("workspace_root", ""))
-    if not expected_workspace or actual_workspace != expected_workspace:
+    if (
+        not expected_workspace
+        or _workspace_identity(actual_workspace)
+        != _workspace_identity(expected_workspace)
+    ):
         raise ValueError(f"Session '{session_id}' is not available for this workspace.")
     shutil.rmtree(directory)
     with _CHECKPOINT_CACHE_LOCK:
         stale_paths = [cached_path for cached_path in _CHECKPOINT_CACHE if directory in cached_path.parents]
         for cached_path in stale_paths:
             _CHECKPOINT_CACHE.pop(cached_path, None)
-    _remove_from_workspace_index(actual_workspace, session_id)
+    _session_layout().remove_location(session_id)
 
 
 def _session_summary(data: dict, fallback_session_id: str) -> dict:
@@ -193,103 +195,18 @@ def _session_summary(data: dict, fallback_session_id: str) -> dict:
     }
 
 
-def _workspace_index_dir(workspace_root: str) -> Path:
-    digest = hashlib.sha256(workspace_root.encode("utf-8")).hexdigest()
-    return SESSIONS_DIR / ".workspace-index" / digest
+def restore_flat_session_layout() -> int:
+    """Restore legacy root-level directories before downgrading AutoCode."""
+    return _session_layout().restore_flat()
 
 
-def _workspace_index_entry_path(workspace_root: str, session_id: str) -> Path:
-    name = _normalize_name(session_id, _SAFE_SESSION_RE)
-    return _workspace_index_dir(workspace_root) / f"{name}.json"
+def migrate_session_storage() -> int:
+    """Upgrade legacy root-level sessions to project-partitioned storage."""
+    return _session_layout().ensure_migrated()
 
 
-def _load_workspace_index(workspace_root: str) -> dict[str, dict]:
-    directory = _workspace_index_dir(workspace_root)
-    ready_path = directory / ".ready"
-    try:
-        ready = _read_json(ready_path)
-        if ready != {
-            "version": _SESSION_INDEX_VERSION,
-            "workspace_root": workspace_root,
-        }:
-            raise ValueError("Session index marker mismatch")
-        sessions = {}
-        for path in directory.glob("*.json"):
-            entry = _read_json(path)
-            session_id = str(entry.get("session_id", ""))
-            if (
-                not session_id
-                or entry.get("workspace_root") != workspace_root
-                or _workspace_index_entry_path(workspace_root, session_id) != path
-            ):
-                raise ValueError("Invalid session index entry")
-            if not (session_dir(session_id) / "checkpoint.json").exists():
-                path.unlink(missing_ok=True)
-                continue
-            sessions[session_id] = entry
-        return sessions
-    except (OSError, UnicodeDecodeError, json.JSONDecodeError, ValueError):
-        return _rebuild_workspace_index(workspace_root)
-
-
-def _rebuild_workspace_index(workspace_root: str) -> dict[str, dict]:
-    sessions = {
-        entry["session_id"]: entry
-        for entry in _scan_sessions(workspace_root)
-    }
-    directory = _workspace_index_dir(workspace_root)
-    directory.mkdir(parents=True, exist_ok=True)
-    expected_paths = {
-        _workspace_index_entry_path(workspace_root, session_id)
-        for session_id in sessions
-    }
-    for path in directory.glob("*.json"):
-        if path not in expected_paths:
-            path.unlink(missing_ok=True)
-    for entry in sessions.values():
-        _write_workspace_index_entry(entry)
-    _write_json_atomic(
-        directory / ".ready",
-        {
-            "version": _SESSION_INDEX_VERSION,
-            "workspace_root": workspace_root,
-        },
-    )
-    return sessions
-
-
-def _write_json_atomic(path: Path, payload: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    temporary.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-    temporary.replace(path)
-
-
-def _write_workspace_index_entry(entry: dict) -> None:
-    _write_json_atomic(
-        _workspace_index_entry_path(entry["workspace_root"], entry["session_id"]),
-        entry,
-    )
-
-
-def _upsert_workspace_index(entry: dict) -> None:
-    workspace_root = entry["workspace_root"]
-    if not workspace_root:
-        return
-    with _SESSION_INDEX_LOCK:
-        _load_workspace_index(workspace_root)
-        _write_workspace_index_entry(entry)
-
-
-def _remove_from_workspace_index(workspace_root: str, session_id: str) -> None:
-    if not workspace_root:
-        return
-    with _SESSION_INDEX_LOCK:
-        _load_workspace_index(workspace_root)
-        _workspace_index_entry_path(workspace_root, session_id).unlink(missing_ok=True)
+def _session_layout() -> SessionLayout:
+    return SessionLayout(SESSIONS_DIR)
 
 
 def _first_user_title(messages: list[dict], max_length: int = 120) -> str:

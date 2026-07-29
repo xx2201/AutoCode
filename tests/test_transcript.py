@@ -83,9 +83,9 @@ def test_checkpoint_and_task_record_publish_transcript_file(tmp_path, monkeypatc
     assert reply == "done"
     assert agent.task_state is not None
 
-    checkpoint = tmp_path.joinpath(f"{agent.session_state.session_id}/checkpoint.json").read_text(encoding="utf-8")
-    session_record = tmp_path.joinpath(f"{agent.session_state.session_id}/session.json").read_text(encoding="utf-8")
-    session_dir = tmp_path / agent.session_state.session_id
+    session_dir = checkpoint_module.session_dir(agent.session_state.session_id)
+    checkpoint = session_dir.joinpath("checkpoint.json").read_text(encoding="utf-8")
+    session_record = session_dir.joinpath("session.json").read_text(encoding="utf-8")
 
     assert '"transcript_file": "transcript.jsonl"' in checkpoint
     assert '"transcript_file": "transcript.jsonl"' in session_record

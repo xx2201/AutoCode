@@ -249,15 +249,24 @@ AutoCoder 当前不依赖数据库，本地状态保存在 `~/.autocode`：
 ├── workspaces.json
 ├── logs/
 └── sessions/
-    └── <session_id>/
-        ├── checkpoint.json
-        ├── session.json
-        ├── current_task.json
-        ├── transcript.jsonl
-        ├── audit.jsonl
-        └── trace.json
+    ├── projects/
+    │   └── G--mycode-AutoCoder/
+    │       ├── project.json
+    │       └── sessions/
+    │           └── <session_id>/
+    │               ├── checkpoint.json
+    │               ├── session.json
+    │               ├── current_task.json
+    │               ├── transcript.jsonl
+    │               ├── audit.jsonl
+    │               └── trace.json
+    └── .session-locations/
+        └── <session_id>.json
 ```
 
+- `projects/<可读项目路径>/`：按规范化 workspace 路径物理隔离完整会话，例如
+  `G:/mycode/AutoCoder` 保存到 `G--mycode-AutoCoder/`；仅在名称冲突时追加短哈希。
+- `.session-locations/`：只保存通过 `session_id` 恢复会话的位置指针。
 - `checkpoint.json`：用于恢复 Agent 的当前状态。
 - `session.json`：会话摘要和元数据。
 - `transcript.jsonl`：按顺序保存的完整对话记录。

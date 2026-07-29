@@ -1,6 +1,18 @@
 """Session and current-task persistence package."""
 
-from .checkpoint import delete_session, list_sessions, load_checkpoint, load_turn_queue, new_session_id, new_task_id, save_checkpoint, save_turn_queue, session_dir
+from .checkpoint import (
+    delete_session,
+    list_sessions,
+    load_checkpoint,
+    load_turn_queue,
+    migrate_session_storage,
+    new_session_id,
+    new_task_id,
+    restore_flat_session_layout,
+    save_checkpoint,
+    save_turn_queue,
+    session_dir,
+)
 from .journal import AuditLogger, load_events
 from .model import PendingApproval, PendingToolBatch, PolicyDecision, SessionState, TaskState
 from .store import SessionStore
@@ -29,10 +41,12 @@ __all__ = [
     "load_transcript_entries",
     "load_transcript_messages",
     "load_trace",
+    "migrate_session_storage",
     "new_session_id",
     "new_message_id",
     "new_revision_id",
     "new_task_id",
+    "restore_flat_session_layout",
     "save_checkpoint",
     "save_turn_queue",
     "session_dir",

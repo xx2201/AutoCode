@@ -30,6 +30,7 @@ from ..state.changes import (
     ChangeSetStore,
     ChangeSetUnavailableError,
 )
+from ..state.checkpoint import migrate_session_storage
 from ..tools.factory import build_agent_tools
 from ..workspaces import WorkspaceRegistry
 from .files import WebFileStore, WebSendTool, WorkspaceFileBrowser
@@ -914,6 +915,15 @@ class _RunnerEventPublisher:
 
 def main() -> None:
     settings = load_runner_settings()
+    migration_started = time.perf_counter()
+    migrated_sessions = migrate_session_storage()
+    if migrated_sessions:
+        migration_ms = (time.perf_counter() - migration_started) * 1000
+        print(
+            f"Migrated {migrated_sessions} sessions into project storage "
+            f"in {migration_ms:.1f}ms",
+            flush=True,
+        )
     runner = LocalRunner(settings)
 
     def stop_runner(*_: object) -> None:

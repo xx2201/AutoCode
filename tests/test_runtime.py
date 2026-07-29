@@ -514,7 +514,9 @@ def test_agent_reuses_same_session_id_and_rotates_current_task_after_completion(
     assert agent.session_state.session_id == first_session_id
     assert agent.task_state.task_id != first_task_id
 
-    checkpoint = tmp_path.joinpath(f"{first_session_id}/checkpoint.json").read_text(encoding="utf-8")
+    checkpoint = checkpoint_module.session_dir(first_session_id).joinpath(
+        "checkpoint.json"
+    ).read_text(encoding="utf-8")
     assert '"content": "first prompt"' in checkpoint
     assert '"content": "second prompt"' in checkpoint
 
