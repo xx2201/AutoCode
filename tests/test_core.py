@@ -6,6 +6,7 @@ import pathlib
 from autocode import Agent, LLM, Config, ALL_TOOLS, __version__
 from autocode.context import CompressionResult, ContextManager, MemoryManager, estimate_tokens
 from autocode.llm import LLMResponse
+from autocode.state import SessionState
 from autocode.tools import get_tool
 
 
@@ -248,7 +249,8 @@ def test_agent_passes_last_real_prompt_tokens_into_compression(tmp_path):
             self.total_cache_miss_tokens = 0
 
     agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
-    agent._last_prompt_tokens = 4321
+    agent.messages = [{"role": "user", "content": "prompt"}]
+    agent._record_prompt_usage(4321)
     captured = {}
 
     def _fake_maybe_compress(messages, llm=None, last_prompt_tokens=0):
@@ -278,7 +280,7 @@ def test_agent_context_usage_prefers_real_prompt_and_caps_at_window(tmp_path):
         max_context_tokens=10_000,
     )
     agent.messages = [{"role": "user", "content": "short"}]
-    agent._last_prompt_tokens = 4_321
+    agent._record_prompt_usage(4_321)
 
     usage = agent.context_usage()
 
@@ -289,9 +291,61 @@ def test_agent_context_usage_prefers_real_prompt_and_caps_at_window(tmp_path):
         "used_percent": 43.2,
     }
 
-    agent._last_prompt_tokens = 20_000
+    agent._record_prompt_usage(20_000)
     assert agent.context_usage()["used_tokens"] == 10_000
     assert agent.context_usage()["used_percent"] == 100.0
+
+
+def test_agent_context_usage_drops_stale_real_usage_after_history_rewrite(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+
+    agent = Agent(
+        llm=_NoopLLM(),
+        workspace_root=str(tmp_path),
+        max_context_tokens=10_000,
+    )
+    agent.messages = [{"role": "user", "content": "original"}]
+    agent._record_prompt_usage(8_000)
+    assert agent.context_usage()["used_tokens"] == 8_000
+
+    agent.messages[0]["content"] = "rewritten"
+
+    assert agent.context_usage()["used_tokens"] == estimate_tokens(agent.messages)
+
+
+def test_agent_context_usage_keeps_real_usage_for_an_appended_response(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+
+    agent = Agent(
+        llm=_NoopLLM(),
+        workspace_root=str(tmp_path),
+        max_context_tokens=10_000,
+    )
+    agent.messages = [{"role": "user", "content": "prompt"}]
+    agent._record_prompt_usage(6_000)
+    agent.messages.append({"role": "assistant", "content": "answer"})
+
+    assert agent.context_usage()["used_tokens"] == 6_000
+
+
+def test_agent_ignores_unanchored_usage_from_legacy_checkpoint(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+
+    agent = Agent(
+        llm=_NoopLLM(),
+        workspace_root=str(tmp_path),
+        max_context_tokens=10_000,
+    )
+    messages = [{"role": "user", "content": "legacy"}]
+    agent.restore_session(
+        SessionState(session_id="legacy", context_used_tokens=9_000),
+        messages,
+    )
+
+    assert agent.context_usage()["used_tokens"] == estimate_tokens(agent.messages)
 
 
 def test_memory_manager_reads_project_memory(monkeypatch, tmp_path):

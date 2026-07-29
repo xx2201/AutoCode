@@ -282,6 +282,8 @@ class SessionState:
     session_id: str
     title: str = ""
     context_used_tokens: int = 0
+    context_anchor_messages: int = 0
+    context_anchor_digest: str = ""
     started_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     current_task: TaskState | None = None
@@ -303,6 +305,8 @@ class SessionState:
             "session_id": self.session_id,
             "title": self.title,
             "context_used_tokens": self.context_used_tokens,
+            "context_anchor_messages": self.context_anchor_messages,
+            "context_anchor_digest": self.context_anchor_digest,
             "started_at": self.started_at,
             "updated_at": self.updated_at,
             "current_task": self.current_task.to_dict() if self.current_task else None,
@@ -316,6 +320,8 @@ class SessionState:
             session_id=data.get("session_id", ""),
             title=data.get("title", ""),
             context_used_tokens=max(0, int(data.get("context_used_tokens", 0))),
+            context_anchor_messages=max(0, int(data.get("context_anchor_messages", 0))),
+            context_anchor_digest=str(data.get("context_anchor_digest", "")),
             started_at=data.get("started_at", _now()),
             updated_at=data.get("updated_at", _now()),
             current_task=TaskState.from_dict(task) if task else None,

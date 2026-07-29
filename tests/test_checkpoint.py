@@ -21,6 +21,8 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
     state = SessionState(
         session_id="session_demo",
         context_used_tokens=12_345,
+        context_anchor_messages=7,
+        context_anchor_digest="digest-demo",
         current_task=TaskState(
             task_id="task_demo",
             status="running",
@@ -65,6 +67,8 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
     loaded_state, loaded_messages, loaded_model = loaded
     assert loaded_state.session_id == "session_demo"
     assert loaded_state.context_used_tokens == 12_345
+    assert loaded_state.context_anchor_messages == 7
+    assert loaded_state.context_anchor_digest == "digest-demo"
     assert loaded_state.current_task is not None
     assert loaded_state.current_task.task_id == "task_demo"
     assert loaded_state.current_task.step_index == 3

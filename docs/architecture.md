@@ -73,6 +73,16 @@ Provider 适配器会把 Anthropic 的 `stop_reason` 或 Chat Completions 的
 `finish_reason` 统一写入 `LLMResponse.stop_reason`。若返回 `max_tokens` 或
 `length`，当前 Turn 会标记为失败并保留明确错误，不会把截断的空响应保存成正常回答。
 
+上下文占用优先使用模型上一轮返回的真实 input usage，但该数值会同时保存一份
+“模型可见消息前缀”的数量与 SHA-256 摘要。仅当当前历史仍保留同一前缀时，真实
+usage 才作为占用下限；编辑提问、压缩历史或其他历史重写会使摘要失效，界面立即退回
+当前消息估算，下一次模型调用后再用新的真实 usage 校准。这样既不会因新增少量消息
+倒退，也不会在历史缩短后长期沿用过期高值。
+
+Anthropic 兼容供应商可以提供 `messages.count_tokens`，但兼容实现的结果不一定与实际
+generation usage 使用相同的模板、缓存和多模态计数规则。因此 AutoCode 不把预检接口
+当作已发生请求的真实用量；完成调用后的 usage 始终是首选事实来源。
+
 ## 5. 状态与日志取舍
 
 会话状态默认位于

@@ -1,5 +1,7 @@
 """Core agent loop."""
 
+import hashlib
+import json
 import uuid
 from contextlib import contextmanager
 
@@ -82,6 +84,8 @@ class Agent:
             output_reserve_tokens=max_output_tokens,
         )
         self._last_prompt_tokens = 0
+        self._last_prompt_message_count = 0
+        self._last_prompt_digest = ""
         self.max_rounds = max_rounds
         self.workspace_root = workspace_root or "."
         self.fs = WorkspaceFS(self.workspace_root)
@@ -138,12 +142,7 @@ class Agent:
     def context_usage(self) -> dict:
         """Return the current conversation-window occupancy, not cumulative billing tokens."""
         estimated_tokens = estimate_tokens(self.messages)
-        persisted_tokens = (
-            self.session_state.context_used_tokens
-            if self.session_state is not None
-            else 0
-        )
-        used_tokens = max(estimated_tokens, self._last_prompt_tokens, persisted_tokens)
+        used_tokens = max(estimated_tokens, self._valid_last_prompt_tokens())
         window_tokens = max(1, int(self.context.max_tokens))
         used_tokens = min(used_tokens, window_tokens)
         return {
@@ -152,6 +151,63 @@ class Agent:
             "remaining_tokens": max(0, window_tokens - used_tokens),
             "used_percent": round(used_tokens / window_tokens * 100, 1),
         }
+
+    @staticmethod
+    def _messages_digest(messages: list[dict]) -> str:
+        model_fields = {
+            "system": ("role", "content", "name"),
+            "user": ("role", "content", "name", "model_content"),
+            "assistant": ("role", "content", "name", "tool_calls"),
+            "tool": (
+                "role",
+                "content",
+                "tool_call_id",
+                "tool_name",
+                "model_content",
+            ),
+        }
+        projected = []
+        for message in messages:
+            allowed = model_fields.get(str(message.get("role") or ""))
+            if allowed is None:
+                continue
+            projected.append({
+                key: message[key]
+                for key in allowed
+                if key in message
+            })
+        payload = json.dumps(
+            projected,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+        return hashlib.sha256(payload).hexdigest()
+
+    def _record_prompt_usage(self, prompt_tokens: int) -> None:
+        tokens = max(0, int(prompt_tokens or 0))
+        message_count = len(self.messages)
+        digest = self._messages_digest(self.messages)
+        self._last_prompt_tokens = tokens
+        self._last_prompt_message_count = message_count
+        self._last_prompt_digest = digest
+        if self.session_state is not None:
+            self.session_state.context_used_tokens = tokens
+            self.session_state.context_anchor_messages = message_count
+            self.session_state.context_anchor_digest = digest
+
+    def _valid_last_prompt_tokens(self) -> int:
+        if (
+            self._last_prompt_tokens <= 0
+            or self._last_prompt_message_count <= 0
+            or not self._last_prompt_digest
+            or len(self.messages) < self._last_prompt_message_count
+        ):
+            return 0
+        anchored_messages = self.messages[:self._last_prompt_message_count]
+        if self._messages_digest(anchored_messages) != self._last_prompt_digest:
+            return 0
+        return self._last_prompt_tokens
 
     def _fresh_tools(self) -> list[Tool]:
         if self._tool_factory is not None:
@@ -337,7 +393,7 @@ class Agent:
     def _maybe_compress_messages(self):
         effective_used = self.context.effective_used(
             self.messages,
-            last_prompt_tokens=self._last_prompt_tokens,
+            last_prompt_tokens=self._valid_last_prompt_tokens(),
         )
         if (
             self.task_state is not None
@@ -348,7 +404,7 @@ class Agent:
         result = self.context.maybe_compress(
             self.messages,
             self.llm,
-            last_prompt_tokens=self._last_prompt_tokens,
+            last_prompt_tokens=self._valid_last_prompt_tokens(),
         )
         if result.compressed and self.session_state is not None:
             saved_tokens = max(0, result.before_tokens - result.after_tokens)
@@ -789,6 +845,8 @@ class Agent:
             stored["revision_id"] = str(stored.get("revision_id") or current_revision_id)
             self.messages.append(stored)
         self._last_prompt_tokens = max(0, session_state.context_used_tokens)
+        self._last_prompt_message_count = max(0, session_state.context_anchor_messages)
+        self._last_prompt_digest = session_state.context_anchor_digest
         self.turn_controller.restore_queued(session_state.queued_inputs)
         task = session_state.current_task
         if task is not None and task.status in {"running", "waiting_approval"}:
@@ -812,8 +870,7 @@ class Agent:
                 session_id=self.session_state.session_id,
                 on_token=on_token,
             )
-            self._last_prompt_tokens = resp.prompt_tokens
-            self.session_state.context_used_tokens = max(0, resp.prompt_tokens)
+            self._record_prompt_usage(resp.prompt_tokens)
             if resp.stop_reason in {"max_tokens", "length"}:
                 raise RuntimeError(
                     "模型输出达到 token 上限，回答未完成。"
