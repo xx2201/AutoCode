@@ -11,9 +11,20 @@ import {
 function memoryHistory(initial = null) {
   return {
     state: initial,
-    replaceState(nextState) {
+    url: "",
+    replaceState(nextState, _unused, url = "") {
       this.state = nextState;
+      this.url = url;
     },
+  };
+}
+
+function memoryLocation(search = "", hash = "") {
+  return {
+    href: `https://example.test/${search}${hash}`,
+    pathname: "/",
+    search,
+    hash,
   };
 }
 
@@ -75,4 +86,38 @@ test("a new page does not inherit an active session", () => {
 
   assert.equal(readPageSessionId(currentPage, "workspace-a"), "session-a");
   assert.equal(readPageSessionId(newPage, "workspace-a"), "");
+});
+
+test("the session route survives when browser history state is reconstructed", () => {
+  const history = memoryHistory();
+  const location = memoryLocation("?view=chat", "#latest");
+
+  storePageSessionId(history, "workspace-a", "session-a", location);
+
+  assert.match(history.url, /workspace=workspace-a/);
+  assert.match(history.url, /session=session-a/);
+  const reloadedLocation = memoryLocation(
+    history.url.slice(history.url.indexOf("?"), history.url.indexOf("#")),
+    "#latest",
+  );
+  assert.equal(
+    readPageSessionId(memoryHistory(), "workspace-a", reloadedLocation),
+    "session-a",
+  );
+  assert.equal(
+    readPageSessionId(memoryHistory(), "workspace-b", reloadedLocation),
+    "",
+  );
+});
+
+test("clearing a session route preserves unrelated query parameters", () => {
+  const history = memoryHistory();
+  const location = memoryLocation(
+    "?view=chat&workspace=workspace-a&session=session-a",
+    "#latest",
+  );
+
+  clearPageSessionId(history, location);
+
+  assert.equal(history.url, "/?view=chat#latest");
 });
