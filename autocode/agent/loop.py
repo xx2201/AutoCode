@@ -59,6 +59,7 @@ class Agent:
         mcp_manager=None,
         own_mcp_manager: bool = False,
         max_context_tokens: int = 1_000_000,
+        max_output_tokens: int = 0,
         max_rounds: int = 50,
         workspace_root: str | None = None,
         permission_mode: str = "ask",
@@ -76,7 +77,10 @@ class Agent:
         self.tools: list[Tool] = []
         self.tool_registry: dict[str, Tool] = {}
         self.messages: list[dict] = []
-        self.context = ContextManager(max_tokens=max_context_tokens)
+        self.context = ContextManager(
+            max_tokens=max_context_tokens,
+            output_reserve_tokens=max_output_tokens,
+        )
         self._last_prompt_tokens = 0
         self.max_rounds = max_rounds
         self.workspace_root = workspace_root or "."
@@ -338,7 +342,7 @@ class Agent:
         if (
             self.task_state is not None
             and hasattr(self.llm, "_call_with_retry")
-            and effective_used > int(self.context.max_tokens * 0.50)
+            and effective_used > int(self.context.input_budget_tokens * 0.50)
         ):
             self.memory.schedule_project_memory_refresh(self.messages, self.llm)
         result = self.context.maybe_compress(
@@ -520,6 +524,16 @@ class Agent:
                 response = self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
             except Exception as exc:
                 self.turn_controller.finish_turn(turn_id)
+                if self.task_state is not None:
+                    self.task_state.mark_failed(str(exc))
+                    self.hooks.emit(
+                        "task_error",
+                        self._event_payload(
+                            status=self.task_state.status,
+                            error=self.task_state.last_error,
+                        ),
+                    )
+                    self.persist_session()
                 self._record_turn_error(observation, exc)
                 raise
             self._finalize_turn_trace(observation, response)
@@ -800,6 +814,12 @@ class Agent:
             )
             self._last_prompt_tokens = resp.prompt_tokens
             self.session_state.context_used_tokens = max(0, resp.prompt_tokens)
+            if resp.stop_reason in {"max_tokens", "length"}:
+                raise RuntimeError(
+                    "模型输出达到 token 上限，回答未完成。"
+                    f"当前 AUTOCODE_MAX_TOKENS={self.context.output_reserve_tokens}，"
+                    "请提高输出预算后重试。"
+                )
 
             if resp.tool_calls:
                 self.hooks.emit(

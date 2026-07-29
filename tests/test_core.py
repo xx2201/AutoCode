@@ -74,7 +74,7 @@ def test_config_defaults(monkeypatch):
     assert c.langfuse_secret_key == ""
     assert c.langfuse_base_url is None
     assert c.tavily_api_key == ""
-    assert c.max_tokens == 4096
+    assert c.max_tokens == 32_000
     assert c.max_context_tokens == 1_000_000
     assert c.temperature == 0.0
     assert c.permission_mode == "ask"
@@ -208,6 +208,15 @@ def test_context_large_window_uses_larger_recent_tail_and_summary_budget():
     assert ctx._summary_keep_recent == 5
     assert ctx._collapse_keep_recent == 2
     assert ctx._summary_input_chars == 120_000
+
+
+def test_context_reserves_output_budget_before_compression_thresholds():
+    ctx = ContextManager(max_tokens=100_000, output_reserve_tokens=20_000)
+
+    assert ctx.input_budget_tokens == 80_000
+    assert ctx._snip_at == 40_000
+    assert ctx._summarize_at == 56_000
+    assert ctx._collapse_at == 72_000
 
 
 def test_context_can_trigger_compression_from_last_real_prompt_tokens():

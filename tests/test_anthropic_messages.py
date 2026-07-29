@@ -268,6 +268,7 @@ def test_anthropic_backend_streams_text_and_normalizes_tool_calls():
     assert response.tool_calls[0].id == "call-1"
     assert response.tool_calls[0].arguments == {"file_path": "README.md"}
     assert response.prompt_tokens == 15
+    assert response.stop_reason == "tool_use"
     assert response.completion_tokens == 4
     assert response.cache_read_tokens == 3
     assert response.cache_miss_tokens == 12

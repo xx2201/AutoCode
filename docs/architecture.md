@@ -62,7 +62,18 @@ flowchart LR
 未配置 Langfuse 时，Agent 多模态仍可使用；模型本身不支持视觉时，Langfuse 也不会
 让模型获得视觉能力。当前配置不做输入、输出或图片脱敏，完整内容会发送给 Langfuse。
 
-## 4. 状态与日志取舍
+## 4. 上下文与输出预算
+
+`AUTOCODE_MAX_CONTEXT` 表示模型的总上下文窗口，`AUTOCODE_MAX_TOKENS` 表示单次
+模型调用的最大输出预算。Agent 会先从总窗口中预留输出预算，再用剩余的输入预算计算
+50% 工具输出裁剪、70% 历史摘要和 90% 强制压缩阈值，避免历史消息占满窗口后没有
+空间生成工具调用或最终回答。
+
+Provider 适配器会把 Anthropic 的 `stop_reason` 或 Chat Completions 的
+`finish_reason` 统一写入 `LLMResponse.stop_reason`。若返回 `max_tokens` 或
+`length`，当前 Turn 会标记为失败并保留明确错误，不会把截断的空响应保存成正常回答。
+
+## 5. 状态与日志取舍
 
 会话状态默认位于
 `~/.autocode/sessions/projects/<可读项目路径>/sessions/<session_id>/`。
@@ -95,7 +106,7 @@ transcript、audit 或 trace。
 统一检索、大量会话分页、多人并发或长期统计时，才值得增加 SQLite/PostgreSQL；
 Langfuse 自身的数据存储由 Langfuse 服务负责，不应再复制一套到 CoreCoder。
 
-## 5. 延迟观测
+## 6. 延迟观测
 
 SSE 暴露以下关键阶段：
 

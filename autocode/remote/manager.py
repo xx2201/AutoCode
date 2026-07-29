@@ -779,6 +779,7 @@ class RemoteManager:
             mcp_manager=self._mcp_manager,
             own_mcp_manager=False,
             max_context_tokens=self.config.max_context_tokens,
+            max_output_tokens=self.config.max_tokens,
             workspace_root=self.config.workspace_root,
             permission_mode=self.config.permission_mode,
         )

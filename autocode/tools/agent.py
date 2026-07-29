@@ -49,6 +49,7 @@ class AgentTool(Tool):
             mcp_manager=parent.mcp_manager,
             own_mcp_manager=False,
             max_context_tokens=parent.context.max_tokens,
+            max_output_tokens=parent.context.output_reserve_tokens,
             max_rounds=20,
             workspace_root=str(parent.fs.workspace_root),
             permission_mode=parent.policy.permission_mode,

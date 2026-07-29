@@ -322,6 +322,7 @@ def main():
         mcp_manager=mcp_manager,
         own_mcp_manager=True,
         max_context_tokens=config.max_context_tokens,
+        max_output_tokens=config.max_tokens,
         workspace_root=config.workspace_root,
         permission_mode=config.permission_mode,
     )

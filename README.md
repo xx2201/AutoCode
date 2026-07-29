@@ -99,10 +99,14 @@ AUTOCODE_BASE_URL=https://mintcn.macaron.xin
 
 # Optional
 AUTOCODE_PROVIDER=anthropic
-AUTOCODE_MAX_TOKENS=4096
+AUTOCODE_MAX_TOKENS=32000
 AUTOCODE_TEMPERATURE=0
 AUTOCODE_MAX_CONTEXT=1000000
 ```
+
+`AUTOCODE_MAX_TOKENS` is the model's output budget. AutoCode reserves that
+budget from `AUTOCODE_MAX_CONTEXT` before calculating automatic context
+compression thresholds, so `AUTOCODE_MAX_CONTEXT` must be larger.
 
 `AUTOCODE_PROVIDER=anthropic` (the default) uses `/v1/messages`, including
 native image blocks inside tool results. Set `AUTOCODE_PROVIDER=openai` to keep

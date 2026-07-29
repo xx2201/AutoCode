@@ -93,10 +93,14 @@ AUTOCODE_BASE_URL=https://mintcn.macaron.xin
 
 # 可选
 AUTOCODE_PROVIDER=anthropic
-AUTOCODE_MAX_TOKENS=4096
+AUTOCODE_MAX_TOKENS=32000
 AUTOCODE_TEMPERATURE=0
 AUTOCODE_MAX_CONTEXT=1000000
 ```
+
+`AUTOCODE_MAX_TOKENS` 是模型的输出预算。AutoCode 会先从
+`AUTOCODE_MAX_CONTEXT` 中预留这部分空间，再计算自动上下文压缩阈值，因此
+`AUTOCODE_MAX_CONTEXT` 必须大于输出预算。
 
 `AUTOCODE_PROVIDER=anthropic` 是默认值，使用 `/v1/messages`，工具图片会
 直接放进对应的 `tool_result`。设置 `AUTOCODE_PROVIDER=openai` 可继续使用

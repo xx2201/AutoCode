@@ -19,6 +19,7 @@ from anthropic import (
 )
 from openai import OpenAI, APIError, RateLimitError, APITimeoutError, APIConnectionError
 
+from .config import DEFAULT_MAX_OUTPUT_TOKENS
 from .observability import LangfuseTracer
 
 
@@ -39,6 +40,7 @@ class LLMResponse:
     completion_tokens: int = 0
     cache_read_tokens: int = 0
     cache_miss_tokens: int = 0
+    stop_reason: str = ""
 
     @property
     def message(self) -> dict:
@@ -258,6 +260,7 @@ class LLM:
                 cache_read_tok = 0
                 cache_miss_tok = 0
                 completion_started = False
+                stop_reason = ""
 
                 for chunk in stream:
                     # usage info comes in the final chunk
@@ -268,7 +271,11 @@ class LLM:
 
                     if not chunk.choices:
                         continue
-                    delta = chunk.choices[0].delta
+                    choice = chunk.choices[0]
+                    finish_reason = getattr(choice, "finish_reason", None)
+                    if finish_reason:
+                        stop_reason = str(finish_reason)
+                    delta = choice.delta
                     if not completion_started and (delta.content or delta.tool_calls):
                         generation.update(completion_start_time=datetime.now(timezone.utc))
                         completion_started = True
@@ -320,6 +327,7 @@ class LLM:
                     completion_tokens=completion_tok,
                     cache_read_tokens=cache_read_tok,
                     cache_miss_tokens=cache_miss_tok,
+                    stop_reason=stop_reason,
                 )
             except Exception as exc:
                 generation.update(
@@ -344,6 +352,7 @@ class LLM:
                 metadata={
                     "backend": type(self).__name__,
                     "tool_call_count": len(response.tool_calls),
+                    "stop_reason": response.stop_reason,
                 },
             )
             return response
@@ -424,7 +433,7 @@ class AnthropicMessagesLLM(LLM):
         """Send one streaming Messages request and normalize its response."""
         system, message_params = self._split_system(messages)
         request_tools = self._convert_tools(tools or [])
-        max_tokens = int(self.extra.get("max_tokens", 4096))
+        max_tokens = int(self.extra.get("max_tokens", DEFAULT_MAX_OUTPUT_TOKENS))
         params: dict = {
             "model": self.model,
             "max_tokens": max_tokens,
@@ -497,7 +506,7 @@ class AnthropicMessagesLLM(LLM):
                     "backend": type(self).__name__,
                     "api_format": self.api_format,
                     "tool_call_count": len(response.tool_calls),
-                    "stop_reason": _field(final_message, "stop_reason") or "",
+                    "stop_reason": response.stop_reason,
                 },
             )
             return response
@@ -597,6 +606,7 @@ class AnthropicMessagesLLM(LLM):
             completion_tokens=output_tokens,
             cache_read_tokens=cache_read,
             cache_miss_tokens=input_tokens + cache_creation,
+            stop_reason=str(_field(message, "stop_reason") or ""),
         )
 
 
@@ -690,6 +700,7 @@ class LiteLLM(LLM):
                 cache_read_tok = 0
                 cache_miss_tok = 0
                 completion_started = False
+                stop_reason = ""
 
                 for chunk in stream:
                     usage = getattr(chunk, "usage", None)
@@ -700,7 +711,11 @@ class LiteLLM(LLM):
 
                     if not getattr(chunk, "choices", None):
                         continue
-                    delta = chunk.choices[0].delta
+                    choice = chunk.choices[0]
+                    finish_reason = getattr(choice, "finish_reason", None)
+                    if finish_reason:
+                        stop_reason = str(finish_reason)
+                    delta = choice.delta
                     if not completion_started and (
                         getattr(delta, "content", None) or getattr(delta, "tool_calls", None)
                     ):
@@ -751,6 +766,7 @@ class LiteLLM(LLM):
                     completion_tokens=completion_tok,
                     cache_read_tokens=cache_read_tok,
                     cache_miss_tokens=cache_miss_tok,
+                    stop_reason=stop_reason,
                 )
             except Exception as exc:
                 generation.update(
@@ -775,6 +791,7 @@ class LiteLLM(LLM):
                 metadata={
                     "backend": type(self).__name__,
                     "tool_call_count": len(response.tool_calls),
+                    "stop_reason": response.stop_reason,
                 },
             )
             return response

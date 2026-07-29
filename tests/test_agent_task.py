@@ -1,3 +1,5 @@
+import pytest
+
 from autocode.agent import Agent
 from autocode.llm import LLMResponse
 from autocode.llm import ToolCall
@@ -33,6 +35,32 @@ def test_agent_uses_instance_tool_registry(tmp_path):
     reply = agent.chat("use custom")
     assert reply == "done"
     assert any(m.get("content") == "custom-ok" for m in agent.messages if m.get("role") == "tool")
+
+
+def test_agent_rejects_output_truncated_response_instead_of_completing(tmp_path):
+    class _TruncatedLLM:
+        model = "test"
+
+        def chat(self, messages, tools=None, on_token=None):
+            return LLMResponse(
+                content="",
+                completion_tokens=32_000,
+                stop_reason="max_tokens",
+            )
+
+    agent = Agent(
+        llm=_TruncatedLLM(),
+        tools=[],
+        workspace_root=str(tmp_path),
+        max_context_tokens=100_000,
+        max_output_tokens=32_000,
+    )
+
+    with pytest.raises(RuntimeError, match="AUTOCODE_MAX_TOKENS=32000"):
+        agent.chat("continue")
+
+    assert agent.task_state.status == "failed"
+    assert not any(message["role"] == "assistant" for message in agent.messages)
 
 
 class _SafeBashTool(Tool):

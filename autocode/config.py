@@ -5,6 +5,10 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
+DEFAULT_MAX_OUTPUT_TOKENS = 32_000
+DEFAULT_MAX_CONTEXT_TOKENS = 1_000_000
+
+
 def _load_dotenv_values() -> dict[str, str]:
     """Read the nearest .env from the current workspace tree."""
     try:
@@ -41,9 +45,9 @@ class Config:
     langfuse_secret_key: str = ""
     langfuse_base_url: str | None = None
     tavily_api_key: str = ""
-    max_tokens: int = 4096
+    max_tokens: int = DEFAULT_MAX_OUTPUT_TOKENS
     temperature: float = 0.0
-    max_context_tokens: int = 1_000_000
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     provider: str = "anthropic"
     workspace_root: str = ""
     permission_mode: str = "ask"
@@ -54,6 +58,15 @@ class Config:
     feishu_app_secret: str = ""
     feishu_allowed_open_ids: tuple[str, ...] = ()
     feishu_allowed_chat_ids: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.max_tokens <= 0:
+            raise ValueError("AUTOCODE_MAX_TOKENS must be greater than 0.")
+        if self.max_context_tokens <= self.max_tokens:
+            raise ValueError(
+                "AUTOCODE_MAX_CONTEXT must be greater than AUTOCODE_MAX_TOKENS "
+                "so the model has room for both input and output."
+            )
 
     @classmethod
     def from_env(cls) -> "Config":
@@ -66,9 +79,21 @@ class Config:
             langfuse_secret_key=_resolve_config_value(snapshot, "LANGFUSE_SECRET_KEY"),
             langfuse_base_url=_resolve_config_value(snapshot, "LANGFUSE_BASE_URL") or None,
             tavily_api_key=_resolve_config_value(snapshot, "TAVILY_API_KEY"),
-            max_tokens=int(_resolve_config_value(snapshot, "AUTOCODE_MAX_TOKENS", "4096")),
+            max_tokens=int(
+                _resolve_config_value(
+                    snapshot,
+                    "AUTOCODE_MAX_TOKENS",
+                    str(DEFAULT_MAX_OUTPUT_TOKENS),
+                )
+            ),
             temperature=float(_resolve_config_value(snapshot, "AUTOCODE_TEMPERATURE", "0")),
-            max_context_tokens=int(_resolve_config_value(snapshot, "AUTOCODE_MAX_CONTEXT", "1000000")),
+            max_context_tokens=int(
+                _resolve_config_value(
+                    snapshot,
+                    "AUTOCODE_MAX_CONTEXT",
+                    str(DEFAULT_MAX_CONTEXT_TOKENS),
+                )
+            ),
             provider=_resolve_config_value(snapshot, "AUTOCODE_PROVIDER", "anthropic"),
             workspace_root=_resolve_config_value(snapshot, "AUTOCODE_WORKSPACE_ROOT", str(Path.cwd())),
             permission_mode=_resolve_config_value(

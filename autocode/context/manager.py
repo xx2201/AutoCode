@@ -48,15 +48,26 @@ class CompressionResult:
 
 
 class ContextManager:
-    def __init__(self, max_tokens: int = 1_000_000):
+    def __init__(self, max_tokens: int = 1_000_000, output_reserve_tokens: int = 0):
+        if max_tokens <= 0:
+            raise ValueError("Context window must be greater than 0.")
+        if output_reserve_tokens < 0:
+            raise ValueError("Output reserve must not be negative.")
+        if output_reserve_tokens >= max_tokens:
+            raise ValueError("Output reserve must be smaller than the context window.")
         self.max_tokens = max_tokens
-        # layer thresholds (fraction of max_tokens)
-        self._snip_at = int(max_tokens * 0.50)    # 50% -> snip tool outputs
-        self._summarize_at = int(max_tokens * 0.70)  # 70% -> LLM summarize
-        self._collapse_at = int(max_tokens * 0.90)   # 90% -> hard collapse
-        self._summary_keep_recent = max(2, min(6, max_tokens // 200_000))
-        self._collapse_keep_recent = max(1, min(3, max_tokens // 400_000))
-        self._summary_input_chars = max(15_000, min(120_000, max_tokens // 6))
+        self.output_reserve_tokens = output_reserve_tokens
+        self.input_budget_tokens = max_tokens - output_reserve_tokens
+        # 输出预算先从模型上下文窗口中预留，压缩阈值只基于可用输入空间。
+        self._snip_at = int(self.input_budget_tokens * 0.50)
+        self._summarize_at = int(self.input_budget_tokens * 0.70)
+        self._collapse_at = int(self.input_budget_tokens * 0.90)
+        self._summary_keep_recent = max(2, min(6, self.input_budget_tokens // 200_000))
+        self._collapse_keep_recent = max(1, min(3, self.input_budget_tokens // 400_000))
+        self._summary_input_chars = max(
+            15_000,
+            min(120_000, self.input_budget_tokens // 6),
+        )
 
     @staticmethod
     def effective_used(messages: list[dict], last_prompt_tokens: int = 0) -> int:
