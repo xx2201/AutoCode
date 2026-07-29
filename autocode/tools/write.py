@@ -1,7 +1,7 @@
 """File creation / overwrite."""
 
-from .base import Tool
-from .edit import _changed_files
+from .base import ConcurrencySpec, Tool
+from .edit import _changed_files, _changed_files_lock
 from .file_state import DEFAULT_FILE_READ_TRACKER
 
 
@@ -26,6 +26,12 @@ class WriteFileTool(Tool):
         },
         "required": ["file_path", "content"],
     }
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.resources(
+            writes={self.file_resource(str(arguments["file_path"]))},
+            reason="writes to different normalized paths are independent",
+        )
 
     def execute(self, file_path: str, content: str) -> str:
         try:
@@ -52,7 +58,8 @@ class WriteFileTool(Tool):
                 p.parent.mkdir(parents=True, exist_ok=True)
                 p.write_text(content, encoding="utf-8")
             tracker.record(p, content)
-            _changed_files.add(str(p))
+            with _changed_files_lock:
+                _changed_files.add(str(p))
             n_lines = content.count("\n") + (1 if content and not content.endswith("\n") else 0)
             return f"Wrote {n_lines} lines to {file_path}"
         except Exception as e:

@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urljoin, urlsplit, urlunsplit
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
-from .base import Tool
+from .base import ConcurrencySpec, Tool
 
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _MAX_OUTPUT_CHARS = 50_000
@@ -35,6 +35,9 @@ class WebFetchTool(Tool):
         },
         "required": ["url", "prompt"],
     }
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.parallel("independent public web request")
 
     def execute(self, url: str, prompt: str) -> str:
         try:

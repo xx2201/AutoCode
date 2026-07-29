@@ -46,6 +46,14 @@ _APPROVAL_OPTIONS = [
 ]
 
 
+def _configure_utf8_stdio() -> None:
+    """Keep redirected Windows CLI output from falling back to a legacy code page."""
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if callable(reconfigure):
+            reconfigure(encoding="utf-8", errors="replace")
+
+
 class _AgentWorker:
     """Run Agent turns serially while the terminal remains interactive."""
 
@@ -253,6 +261,7 @@ def _parse_args():
 
 
 def main():
+    _configure_utf8_stdio()
     args = _parse_args()
     config = Config.from_env()
 

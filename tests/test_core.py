@@ -4,6 +4,7 @@ import os
 import pathlib
 
 from autocode import Agent, LLM, Config, ALL_TOOLS, __version__
+from autocode import cli as cli_module
 from autocode.context import CompressionResult, ContextManager, MemoryManager, estimate_tokens
 from autocode.llm import LLMResponse
 from autocode.state import SessionState
@@ -12,6 +13,24 @@ from autocode.tools import get_tool
 
 def test_version():
     assert __version__ == "0.3.0"
+
+
+def test_cli_configures_redirected_stdio_as_utf8(monkeypatch):
+    calls = []
+
+    class _Stream:
+        def reconfigure(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(cli_module.sys, "stdout", _Stream())
+    monkeypatch.setattr(cli_module.sys, "stderr", _Stream())
+
+    cli_module._configure_utf8_stdio()
+
+    assert calls == [
+        {"encoding": "utf-8", "errors": "replace"},
+        {"encoding": "utf-8", "errors": "replace"},
+    ]
 
 
 def test_public_api_exports():

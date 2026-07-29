@@ -5,11 +5,19 @@ from __future__ import annotations
 import concurrent.futures
 import contextvars
 import time
+from dataclasses import dataclass
 
 from ..state import PolicyDecision, TaskState
-from ..tools.base import ToolResult
+from ..tools.base import ConcurrencySpec, ToolResult
 from .hooks import HookBus
 from .policy import Policy
+from .scheduler import ExecutionGroup, plan_execution_groups
+
+
+@dataclass(frozen=True)
+class ToolExecutionOutcome:
+    result: str | ToolResult
+    duration_ms: float
 
 
 class Runtime:
@@ -81,13 +89,50 @@ class Runtime:
         on_tool=None,
         decision: PolicyDecision | None = None,
     ) -> str | ToolResult:
+        spec = self._concurrency_spec(tool_call)
+        group = ExecutionGroup(
+            group_id=1,
+            call_indexes=(0,),
+            mode=spec.mode.value,
+        )
+        self._announce_tool_call(
+            task_state,
+            tool_call,
+            session_id,
+            on_tool=on_tool,
+            group=group,
+            spec=spec,
+        )
+        outcome = self._run_traced_tool_call(
+            task_state,
+            tool_call,
+            decision=decision,
+            group=group,
+            spec=spec,
+        )
+        return self._finalize_tool_call(
+            task_state,
+            tool_call,
+            session_id,
+            outcome,
+            group=group,
+            spec=spec,
+        )
+
+    def _run_traced_tool_call(
+        self,
+        task_state: TaskState,
+        tool_call,
+        *,
+        decision: PolicyDecision | None,
+        group: ExecutionGroup,
+        spec: ConcurrencySpec,
+    ) -> ToolExecutionOutcome:
         tracer = self.tracer
         if tracer is None or not tracer.enabled:
-            return self._execute_tool_call(
+            return self._run_tool_call(
                 task_state,
                 tool_call,
-                session_id,
-                on_tool=on_tool,
                 decision=decision,
             )
 
@@ -95,19 +140,22 @@ class Runtime:
             "task_id": task_state.task_id,
             "tool_call_id": tool_call.id,
             "policy_action": decision.action if decision else "allow",
+            "execution_group_id": group.group_id,
+            "execution_group_size": len(group.call_indexes),
+            "concurrency_mode": spec.mode.value,
+            "concurrency_reason": spec.reason,
         }
         with tracer.start_tool(
             name=f"tool.{tool_call.name or 'unknown'}",
             input_payload={"arguments": tool_call.arguments},
             metadata=metadata,
         ) as observation:
-            result = self._execute_tool_call(
+            outcome = self._run_tool_call(
                 task_state,
                 tool_call,
-                session_id,
-                on_tool=on_tool,
                 decision=decision,
             )
+            result = outcome.result
             result_text = result.text if isinstance(result, ToolResult) else result
             is_error = result_text.startswith("Error:")
             observation.update(
@@ -121,48 +169,22 @@ class Runtime:
                 level="ERROR" if is_error else "DEFAULT",
                 status_message=result_text if is_error else None,
             )
-            return result
+            return outcome
 
-    def _execute_tool_call(
+    def _run_tool_call(
         self,
         task_state: TaskState,
         tool_call,
-        session_id: str,
-        on_tool=None,
         decision: PolicyDecision | None = None,
-    ) -> str | ToolResult:
+    ) -> ToolExecutionOutcome:
         started_at = time.monotonic()
         tool = self.tool_registry.get(tool_call.name)
         if tool is None:
             result = f"Error: unknown tool '{tool_call.name}'"
-            self.hooks.emit(
-                "after_tool",
-                self._payload(
-                    session_id,
-                    task_state,
-                    tool_call_id=tool_call.id,
-                    tool_name=tool_call.name,
-                    arguments=tool_call.arguments,
-                    result=result,
-                    duration_ms=round((time.monotonic() - started_at) * 1000, 1),
-                    success=False,
-                ),
+            return ToolExecutionOutcome(
+                result=result,
+                duration_ms=round((time.monotonic() - started_at) * 1000, 1),
             )
-            return result
-
-        if on_tool:
-            on_tool(tool_call.name, tool_call.arguments)
-
-        self.hooks.emit(
-            "before_tool",
-            self._payload(
-                session_id,
-                task_state,
-                tool_call_id=tool_call.id,
-                tool_name=tool_call.name,
-                arguments=tool_call.arguments,
-            ),
-        )
         execute_kwargs = dict(tool_call.arguments)
         if tool_call.name == "start_process":
             execute_kwargs["_task_id"] = task_state.task_id
@@ -174,6 +196,22 @@ class Runtime:
             result = f"Error: bad arguments for {tool_call.name}: {e}"
         except Exception as e:
             result = f"Error executing {tool_call.name}: {e}"
+        return ToolExecutionOutcome(
+            result=result,
+            duration_ms=round((time.monotonic() - started_at) * 1000, 1),
+        )
+
+    def _finalize_tool_call(
+        self,
+        task_state: TaskState,
+        tool_call,
+        session_id: str,
+        outcome: ToolExecutionOutcome,
+        *,
+        group: ExecutionGroup,
+        spec: ConcurrencySpec,
+    ) -> str | ToolResult:
+        result = outcome.result
         if self.recovery is not None:
             result = self.recovery.note_tool_result(task_state, tool_call.name, result)
         result_text = result.text if isinstance(result, ToolResult) else result
@@ -186,12 +224,56 @@ class Runtime:
                 tool_name=tool_call.name,
                 arguments=tool_call.arguments,
                 result=result_text[:4000],
-                duration_ms=round((time.monotonic() - started_at) * 1000, 1),
+                duration_ms=outcome.duration_ms,
                 success=not result_text.startswith("Error:"),
                 multimodal=bool(isinstance(result, ToolResult) and result.model_content),
+                execution_group_id=group.group_id,
+                execution_group_size=len(group.call_indexes),
+                concurrency_mode=spec.mode.value,
+                concurrency_reason=spec.reason,
             ),
         )
         return result
+
+    def _announce_tool_call(
+        self,
+        task_state: TaskState,
+        tool_call,
+        session_id: str,
+        *,
+        on_tool,
+        group: ExecutionGroup,
+        spec: ConcurrencySpec,
+    ) -> None:
+        if self.tool_registry.get(tool_call.name) is None:
+            return
+        if on_tool:
+            on_tool(tool_call.name, tool_call.arguments)
+        self.hooks.emit(
+            "before_tool",
+            self._payload(
+                session_id,
+                task_state,
+                tool_call_id=tool_call.id,
+                tool_name=tool_call.name,
+                arguments=tool_call.arguments,
+                execution_group_id=group.group_id,
+                execution_group_size=len(group.call_indexes),
+                concurrency_mode=spec.mode.value,
+                concurrency_reason=spec.reason,
+            ),
+        )
+
+    def _concurrency_spec(self, tool_call) -> ConcurrencySpec:
+        tool = self.tool_registry.get(tool_call.name)
+        if tool is None:
+            return ConcurrencySpec.exclusive("unknown tool")
+        try:
+            return tool.concurrency_spec(tool_call.arguments)
+        except Exception as exc:
+            return ConcurrencySpec.exclusive(
+                f"invalid concurrency declaration: {type(exc).__name__}: {exc}"
+            )
 
     def execute_tool_calls_parallel(
         self,
@@ -204,21 +286,68 @@ class Runtime:
         call_decisions = decisions or [None] * len(tool_calls)
         if len(call_decisions) != len(tool_calls):
             raise ValueError("Tool calls and policy decisions must have the same length.")
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(8, len(tool_calls))) as pool:
-            # 每个线程复制当前 OTel 上下文，确保并行 tool span 仍归属于当前 agent。
-            futures = [
-                pool.submit(
-                    contextvars.copy_context().run,
-                    self.execute_tool_call,
+        if not tool_calls:
+            return []
+
+        specs = [self._concurrency_spec(tool_call) for tool_call in tool_calls]
+        groups = plan_execution_groups(specs)
+        results: list[str | ToolResult | None] = [None] * len(tool_calls)
+
+        for group in groups:
+            for index in group.call_indexes:
+                self._announce_tool_call(
                     task_state,
-                    tool_call,
+                    tool_calls[index],
                     session_id,
-                    on_tool,
-                    decision,
+                    on_tool=on_tool,
+                    group=group,
+                    spec=specs[index],
                 )
-                for tool_call, decision in zip(tool_calls, call_decisions)
-            ]
-            return [f.result() for f in futures]
+
+            outcomes: list[ToolExecutionOutcome]
+            if len(group.call_indexes) == 1:
+                index = group.call_indexes[0]
+                outcomes = [
+                    self._run_traced_tool_call(
+                        task_state,
+                        tool_calls[index],
+                        decision=call_decisions[index],
+                        group=group,
+                        spec=specs[index],
+                    )
+                ]
+            else:
+                with concurrent.futures.ThreadPoolExecutor(
+                    max_workers=min(8, len(group.call_indexes))
+                ) as pool:
+                    # 每个线程复制当前 OTel 上下文，确保并行 tool span 仍归属于当前 agent。
+                    futures = [
+                        pool.submit(
+                            contextvars.copy_context().run,
+                            self._run_traced_tool_call,
+                            task_state,
+                            tool_calls[index],
+                            decision=call_decisions[index],
+                            group=group,
+                            spec=specs[index],
+                        )
+                        for index in group.call_indexes
+                    ]
+                    outcomes = [future.result() for future in futures]
+
+            for index, outcome in zip(group.call_indexes, outcomes):
+                results[index] = self._finalize_tool_call(
+                    task_state,
+                    tool_calls[index],
+                    session_id,
+                    outcome,
+                    group=group,
+                    spec=specs[index],
+                )
+
+        if any(result is None for result in results):
+            raise RuntimeError("Tool scheduler did not produce a result for every call.")
+        return list(results)
 
     def invalid_tool_call_result(self, task_state: TaskState, tool_call, session_id: str) -> str:
         tool_name = tool_call.name or "<unknown>"

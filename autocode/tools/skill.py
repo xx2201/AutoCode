@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from .base import Tool
+from .base import ConcurrencySpec, Tool
 from ..skills import SkillError
 
 
@@ -31,6 +31,12 @@ class SkillTool(Tool):
         },
         "required": ["name"],
     }
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.exclusive(
+            "skill loading updates shared discovery and runtime context",
+            main_thread=True,
+        )
 
     def execute(self, name: str, arguments: str = "", resource: str = "") -> str:
         manager = getattr(self, "_skill_manager", None)

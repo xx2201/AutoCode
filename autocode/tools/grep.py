@@ -7,7 +7,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from .base import Tool
+from .base import ConcurrencySpec, Tool
 
 _MAX_HEAD_LIMIT = 200
 _MAX_COLLECTED_LINES = 10_000
@@ -45,6 +45,9 @@ class GrepTool(Tool):
         },
         "required": ["pattern"],
     }
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.parallel("read-only workspace search")
 
     def execute(
         self,

@@ -2,7 +2,7 @@
 
 from pathlib import Path
 
-from .base import Tool
+from .base import ConcurrencySpec, Tool
 
 
 class DeletePathTool(Tool):
@@ -25,6 +25,12 @@ class DeletePathTool(Tool):
         },
         "required": ["path"],
     }
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.resources(
+            writes={self.file_resource(str(arguments["path"]))},
+            reason="deletes conflict with access to the same path or its descendants",
+        )
 
     def execute(self, path: str, recursive: bool = False) -> str:
         try:
