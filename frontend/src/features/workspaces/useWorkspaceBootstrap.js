@@ -64,7 +64,6 @@ export default function useWorkspaceBootstrap(showToast) {
       try {
         await request(token, "/api/auth/verify", { method: "POST" });
         if (ignore) return;
-        setAuthState("ready");
         try {
           await loadBootstrap(token);
         } catch (error) {
@@ -73,6 +72,7 @@ export default function useWorkspaceBootstrap(showToast) {
             showToast(error.message);
           }
         }
+        if (!ignore) setAuthState("ready");
       } catch {
         if (ignore) return;
         localStorage.removeItem(TOKEN_KEY);
