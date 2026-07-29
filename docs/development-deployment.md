@@ -28,7 +28,7 @@ The local Runner stores complete session data in workspace partitions:
 ```text
 ~/.autocode/sessions/
 ├── projects/
-│   └── <sha256-normalized-workspace>/
+│   └── <readable-project>/
 │       ├── project.json
 │       └── sessions/
 │           └── <session-id>/
