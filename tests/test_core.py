@@ -529,6 +529,9 @@ def test_agent_request_messages_keep_rules_in_system_and_runtime_state_in_tail(t
 
     assert request_messages[0]["role"] == "system"
     assert "# Rules Memory" in request_messages[0]["content"]
+    assert "# User-facing progress updates" in request_messages[0]["content"]
+    assert "It is not private reasoning" in request_messages[0]["content"]
+    assert "Never repeat the same update" in request_messages[0]["content"]
     assert "# Task" not in request_messages[0]["content"]
     assert request_messages[-1]["role"] == "user"
     assert "[Runtime state for this turn." in request_messages[-1]["content"]

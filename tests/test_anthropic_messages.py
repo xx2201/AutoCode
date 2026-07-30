@@ -3,7 +3,7 @@ from types import SimpleNamespace
 
 import httpx
 import pytest
-from anthropic import APIConnectionError
+from anthropic import APIConnectionError, APIStatusError
 
 from autocode.agent import Agent
 from autocode.llm import AnthropicMessagesLLM, LLM, LiteLLM, llm_class_for_provider
@@ -312,6 +312,56 @@ def test_anthropic_backend_does_not_retry_after_streaming_visible_text():
 
     assert streamed == ["partial"]
     assert calls == 1
+
+
+@pytest.mark.parametrize("status_code", [502, 503, 529])
+def test_anthropic_backend_retries_transient_server_errors_with_backoff(
+    monkeypatch,
+    status_code,
+):
+    calls = 0
+
+    class _Stream:
+        text_stream = iter(())
+
+        def get_final_message(self):
+            return _message([])
+
+    class _Manager:
+        def __enter__(self):
+            return _Stream()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _Messages:
+        def stream(self, **params):
+            nonlocal calls
+            calls += 1
+            if calls <= 3:
+                request = httpx.Request("POST", "https://example.com/v1/messages")
+                response = httpx.Response(status_code, request=request)
+                raise APIStatusError("upstream failed", response=response, body=None)
+            return _Manager()
+
+    llm = AnthropicMessagesLLM(
+        model="macaron-v1-coding-venti",
+        api_key="sk-test",
+        base_url="https://example.com",
+    )
+    llm.client = SimpleNamespace(messages=_Messages())
+    sleeps = []
+    monkeypatch.setattr("autocode.llm.random", lambda: 0)
+    monkeypatch.setattr("autocode.llm.time.sleep", sleeps.append)
+
+    message, first_content_at = llm._call_with_retry(
+        {"model": llm.model, "max_tokens": 16, "messages": []}
+    )
+
+    assert message.content == []
+    assert first_content_at is None
+    assert calls == 4
+    assert sleeps == [1, 2, 4]
 
 
 def test_provider_factory_keeps_all_three_backends():

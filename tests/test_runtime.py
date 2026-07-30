@@ -398,6 +398,15 @@ def test_agent_summarizes_when_max_rounds_reached(tmp_path):
     assert agent.task_state.last_error == "reached maximum tool-call rounds"
 
 
+def test_agent_defaults_to_200_max_rounds(tmp_path):
+    agent = Agent(
+        llm=_FakeLLM([]),
+        workspace_root=str(tmp_path),
+    )
+
+    assert agent.max_rounds == 200
+
+
 def test_todo_write_rejects_completed_after_blocked_or_failed_tool(tmp_path):
     agent = Agent(
         llm=_FakeLLM([]),

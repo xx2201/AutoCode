@@ -9,6 +9,7 @@ import json
 import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from random import random
 
 from anthropic import (
     Anthropic,
@@ -512,7 +513,7 @@ class AnthropicMessagesLLM(LLM):
             return response
 
     def _call_with_retry(self, params: dict, on_token=None, max_retries: int = 3):
-        for attempt in range(max_retries):
+        for attempt in range(max_retries + 1):
             emitted_text = False
             try:
                 first_content_at = None
@@ -534,12 +535,12 @@ class AnthropicMessagesLLM(LLM):
             ):
                 # Retrying after user-visible text was emitted would duplicate
                 # the prefix in CLI/Web streaming output.
-                if emitted_text or attempt == max_retries - 1:
+                if emitted_text or attempt == max_retries:
                     raise
-                time.sleep(2 ** attempt)
+                time.sleep((2**attempt) * (1 - 0.25 * random()))
             except AnthropicAPIStatusError as exc:
-                if exc.status_code >= 500 and attempt < max_retries - 1:
-                    time.sleep(2 ** attempt)
+                if exc.status_code >= 500 and attempt < max_retries:
+                    time.sleep((2**attempt) * (1 - 0.25 * random()))
                     continue
                 raise
 

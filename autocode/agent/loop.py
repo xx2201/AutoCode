@@ -62,7 +62,7 @@ class Agent:
         own_mcp_manager: bool = False,
         max_context_tokens: int = 1_000_000,
         max_output_tokens: int = 0,
-        max_rounds: int = 50,
+        max_rounds: int = 200,
         workspace_root: str | None = None,
         permission_mode: str = "ask",
         turn_controller: TurnController | None = None,
