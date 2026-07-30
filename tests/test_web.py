@@ -149,6 +149,30 @@ def test_chat_is_relayed_to_runner(relay_client):
     }
 
 
+def test_chat_forwards_durable_session_identity(relay_client):
+    client, _ = relay_client
+    _connect_runner(client)
+
+    response, job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/chat",
+            headers=_browser_headers(),
+            json={
+                "client_id": CLIENT_ID,
+                "workspace_id": WORKSPACE_ID,
+                "session_id": "session_existing",
+                "prompt": "continue the prior conversation",
+            },
+        ),
+        "chat",
+        {"text": "continued", "status": "completed"},
+    )
+
+    assert response.status_code == 200
+    assert job["payload"]["session_id"] == "session_existing"
+
+
 def test_authenticated_download_is_relayed_and_returns_file(relay_client):
     client, _ = relay_client
     _connect_runner(client)
@@ -274,6 +298,7 @@ def test_streaming_chat_relays_tokens_stages_and_final_result(relay_client):
             json={
                 "client_id": CLIENT_ID,
                 "workspace_id": WORKSPACE_ID,
+                "session_id": "session_streaming",
                 "prompt": "stream this",
             },
         ) as response:
@@ -294,6 +319,7 @@ def test_streaming_chat_relays_tokens_stages_and_final_result(relay_client):
     assert job_response.status_code == 200
     job = job_response.json()
     assert job["stream"] is True
+    assert job["payload"]["session_id"] == "session_streaming"
     event_response = client.post(
         f"/api/runner/event/{job['job_id']}",
         headers=_runner_headers(),

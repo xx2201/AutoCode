@@ -27,13 +27,16 @@ class _FakeManager:
         )
         self.calls = []
         self.changed_files = []
+        self.active_session_id = ""
 
     def list_resume_candidates(self, limit=10):
         return [{"session_id": "session_1"}][:limit]
 
     def submit(self, client_id, prompt, hook_handler=None, on_token=None, attachments=None, permission_mode=None):
         self.calls.append(("chat", client_id, prompt))
-        return self.result
+        if not self.active_session_id:
+            self.active_session_id = self.result.session_id
+        return replace(self.result, session_id=self.active_session_id)
 
     def decide_approval(self, client_id, approval_id, action, expected_turn_id, batch_id):
         self.calls.append(("approval_decision", client_id, approval_id, action, expected_turn_id, batch_id))
@@ -56,7 +59,13 @@ class _FakeManager:
 
     def resume_session(self, client_id, session_id, permission_mode=None):
         self.calls.append(("resume", client_id, session_id))
+        self.active_session_id = session_id
         return replace(self.result, text="resumed")
+
+    def current_session_id(self, client_id):
+        if not self.active_session_id:
+            raise ValueError("No chat session yet.")
+        return self.active_session_id
 
     def set_permission_mode(self, client_id, permission_mode):
         self.calls.append(("permission_mode", client_id, permission_mode))
@@ -248,6 +257,31 @@ def test_runner_executes_chat_approval_decision_and_continuation(tmp_path):
         "batch_1",
     ) in manager.calls
     assert ("continue_turn", "web_12345678", "turn_1", "batch_1") in manager.calls
+
+
+def test_runner_restores_explicit_session_before_chat_after_restart(tmp_path):
+    runner, workspace, managers = _runner(tmp_path)
+    payload = {
+        "workspace_id": workspace.workspace_id,
+        "client_id": "web_12345678",
+        "session_id": "session_existing",
+        "prompt": "continue the prior conversation",
+    }
+
+    first = runner.execute("chat", payload)
+    manager = managers[str((tmp_path / "project-a").resolve())]
+
+    assert first["session_id"] == "session_existing"
+    assert manager.calls[:2] == [
+        ("resume", "web_12345678", "session_existing"),
+        ("chat", "web_12345678", "continue the prior conversation"),
+    ]
+
+    runner.execute("chat", {**payload, "prompt": "continue again"})
+
+    assert [call for call in manager.calls if call[0] == "resume"] == [
+        ("resume", "web_12345678", "session_existing")
+    ]
 
 
 def test_runner_captures_undo_and_reapply_for_one_turn(tmp_path, monkeypatch):

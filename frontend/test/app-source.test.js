@@ -79,6 +79,21 @@ test("agent interaction endpoints remain wired after the architecture split", as
   assert.match(app, /full_access/);
 });
 
+test("new turns carry the durable page session identity", async () => {
+  const { app } = await readSources();
+  const submitStart = app.indexOf("async function submitPrompt");
+  const submitEnd = app.indexOf(
+    "async function continueApprovalBatch",
+    submitStart,
+  );
+  const submitPrompt = app.slice(submitStart, submitEnd);
+
+  assert.ok(submitStart >= 0, "expected the prompt submission flow");
+  assert.match(submitPrompt, /const continuedSessionId = readPageSessionId/);
+  assert.match(submitPrompt, /\|\| activeSessionId/);
+  assert.match(submitPrompt, /session_id: continuedSessionId/);
+});
+
 test("approval request is rendered in the conversation instead of a page banner", async () => {
   const { conversationPane } = await readSources();
   const approvalIndex = conversationPane.indexOf("<ApprovalRequest");

@@ -429,6 +429,19 @@ class LocalRunner:
         all_changed: list[dict] = []
         result = None
 
+        requested_session_id = str(payload.get("session_id", "")).strip()
+        if requested_session_id:
+            try:
+                active_session_id = manager.current_session_id(client_id)
+            except ValueError:
+                active_session_id = ""
+            if active_session_id != requested_session_id:
+                manager.resume_session(
+                    client_id,
+                    requested_session_id,
+                    permission_mode=payload.get("permission_mode"),
+                )
+
         while True:
             git_before = git_turn_snapshot(workspace)
             first_token_seen = False

@@ -523,6 +523,10 @@ export default function App() {
       return;
     }
     const pendingAttachments = attachments;
+    const continuedSessionId = readPageSessionId(
+      window.history,
+      selectedWorkspace.workspace_id,
+    ) || activeSessionId;
     const attachmentSummary = pendingAttachments.map(({ file }) => ({
       name: file.name,
       media_type: file.type || "application/octet-stream",
@@ -555,6 +559,7 @@ export default function App() {
           prompt: cleanPrompt,
           attachments: encodedAttachments,
           permission_mode: permissionMode,
+          session_id: continuedSessionId,
         },
         (event) => {
           handleRunEvent(event, {

@@ -59,6 +59,7 @@ class ChatRequest(ClientRequest):
     prompt: str = Field(default="", max_length=32_000)
     attachments: list["AttachmentRequest"] = Field(default_factory=list, max_length=5)
     permission_mode: Literal["ask", "full_access"] = "ask"
+    session_id: str = Field(default="", max_length=128)
 
 
 class TurnEditRequest(ClientRequest):
@@ -288,6 +289,9 @@ def create_app(
             "prompt": prompt,
             "permission_mode": payload.permission_mode,
         }
+        session_id = payload.session_id.strip()
+        if session_id:
+            chat_payload["session_id"] = session_id
         if payload.attachments:
             chat_payload["attachments"] = [item.model_dump() for item in payload.attachments]
         return await dispatch("chat", chat_payload)
@@ -305,6 +309,9 @@ def create_app(
                 "prompt": prompt,
                 "permission_mode": payload.permission_mode,
             }
+            session_id = payload.session_id.strip()
+            if session_id:
+                chat_payload["session_id"] = session_id
             if payload.attachments:
                 chat_payload["attachments"] = [
                     item.model_dump() for item in payload.attachments
