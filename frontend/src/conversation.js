@@ -23,7 +23,7 @@ export function formatToolTitle(name, argumentsValue = {}) {
     list_files: "Listed files",
     start_process: "Started background process",
     stop_process: "Stopped background process",
-    web_search: "Searched the web",
+    web_search_local: "Searched the web",
     web_fetch: "Fetched URL",
   };
   const label = labels[name] || (name ? `Used ${name.replaceAll("_", " ")}` : "Ran tool");

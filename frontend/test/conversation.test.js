@@ -115,7 +115,7 @@ test("formats compact work durations", () => {
 
 test("shows the web search query in the work item title", () => {
   assert.equal(
-    formatToolTitle("web_search", { query: "latest Python release" }),
+    formatToolTitle("web_search_local", { query: "latest Python release" }),
     "Searched the web · latest Python release",
   );
 });

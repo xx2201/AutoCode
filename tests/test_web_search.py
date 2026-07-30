@@ -97,5 +97,5 @@ def test_factory_registers_web_search_only_when_tavily_is_configured():
         mcp_manager=manager,
     )
 
-    assert "web_search" not in {tool.name for tool in without_search}
-    assert "web_search" in {tool.name for tool in with_search}
+    assert "web_search_local" not in {tool.name for tool in without_search}
+    assert "web_search_local" in {tool.name for tool in with_search}

@@ -23,7 +23,7 @@ def _compact_text(value: object, limit: int) -> str:
 class WebSearchTool(Tool):
     """Search public web sources without granting the Agent general network access."""
 
-    name = "web_search"
+    name = "web_search_local"
     description = (
         "Search the public web for current or externally sourced information. "
         "Use this for recent facts, news, documentation, or claims that need sources. "
@@ -84,17 +84,17 @@ class WebSearchTool(Tool):
     ) -> str:
         query = str(query or "").strip()
         if not query:
-            return "Error: web_search requires a non-empty query."
+            return "Error: web_search_local requires a non-empty query."
         if len(query) > _MAX_QUERY_LENGTH:
-            return f"Error: web_search query must be at most {_MAX_QUERY_LENGTH} characters."
+            return f"Error: web_search_local query must be at most {_MAX_QUERY_LENGTH} characters."
         if topic not in _TOPICS:
-            return "Error: web_search topic must be general, news, or finance."
+            return "Error: web_search_local topic must be general, news, or finance."
         if time_range not in _TIME_RANGES:
-            return "Error: web_search time_range must be day, week, month, or year."
+            return "Error: web_search_local time_range must be day, week, month, or year."
         if isinstance(max_results, bool) or not isinstance(max_results, int):
-            return "Error: web_search max_results must be an integer from 1 to 10."
+            return "Error: web_search_local max_results must be an integer from 1 to 10."
         if not 1 <= max_results <= 10:
-            return "Error: web_search max_results must be between 1 and 10."
+            return "Error: web_search_local max_results must be between 1 and 10."
 
         search_args: dict[str, object] = {
             "query": query,

@@ -1,6 +1,6 @@
 # Web search tool
 
-AutoCode registers the read-only `web_search` tool when `TAVILY_API_KEY` is
+AutoCode registers the read-only `web_search_local` tool when `TAVILY_API_KEY` is
 available in the local Agent environment:
 
 ```dotenv
