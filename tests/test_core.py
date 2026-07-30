@@ -258,7 +258,7 @@ def test_context_can_trigger_compression_from_last_real_prompt_tokens():
     assert "summarize_old" in with_real_usage.layers
 
 
-def test_agent_passes_last_real_prompt_tokens_into_compression(tmp_path):
+def test_agent_passes_real_usage_plus_trailing_estimate_into_compression(tmp_path):
     class _NoopLLM:
         def __init__(self):
             self.model = "fake"
@@ -270,6 +270,8 @@ def test_agent_passes_last_real_prompt_tokens_into_compression(tmp_path):
     agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
     agent.messages = [{"role": "user", "content": "prompt"}]
     agent._record_prompt_usage(4321)
+    trailing = [{"role": "assistant", "content": "answer " * 12}]
+    agent.messages.extend(trailing)
     captured = {}
 
     def _fake_maybe_compress(messages, llm=None, last_prompt_tokens=0):
@@ -286,7 +288,7 @@ def test_agent_passes_last_real_prompt_tokens_into_compression(tmp_path):
     agent.context.maybe_compress = _fake_maybe_compress
     agent._maybe_compress_messages()
 
-    assert captured["last_prompt_tokens"] == 4321
+    assert captured["last_prompt_tokens"] == 4321 + estimate_tokens(trailing)
 
 
 def test_agent_context_usage_prefers_real_prompt_and_caps_at_window(tmp_path):
@@ -333,7 +335,7 @@ def test_agent_context_usage_drops_stale_real_usage_after_history_rewrite(tmp_pa
     assert agent.context_usage()["used_tokens"] == estimate_tokens(agent.messages)
 
 
-def test_agent_context_usage_keeps_real_usage_for_an_appended_response(tmp_path):
+def test_agent_context_usage_adds_messages_appended_after_real_usage(tmp_path):
     class _NoopLLM:
         model = "fake"
 
@@ -344,9 +346,56 @@ def test_agent_context_usage_keeps_real_usage_for_an_appended_response(tmp_path)
     )
     agent.messages = [{"role": "user", "content": "prompt"}]
     agent._record_prompt_usage(6_000)
-    agent.messages.append({"role": "assistant", "content": "answer"})
+    trailing = [
+        {"role": "assistant", "content": "answer " * 12},
+        {"role": "tool", "tool_call_id": "call-1", "content": "result " * 18},
+        {"role": "user", "content": "continue " * 6},
+    ]
+    agent.messages.extend(trailing)
 
-    assert agent.context_usage()["used_tokens"] == 6_000
+    assert agent.context_usage()["used_tokens"] == 6_000 + estimate_tokens(trailing)
+
+
+def test_agent_context_usage_reanchors_without_double_counting_tail(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+
+    agent = Agent(
+        llm=_NoopLLM(),
+        workspace_root=str(tmp_path),
+        max_context_tokens=10_000,
+    )
+    agent.messages = [{"role": "user", "content": "prompt"}]
+    agent._record_prompt_usage(6_000)
+    agent.messages.append({"role": "assistant", "content": "answer " * 12})
+    assert agent.context_usage()["used_tokens"] > 6_000
+
+    agent._record_prompt_usage(6_500)
+
+    assert agent.context_usage()["used_tokens"] == 6_500
+
+
+def test_agent_context_usage_restores_anchor_and_estimates_trailing_messages(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+
+    anchor = [{"role": "user", "content": "prompt"}]
+    trailing = [{"role": "assistant", "content": "answer " * 12}]
+    state = SessionState(
+        session_id="restored",
+        context_used_tokens=6_000,
+        context_anchor_messages=len(anchor),
+        context_anchor_digest=Agent._messages_digest(anchor),
+    )
+    agent = Agent(
+        llm=_NoopLLM(),
+        workspace_root=str(tmp_path),
+        max_context_tokens=10_000,
+    )
+
+    agent.restore_session(state, [*anchor, *trailing])
+
+    assert agent.context_usage()["used_tokens"] == 6_000 + estimate_tokens(trailing)
 
 
 def test_agent_ignores_unanchored_usage_from_legacy_checkpoint(tmp_path):

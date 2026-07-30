@@ -2,6 +2,7 @@ import threading
 
 from autocode.state import checkpoint as checkpoint_module
 from autocode.config import Config
+from autocode.context import estimate_tokens
 from autocode.llm import LLMResponse, ToolCall
 from autocode.remote.formatting import render_turn_result, split_message
 from autocode.remote.manager import RemoteManager
@@ -85,14 +86,17 @@ def test_remote_manager_can_resume_checkpoint(tmp_path, monkeypatch):
 
     result = manager.submit(202, "finish task")
     assert result.status == "completed"
-    assert result.context_used_tokens == 125
+    expected_tokens = 125 + estimate_tokens([
+        {"role": "assistant", "content": "finished"},
+    ])
+    assert result.context_used_tokens == expected_tokens
     assert result.context_window_tokens == 1_000_000
     session_id = result.session_id
 
     resumed = manager.resume_session(202, session_id)
     assert resumed.session_id == session_id
     assert resumed.status == "completed"
-    assert resumed.context_used_tokens == 125
+    assert resumed.context_used_tokens == expected_tokens
 
 
 def test_remote_manager_resume_uses_current_configured_model(tmp_path, monkeypatch):

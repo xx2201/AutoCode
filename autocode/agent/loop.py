@@ -141,8 +141,7 @@ class Agent:
 
     def context_usage(self) -> dict:
         """Return the current conversation-window occupancy, not cumulative billing tokens."""
-        estimated_tokens = estimate_tokens(self.messages)
-        used_tokens = max(estimated_tokens, self._valid_last_prompt_tokens())
+        used_tokens = self._estimated_context_tokens()
         window_tokens = max(1, int(self.context.max_tokens))
         used_tokens = min(used_tokens, window_tokens)
         return {
@@ -208,6 +207,15 @@ class Agent:
         if self._messages_digest(anchored_messages) != self._last_prompt_digest:
             return 0
         return self._last_prompt_tokens
+
+    def _estimated_context_tokens(self) -> int:
+        """Combine the last authoritative input usage with locally appended history."""
+        prompt_tokens = self._valid_last_prompt_tokens()
+        if prompt_tokens <= 0:
+            return estimate_tokens(self.messages)
+        # 上游 usage 只覆盖锚点请求；模型回复、工具结果和后续用户输入需在本地补算。
+        trailing_messages = self.messages[self._last_prompt_message_count:]
+        return prompt_tokens + estimate_tokens(trailing_messages)
 
     def _fresh_tools(self) -> list[Tool]:
         if self._tool_factory is not None:
@@ -391,10 +399,7 @@ class Agent:
         return text
 
     def _maybe_compress_messages(self):
-        effective_used = self.context.effective_used(
-            self.messages,
-            last_prompt_tokens=self._valid_last_prompt_tokens(),
-        )
+        effective_used = self._estimated_context_tokens()
         if (
             self.task_state is not None
             and hasattr(self.llm, "_call_with_retry")
@@ -404,7 +409,7 @@ class Agent:
         result = self.context.maybe_compress(
             self.messages,
             self.llm,
-            last_prompt_tokens=self._valid_last_prompt_tokens(),
+            last_prompt_tokens=effective_used,
         )
         if result.compressed and self.session_state is not None:
             saved_tokens = max(0, result.before_tokens - result.after_tokens)
