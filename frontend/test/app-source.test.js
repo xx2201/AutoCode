@@ -132,6 +132,20 @@ test("workspace initialization restores only a session from the current page", a
   assert.match(initializeWorkspace, /renewClientId\(workspaceId\)/);
 });
 
+test("runner disconnect does not invalidate the current page session", async () => {
+  const { app } = await readSources();
+  const initializeWorkspaceIndex = app.indexOf("async function initializeWorkspace");
+  const effectStart = app.lastIndexOf("useEffect(() => {", initializeWorkspaceIndex);
+  const initializeStart = app.indexOf("async function initializeWorkspace", effectStart);
+  const effectPrefix = app.slice(effectStart, initializeStart);
+
+  assert.ok(effectStart >= 0, "expected workspace initialization effect");
+  assert.match(
+    effectPrefix,
+    /if \(!selectedWorkspace \|\| !runnerOnline\) return;/,
+  );
+});
+
 test("page session restoration renders loading before the welcome screen", async () => {
   const { app, conversationPane } = await readSources();
   const restoreBranch = conversationPane.indexOf("sessionRestoring ? (");

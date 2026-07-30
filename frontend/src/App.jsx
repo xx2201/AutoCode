@@ -247,7 +247,9 @@ export default function App() {
   }, [bootstrap.context_window_tokens]);
 
   useEffect(() => {
-    if (!selectedWorkspace) return;
+    // Runner 重启期间会短暂离线。此时会话列表不可用，不能把空列表
+    // 误判为当前页面的 session 已被删除并清除续接标识。
+    if (!selectedWorkspace || !runnerOnline) return;
     let ignore = false;
     async function initializeWorkspace() {
       const workspaceId = selectedWorkspace.workspace_id;
