@@ -7,12 +7,14 @@ and makes edits safe and reviewable.
 """
 
 import difflib
+import threading
 
-from .base import Tool
+from .base import ConcurrencySpec, Tool
 from .file_state import DEFAULT_FILE_READ_TRACKER
 
 # track files changed this session for /diff
 _changed_files: set[str] = set()
+_changed_files_lock = threading.Lock()
 
 
 class EditFileTool(Tool):
@@ -46,6 +48,12 @@ class EditFileTool(Tool):
         },
         "required": ["file_path", "old_string", "new_string"],
     }
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.resources(
+            writes={self.file_resource(str(arguments["file_path"]))},
+            reason="edits to different normalized paths are independent",
+        )
 
     def execute(
         self,
@@ -97,7 +105,8 @@ class EditFileTool(Tool):
                 tracker.forget(p)
             else:
                 tracker.record(p, new_content)
-            _changed_files.add(str(p))
+            with _changed_files_lock:
+                _changed_files.add(str(p))
 
             # The tool result remains machine-readable for the model; the web UI renders its own diff.
             diff = _unified_diff(content, new_content, str(p))

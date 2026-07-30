@@ -8,7 +8,7 @@ import json
 import mimetypes
 from pathlib import Path
 
-from .base import Tool, ToolResult
+from .base import ConcurrencySpec, Tool, ToolResult
 from .file_state import DEFAULT_FILE_READ_TRACKER
 
 _IMAGE_TYPES = {"image/gif", "image/jpeg", "image/png", "image/webp"}
@@ -59,6 +59,12 @@ class ReadTool(Tool):
         },
         "required": ["file_path"],
     }
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.resources(
+            reads={self.file_resource(str(arguments["file_path"]))},
+            reason="file reads may share a path but must not overlap a write",
+        )
 
     def execute(
         self,

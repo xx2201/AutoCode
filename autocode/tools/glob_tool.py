@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from pathlib import Path
 
-from .base import Tool
+from .base import ConcurrencySpec, Tool
 
 _MAX_RESULTS = 100
 
@@ -35,6 +35,9 @@ class GlobTool(Tool):
         },
         "required": ["pattern"],
     }
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.parallel("read-only workspace discovery")
 
     def execute(self, pattern: str, path: str = ".", offset: int = 0, limit: int = 100) -> str:
         try:

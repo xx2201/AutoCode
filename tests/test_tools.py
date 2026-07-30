@@ -41,6 +41,7 @@ def test_bash_basic():
 def test_bash_exit_code():
     bash = get_tool("bash")
     r = bash.execute(command="exit 42")
+    assert r.startswith("Error: command exited with code 42")
     assert "exit code: 42" in r
 
 

@@ -1,6 +1,6 @@
 """Background process tools for long-running commands."""
 
-from .base import Tool
+from .base import ConcurrencySpec, Tool
 from ..infra.processes import BackgroundProcessManager
 
 
@@ -39,6 +39,12 @@ class StartProcessTool(Tool):
         "required": ["command"],
     }
 
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.resources(
+            writes={"process-manager"},
+            reason="process creation allocates a new managed identifier",
+        )
+
     def execute(
         self,
         command: str,
@@ -71,6 +77,13 @@ class ReadProcessOutputTool(Tool):
         "required": ["process_id"],
     }
 
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        process_id = str(arguments["process_id"])
+        return ConcurrencySpec.resources(
+            reads={f"process:{process_id}"},
+            reason="different managed processes are independent",
+        )
+
     def execute(self, process_id: str, tail_lines: int = 50) -> str:
         try:
             return _manager(self).read_output(process_id=process_id, tail_lines=tail_lines)
@@ -91,6 +104,13 @@ class WaitForProcessOutputTool(Tool):
         "required": ["process_id", "pattern"],
     }
 
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        process_id = str(arguments["process_id"])
+        return ConcurrencySpec.resources(
+            reads={f"process:{process_id}"},
+            reason="different managed processes are independent",
+        )
+
     def execute(self, process_id: str, pattern: str, timeout: int = 30) -> str:
         try:
             return _manager(self).wait_for_output(process_id=process_id, pattern=pattern, timeout=timeout)
@@ -108,6 +128,13 @@ class StopProcessTool(Tool):
         },
         "required": ["process_id"],
     }
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        process_id = str(arguments["process_id"])
+        return ConcurrencySpec.resources(
+            writes={f"process:{process_id}"},
+            reason="stopping conflicts with reads and waits for the same process",
+        )
 
     def execute(self, process_id: str) -> str:
         try:

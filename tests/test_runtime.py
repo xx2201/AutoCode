@@ -128,17 +128,19 @@ def test_runtime_emits_hooks(tmp_path):
     result = runtime.execute_tool_call(state, tc, "session_test")
 
     assert result == "echo:hi"
-    assert events[0] == (
-        "before_tool",
-        {
-            "session_id": "session_test",
-            "task_id": "task_test",
-            "task_title": "",
-            "tool_call_id": "1",
-            "tool_name": "echo",
-            "arguments": {"text": "hi"},
-        },
-    )
+    assert events[0][0] == "before_tool"
+    assert events[0][1] == {
+        "session_id": "session_test",
+        "task_id": "task_test",
+        "task_title": "",
+        "tool_call_id": "1",
+        "tool_name": "echo",
+        "arguments": {"text": "hi"},
+        "execution_group_id": 1,
+        "execution_group_size": 1,
+        "concurrency_mode": "exclusive",
+        "concurrency_reason": "tool does not declare concurrency safety",
+    }
     assert events[1][0] == "after_tool"
     assert events[1][1]["tool_call_id"] == "1"
     assert events[1][1]["tool_name"] == "echo"

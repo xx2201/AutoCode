@@ -1,6 +1,6 @@
 """Todo writing tool for explicit planning."""
 
-from .base import Tool
+from .base import ConcurrencySpec, Tool
 from ..context import normalize_todos, render_todos
 
 
@@ -30,6 +30,12 @@ class TodoWriteTool(Tool):
     }
 
     _parent_agent = None
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.exclusive(
+            "todo updates mutate task and session state",
+            main_thread=True,
+        )
 
     def execute(self, todos: list[dict]) -> str:
         if self._parent_agent is None or self._parent_agent.task_state is None:

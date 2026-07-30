@@ -8,7 +8,7 @@ its own context window.
 The sub-agent runs to completion and returns a text summary.
 """
 
-from .base import Tool
+from .base import ConcurrencySpec, Tool
 
 
 class AgentTool(Tool):
@@ -32,6 +32,12 @@ class AgentTool(Tool):
 
     # set by Agent.__init__ after construction
     _parent_agent = None
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.exclusive(
+            "sub-agents share the parent model and lifecycle",
+            main_thread=True,
+        )
 
     def execute(self, task: str) -> str:
         if self._parent_agent is None:

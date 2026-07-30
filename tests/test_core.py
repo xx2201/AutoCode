@@ -4,6 +4,7 @@ import os
 import pathlib
 
 from autocode import Agent, LLM, Config, ALL_TOOLS, __version__
+from autocode import cli as cli_module
 from autocode.context import CompressionResult, ContextManager, MemoryManager, estimate_tokens
 from autocode.llm import LLMResponse
 from autocode.state import SessionState
@@ -12,6 +13,24 @@ from autocode.tools import get_tool
 
 def test_version():
     assert __version__ == "0.3.0"
+
+
+def test_cli_configures_redirected_stdio_as_utf8(monkeypatch):
+    calls = []
+
+    class _Stream:
+        def reconfigure(self, **kwargs):
+            calls.append(kwargs)
+
+    monkeypatch.setattr(cli_module.sys, "stdout", _Stream())
+    monkeypatch.setattr(cli_module.sys, "stderr", _Stream())
+
+    cli_module._configure_utf8_stdio()
+
+    assert calls == [
+        {"encoding": "utf-8", "errors": "replace"},
+        {"encoding": "utf-8", "errors": "replace"},
+    ]
 
 
 def test_public_api_exports():
@@ -529,9 +548,9 @@ def test_agent_request_messages_keep_rules_in_system_and_runtime_state_in_tail(t
 
     assert request_messages[0]["role"] == "system"
     assert "# Rules Memory" in request_messages[0]["content"]
-    assert "# User-facing progress updates" in request_messages[0]["content"]
-    assert "It is not private reasoning" in request_messages[0]["content"]
-    assert "Never repeat the same update" in request_messages[0]["content"]
+    assert "## Progress Updates" in request_messages[0]["content"]
+    assert "without exposing private chain-of-thought" in request_messages[0]["content"]
+    assert "Do not repeat intentions as though the tool result had not arrived" in request_messages[0]["content"]
     assert "# Task" not in request_messages[0]["content"]
     assert request_messages[-1]["role"] == "user"
     assert "[Runtime state for this turn." in request_messages[-1]["content"]

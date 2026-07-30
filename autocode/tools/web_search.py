@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from .base import Tool
+from .base import ConcurrencySpec, Tool
 
 _TOPICS = {"general", "news", "finance"}
 _TIME_RANGES = {"", "day", "week", "month", "year"}
@@ -60,6 +60,9 @@ class WebSearchTool(Tool):
         },
         "required": ["query"],
     }
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.parallel("independent public web search")
 
     def __init__(self, api_key: str, client: Any | None = None):
         self._api_key = api_key
