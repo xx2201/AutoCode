@@ -5,7 +5,7 @@ import {
   formatDuration,
   formatToolTitle,
   groupConversation,
-  latestCompletedTurnId,
+  latestEditableTurnId,
   createPendingInput,
   normalizeChangeAction,
   settlePendingInput,
@@ -150,14 +150,16 @@ test("does not render legacy model-only visual context as a user turn", () => {
   assert.equal(turns[0].answer.content, "图片里是 Apple Gift Card。");
 });
 
-test("only exposes the latest completed turn for editing", () => {
+test("exposes only the latest settled turn for editing", () => {
   const turns = [
     { id: "turn-1", user: { content: "one" }, answer: { content: "done" } },
     { id: "turn-2", user: { content: "two" }, answer: null },
   ];
 
-  assert.equal(latestCompletedTurnId(turns), "turn-1");
-  assert.equal(latestCompletedTurnId(turns, true), "");
+  assert.equal(latestEditableTurnId(turns, false, "failed"), "turn-2");
+  assert.equal(latestEditableTurnId(turns, false, "completed"), "turn-2");
+  assert.equal(latestEditableTurnId(turns, false, "running"), "");
+  assert.equal(latestEditableTurnId(turns, true, "failed"), "");
 });
 
 test("tracks queue and steer messages through their request lifecycle", () => {

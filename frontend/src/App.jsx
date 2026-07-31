@@ -31,7 +31,7 @@ import {
 import {
   createPendingInput,
   groupConversation,
-  latestCompletedTurnId,
+  latestEditableTurnId,
   normalizeChangeAction,
   settlePendingInput,
 } from "./conversation";
@@ -112,8 +112,8 @@ export default function App() {
 
   const conversationTurns = useMemo(() => groupConversation(messages), [messages]);
   const editableTurnId = useMemo(
-    () => latestCompletedTurnId(conversationTurns, busy),
-    [busy, conversationTurns],
+    () => latestEditableTurnId(conversationTurns, busy, status),
+    [busy, conversationTurns, status],
   );
 
   const files = useWorkspaceFiles({
@@ -398,6 +398,7 @@ export default function App() {
     if (!cleanPrompt || editBusy || busy || !selectedWorkspace) return;
     const turnId = turn.user?.turn_id || turn.id;
     const previousMessages = messages;
+    const previousStatus = status;
     setMessages((items) => {
       const targetIndex = items.findLastIndex((message) => (
         message.role === "user" && (!message.turn_id || message.turn_id === turnId)
@@ -454,6 +455,7 @@ export default function App() {
       refreshGit().catch((error) => showToast(`Git 刷新失败：${error.message}`));
     } catch (error) {
       setMessages(previousMessages);
+      setStatus(previousStatus);
       setEditingTurnId(turn.id);
       showToast(error.message);
     } finally {

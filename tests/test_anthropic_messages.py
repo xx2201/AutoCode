@@ -274,6 +274,7 @@ def test_anthropic_backend_streams_text_and_normalizes_tool_calls():
     assert captured["tools"][0]["input_schema"]["properties"]["file_path"] == {
         "type": "string"
     }
+    assert captured["output_config"] == {"effort": "low"}
     assert response.content == "done"
     assert response.tool_calls[0].id == "call-1"
     assert response.tool_calls[0].arguments == {"file_path": "README.md"}
@@ -282,6 +283,36 @@ def test_anthropic_backend_streams_text_and_normalizes_tool_calls():
     assert response.completion_tokens == 4
     assert response.cache_read_tokens == 3
     assert response.cache_miss_tokens == 12
+
+
+def test_anthropic_backend_preserves_thinking_blocks_for_the_next_turn():
+    final = _message(
+        [
+            {
+                "type": "thinking",
+                "thinking": "inspect the repository",
+                "signature": "signed-thinking",
+            },
+            {"type": "text", "text": "done"},
+        ]
+    )
+
+    response = AnthropicMessagesLLM._normalize_response(final)
+    projected = serialize_anthropic_messages(
+        "system",
+        [
+            {"role": "user", "content": "start"},
+            response.message,
+            {"role": "user", "content": "continue"},
+        ],
+    )
+
+    assert response.content == "done"
+    assert [block["type"] for block in response.model_content] == [
+        "thinking",
+        "text",
+    ]
+    assert projected[2]["content"] == response.model_content
 
 
 def test_anthropic_backend_does_not_retry_after_streaming_visible_text():
@@ -320,6 +351,42 @@ def test_anthropic_backend_does_not_retry_after_streaming_visible_text():
         )
 
     assert streamed == ["partial"]
+    assert calls == 1
+
+
+def test_anthropic_backend_does_not_retry_after_streaming_thinking():
+    calls = 0
+
+    class _BrokenStream:
+        def __iter__(self):
+            yield SimpleNamespace(type="thinking", thinking="partial reasoning")
+            raise APIConnectionError(request=httpx.Request("POST", "https://example.com"))
+
+    class _Manager:
+        def __enter__(self):
+            return _BrokenStream()
+
+        def __exit__(self, exc_type, exc, tb):
+            return False
+
+    class _Messages:
+        def stream(self, **params):
+            nonlocal calls
+            calls += 1
+            return _Manager()
+
+    llm = AnthropicMessagesLLM(
+        model="macaron-v1-coding-venti",
+        api_key="sk-test",
+        base_url="https://example.com",
+    )
+    llm.client = SimpleNamespace(messages=_Messages())
+
+    with pytest.raises(APIConnectionError):
+        llm._call_with_retry(
+            {"model": llm.model, "max_tokens": 16, "messages": []},
+        )
+
     assert calls == 1
 
 

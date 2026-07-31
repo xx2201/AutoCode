@@ -37,6 +37,7 @@ class ToolCall:
 class LLMResponse:
     content: str = ""
     tool_calls: list[ToolCall] = field(default_factory=list)
+    model_content: list[dict] = field(default_factory=list)
     prompt_tokens: int = 0
     completion_tokens: int = 0
     cache_read_tokens: int = 0
@@ -47,6 +48,8 @@ class LLMResponse:
     def message(self) -> dict:
         """Convert to OpenAI message format for appending to history."""
         msg: dict = {"role": "assistant", "content": self.content or None}
+        if self.model_content:
+            msg["model_content"] = [dict(block) for block in self.model_content]
         if self.tool_calls:
             msg["tool_calls"] = [
                 {
@@ -442,6 +445,12 @@ class AnthropicMessagesLLM(LLM):
             "model": self.model,
             "max_tokens": max_tokens,
             "messages": message_params,
+            # The relay defaults omitted effort to high. Be explicit so a
+            # routine tool-selection step cannot spend the whole output budget
+            # on hidden reasoning before emitting a tool call or user text.
+            "output_config": {
+                "effort": str(self.extra.get("reasoning_effort", "low")),
+            },
         }
         if system:
             params["system"] = system
@@ -511,6 +520,10 @@ class AnthropicMessagesLLM(LLM):
                     "backend": type(self).__name__,
                     "api_format": self.api_format,
                     "tool_call_count": len(response.tool_calls),
+                    "content_block_types": [
+                        str(block.get("type") or "")
+                        for block in response.model_content
+                    ],
                     "stop_reason": response.stop_reason,
                 },
             )
@@ -539,6 +552,14 @@ class AnthropicMessagesLLM(LLM):
                                 first_content_at = datetime.now(timezone.utc)
                             if on_token:
                                 on_token(text)
+                            continue
+                        if event_type == "thinking":
+                            # Thinking is not user-visible, but it is still
+                            # streamed model output. Retrying after this point
+                            # would replay a partially completed generation.
+                            emitted_output = True
+                            if first_content_at is None:
+                                first_content_at = datetime.now(timezone.utc)
                             continue
                         if event_type != "content_block_stop":
                             continue
@@ -619,7 +640,9 @@ class AnthropicMessagesLLM(LLM):
     def _normalize_response(message) -> LLMResponse:
         text_parts: list[str] = []
         tool_calls: list[ToolCall] = []
+        model_content: list[dict] = []
         for block in _field(message, "content") or []:
+            model_content.append(_content_block_payload(block))
             block_type = _field(block, "type")
             if block_type == "text":
                 text_parts.append(str(_field(block, "text") or ""))
@@ -644,6 +667,7 @@ class AnthropicMessagesLLM(LLM):
         return LLMResponse(
             content="".join(text_parts),
             tool_calls=tool_calls,
+            model_content=model_content,
             prompt_tokens=input_tokens + cache_read + cache_creation,
             completion_tokens=output_tokens,
             cache_read_tokens=cache_read,
@@ -915,5 +939,28 @@ def _tool_call_payload(tool_call: ToolCall) -> dict:
         payload["raw_arguments"] = tool_call.raw_arguments
     if tool_call.parse_error is not None:
         payload["parse_error"] = tool_call.parse_error
+    return payload
+
+
+def _content_block_payload(block) -> dict:
+    """Convert an Anthropic SDK content block to checkpoint-safe JSON."""
+    if isinstance(block, dict):
+        return dict(block)
+    model_dump = getattr(block, "model_dump", None)
+    if callable(model_dump):
+        return model_dump(mode="json", exclude_none=True)
+
+    block_type = str(_field(block, "type") or "")
+    payload: dict = {"type": block_type}
+    fields_by_type = {
+        "text": ("text", "citations"),
+        "thinking": ("thinking", "signature"),
+        "redacted_thinking": ("data",),
+        "tool_use": ("id", "name", "input"),
+    }
+    for name in fields_by_type.get(block_type, ()):
+        value = _field(block, name)
+        if value is not None:
+            payload[name] = value
     return payload
 

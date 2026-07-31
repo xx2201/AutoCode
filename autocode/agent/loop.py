@@ -684,16 +684,16 @@ class Agent:
         attachments: list[dict] | None = None,
         raw_user_prompt: str | None = None,
     ) -> str:
-        """Supersede the last completed turn while leaving workspace files untouched."""
+        """Supersede the last finished turn while leaving workspace files untouched."""
         normalized_prompt = prompt.strip()
         original_prompt = raw_user_prompt if raw_user_prompt is not None else normalized_prompt
         if not normalized_prompt:
             raise ValueError("Edited prompt is required.")
         task = self.task_state
-        if task is None or task.status != "completed":
-            raise ValueError("Only the last completed turn can be edited.")
+        if task is None or task.status not in {"completed", "failed"}:
+            raise ValueError("Only the last finished turn can be edited.")
         if task.task_id != turn_id:
-            raise ValueError(f"Turn '{turn_id}' is not the last completed turn.")
+            raise ValueError(f"Turn '{turn_id}' is not the last finished turn.")
 
         prompt_index = next(
             (

@@ -189,6 +189,10 @@ def _anthropic_user_blocks(message: dict) -> list[dict]:
 
 
 def _anthropic_assistant_blocks(message: dict) -> list[dict]:
+    native_blocks = message.get("model_content") or []
+    if native_blocks:
+        return [dict(block) for block in native_blocks]
+
     blocks: list[dict] = []
     content = message.get("content")
     if isinstance(content, str) and content:

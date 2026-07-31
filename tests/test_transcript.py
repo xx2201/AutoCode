@@ -1,3 +1,5 @@
+import pytest
+
 from autocode.agent import Agent
 from autocode.llm import LLMResponse
 from autocode.llm import ToolCall
@@ -143,6 +145,43 @@ def test_edit_last_completed_turn_supersedes_context_but_not_workspace(tmp_path,
     assert marker["payload"]["replacement_turn_id"] == agent.task_state.task_id
 
 
+def test_edit_last_failed_turn_retries_from_the_original_prompt(tmp_path, monkeypatch):
+    monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
+
+    class _FailThenSucceedLLM:
+        model = "fake-model"
+        total_prompt_tokens = 0
+        total_completion_tokens = 0
+
+        def __init__(self):
+            self.responses = [
+                LLMResponse(completion_tokens=32_000, stop_reason="max_tokens"),
+                LLMResponse(content="recovered answer", stop_reason="end_turn"),
+            ]
+
+        def chat(self, messages, tools=None, on_token=None):
+            return self.responses.pop(0)
+
+    agent = Agent(
+        llm=_FailThenSucceedLLM(),
+        workspace_root=str(tmp_path),
+        permission_mode="full_access",
+    )
+
+    with pytest.raises(RuntimeError, match="token 上限"):
+        agent.chat("original prompt")
+    failed_turn_id = agent.task_state.task_id
+    assert agent.task_state.status == "failed"
+
+    assert agent.edit_last_turn(failed_turn_id, "edited prompt") == "recovered answer"
+    assert [message["content"] for message in agent.messages] == [
+        "edited prompt",
+        "recovered answer",
+    ]
+    assert agent.task_state.status == "completed"
+    assert agent.task_state.supersedes_turn_id == failed_turn_id
+
+
 def test_edit_rejects_non_latest_or_incomplete_turn(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
     agent = Agent(llm=_DoneLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
@@ -151,7 +190,7 @@ def test_edit_rejects_non_latest_or_incomplete_turn(tmp_path, monkeypatch):
     try:
         agent.edit_last_turn("older-turn", "edited")
     except ValueError as exc:
-        assert "not the last completed turn" in str(exc)
+        assert "not the last finished turn" in str(exc)
     else:
         raise AssertionError("expected stale turn edit to fail")
 
@@ -159,7 +198,7 @@ def test_edit_rejects_non_latest_or_incomplete_turn(tmp_path, monkeypatch):
     try:
         agent.edit_last_turn(agent.task_state.task_id, "edited")
     except ValueError as exc:
-        assert "last completed turn" in str(exc)
+        assert "last finished turn" in str(exc)
     else:
         raise AssertionError("expected active turn edit to fail")
 

@@ -168,13 +168,10 @@ export function mergeWorkEvent(items, event) {
   });
 }
 
-export function latestCompletedTurnId(turns, busy = false) {
-  if (busy) return "";
-  for (let index = turns.length - 1; index >= 0; index -= 1) {
-    const turn = turns[index];
-    if (turn.user && turn.answer) return turn.id;
-  }
-  return "";
+export function latestEditableTurnId(turns, busy = false, status = "") {
+  if (busy || !["completed", "failed"].includes(status)) return "";
+  const latest = turns.at(-1);
+  return latest?.user ? latest.id : "";
 }
 
 export function createPendingInput(prompt, mode, id) {
