@@ -445,11 +445,10 @@ class AnthropicMessagesLLM(LLM):
             "model": self.model,
             "max_tokens": max_tokens,
             "messages": message_params,
-            # The relay defaults omitted effort to high. Be explicit so a
-            # routine tool-selection step cannot spend the whole output budget
-            # on hidden reasoning before emitting a tool call or user text.
+            # Keep the requested reasoning level explicit so relay behavior
+            # does not change when its provider-side default changes.
             "output_config": {
-                "effort": str(self.extra.get("reasoning_effort", "low")),
+                "effort": str(self.extra.get("reasoning_effort", "high")),
             },
         }
         if system:

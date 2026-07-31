@@ -274,7 +274,7 @@ def test_anthropic_backend_streams_text_and_normalizes_tool_calls():
     assert captured["tools"][0]["input_schema"]["properties"]["file_path"] == {
         "type": "string"
     }
-    assert captured["output_config"] == {"effort": "low"}
+    assert captured["output_config"] == {"effort": "high"}
     assert response.content == "done"
     assert response.tool_calls[0].id == "call-1"
     assert response.tool_calls[0].arguments == {"file_path": "README.md"}
