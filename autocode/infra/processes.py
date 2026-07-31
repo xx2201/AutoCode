@@ -13,6 +13,7 @@ from pathlib import Path
 from .filesystem import WorkspaceFS
 from .process_control import process_group_options, terminate_process_tree
 from .sandbox import Sandbox, decode_output
+from .shell import create_shell_provider
 
 _SAFE_PROCESS_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -25,6 +26,7 @@ class BackgroundProcess:
     log_path: str
     pid: int
     started_at: str
+    shell: str
     task_id: str = ""
     keep_alive: bool = False
 
@@ -42,6 +44,7 @@ class BackgroundProcessManager:
         log_file: str | None = None,
         keep_alive: bool = False,
         task_id: str | None = None,
+        shell: str | None = None,
     ) -> str:
         run_cwd = self.fs.resolve_path(cwd)
         self.fs.ensure_within_workspace(run_cwd)
@@ -52,9 +55,10 @@ class BackgroundProcessManager:
         log_path = self._resolve_log_path(log_file, process_id)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_handle = log_path.open("ab")
+        provider = create_shell_provider(shell)
+        invocation = provider.invocation(command)
 
         popen_kwargs = {
-            "shell": True,
             "cwd": str(run_cwd),
             "stdout": log_handle,
             "stderr": subprocess.STDOUT,
@@ -62,7 +66,7 @@ class BackgroundProcessManager:
             **process_group_options(),
         }
 
-        proc = subprocess.Popen(command, **popen_kwargs)
+        proc = subprocess.Popen(invocation.argv(), **popen_kwargs)
         meta = BackgroundProcess(
             process_id=process_id,
             command=command,
@@ -70,6 +74,7 @@ class BackgroundProcessManager:
             log_path=str(log_path),
             pid=proc.pid,
             started_at=time.strftime("%Y-%m-%d %H:%M:%S"),
+            shell=invocation.name,
             task_id=task_id or "",
             keep_alive=bool(keep_alive),
         )
@@ -79,6 +84,7 @@ class BackgroundProcessManager:
             f"Started background process {process_id}\n"
             f"PID: {proc.pid}\n"
             f"CWD: {run_cwd}\n"
+            f"Shell: {invocation.name}\n"
             f"Log: {log_path}"
         )
 

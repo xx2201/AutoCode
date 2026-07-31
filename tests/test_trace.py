@@ -26,7 +26,7 @@ def test_trace_recorder_aggregates_events(tmp_path, monkeypatch):
     recorder.handle("policy_decision", {
         "session_id": "session_trace",
         "task_id": "task_trace",
-        "tool_name": "bash",
+        "tool_name": "shell_command",
         "decision": {"action": "confirm", "reason": "unsafe"},
     })
     recorder.handle("before_tool", {

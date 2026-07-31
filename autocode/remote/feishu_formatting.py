@@ -105,8 +105,10 @@ def build_approval_card(
     owner_open_id: str,
 ) -> dict:
     command = ""
-    if result.pending_tool == "bash" and result.pending_arguments:
+    shell = "text"
+    if result.pending_tool == "shell_command" and result.pending_arguments:
         command = result.pending_arguments.get("command", "")
+        shell = result.pending_arguments.get("shell") or "powershell"
 
     lines = [
         _clip_markdown(result.text.strip() or "(no response)"),
@@ -119,7 +121,7 @@ def build_approval_card(
         f"Reason: {result.pending_reason or 'confirmation required'}",
     ]
     if command:
-        lines.extend(["", "**Command**", f"```bash\n{command}\n```"])
+        lines.extend(["", "**Command**", f"```{shell}\n{command}\n```"])
     if result.pending_requires_manual:
         lines.extend(["", "⚠ This is marked as a high-risk command and still requires manual approval."])
 

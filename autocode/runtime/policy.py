@@ -52,8 +52,8 @@ class Policy:
                     approval_label=f"本任务允许 {tool_name}",
                 )
             )
-        if tool_name == "bash":
-            return self._evaluate_bash(arguments.get("command", ""))
+        if tool_name == "shell_command":
+            return self._evaluate_shell_command(arguments)
         if tool_name in {"read", "write_file", "edit_file"}:
             return self._evaluate_path(arguments.get("file_path"))
         if tool_name == "web_fetch":
@@ -129,7 +129,11 @@ class Policy:
 
         return PolicyDecision("allow")
 
-    def _evaluate_bash(self, command: str) -> PolicyDecision:
+    def _evaluate_shell_command(self, arguments: dict) -> PolicyDecision:
+        workdir_decision = self._evaluate_path(arguments.get("workdir", "."), allow_protected=True)
+        if workdir_decision.action == "deny":
+            return workdir_decision
+        command = str(arguments.get("command", ""))
         command = command.strip()
         if not command:
             return PolicyDecision("deny", "empty command")

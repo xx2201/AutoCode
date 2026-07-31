@@ -338,8 +338,8 @@ def test_model_projection_strips_presentation_metadata(tmp_path):
     request_user = agent._request_messages()[1]
 
     assert set(request_user) == {"role", "content"}
-    assert request_user["content"][0] == {"type": "text", "text": "describe upload"}
-    assert request_user["content"][1]["type"] == "image_url"
+    assert {"type": "text", "text": "describe upload"} in request_user["content"]
+    assert any(part["type"] == "image_url" for part in request_user["content"])
 
 
 def test_runtime_state_stays_inside_the_final_multimodal_message(tmp_path):

@@ -95,6 +95,10 @@ class RemoteManager:
         "task_status",
         "task_error",
         "todo_updated",
+        "model_step_started",
+        "model_step_committed",
+        "model_step_tombstone",
+        "tool_discarded",
     )
 
     def __init__(self, config: Config, llm_factory=None, tools: list | None = None, tool_factory=None):

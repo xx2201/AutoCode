@@ -43,7 +43,7 @@ test("run reducer preserves model order while accepting narrative and tools", ()
       type: "work",
       phase: "started",
       tool_call_id: "call-1",
-      tool_name: "bash",
+      tool_name: "shell_command",
       arguments: { command: "pwd" },
       sequence: 2,
     },
@@ -51,4 +51,19 @@ test("run reducer preserves model order while accepting narrative and tools", ()
 
   assert.equal(state.streamText, "");
   assert.deepEqual(state.work.map((item) => item.type), ["narrative", "tool"]);
+});
+
+test("run reducer tombstones provisional text before a model-step retry", () => {
+  const provisional = runStateReducer(initialRunState, {
+    type: "append_token",
+    text: "partial response",
+  });
+  const rolledBack = runStateReducer(provisional, { type: "clear_stream" });
+  const retried = runStateReducer(rolledBack, {
+    type: "append_token",
+    text: "replacement response",
+  });
+
+  assert.equal(rolledBack.streamText, "");
+  assert.equal(retried.streamText, "replacement response");
 });

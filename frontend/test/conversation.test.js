@@ -56,14 +56,14 @@ test("merges started and completed events using the tool call id", () => {
     type: "work",
     phase: "started",
     tool_call_id: "call_1",
-    tool_name: "bash",
+    tool_name: "shell_command",
     arguments: { command: "git status" },
   });
   const completed = mergeWorkEvent(started, {
     type: "work",
     phase: "completed",
     tool_call_id: "call_1",
-    tool_name: "bash",
+    tool_name: "shell_command",
     output: "clean",
     duration_ms: 1250,
     success: true,
@@ -117,6 +117,13 @@ test("shows the web search query in the work item title", () => {
   assert.equal(
     formatToolTitle("web_search_local", { query: "latest Python release" }),
     "Searched the web · latest Python release",
+  );
+});
+
+test("shows shell commands with the command-specific work item title", () => {
+  assert.equal(
+    formatToolTitle("shell_command", { command: "npm test" }),
+    "Ran command · npm test",
   );
 });
 

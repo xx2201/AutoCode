@@ -7,7 +7,7 @@ from autocode.runtime import HookBus, Runtime
 from autocode.runtime.scheduler import plan_execution_groups
 from autocode.state import TaskState
 from autocode.tools.base import ConcurrencySpec, Tool
-from autocode.tools.bash import BashTool
+from autocode.tools.shell_command import ShellCommandTool
 from autocode.tools.process import ReadProcessOutputTool, StopProcessTool
 
 
@@ -133,18 +133,18 @@ def test_runtime_finalizes_hooks_and_recovery_on_the_calling_thread():
 
 
 def test_builtin_parameter_level_specs_distinguish_safe_and_global_operations(tmp_path):
-    bash = BashTool()
-    bash._fs = type("_FS", (), {"workspace_root": tmp_path})()
+    shell = ShellCommandTool()
+    shell._fs = type("_FS", (), {"workspace_root": tmp_path})()
 
-    assert bash.concurrency_spec({"command": "pytest -q"}).mode.value == "parallel"
-    assert bash.concurrency_spec({"command": "git status --short"}).mode.value == "parallel"
-    assert bash.concurrency_spec({"command": "git commit -m test"}).mode.value == "exclusive"
-    assert (
-        bash.concurrency_spec({"command": 'git -C "C:/workspace" push'}).mode.value
-        == "exclusive"
-    )
-    assert bash.concurrency_spec({"command": "cd api && pytest -q"}).mode.value == "exclusive"
-    assert bash.concurrency_spec({"command": "protoc --go_out=. api.proto"}).mode.value == "exclusive"
+    for command in (
+        "pytest -q",
+        "git status --short",
+        "git commit -m test",
+        'git -C "C:/workspace" push',
+        "cd api && pytest -q",
+        "protoc --go_out=. api.proto",
+    ):
+        assert shell.concurrency_spec({"command": command}).mode.value == "exclusive"
 
     read_process = ReadProcessOutputTool()
     stop_process = StopProcessTool()

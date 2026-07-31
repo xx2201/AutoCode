@@ -217,7 +217,10 @@ class TestConfigProvider:
         assert config.provider == "anthropic"
 
     def test_provider_from_env(self):
-        with mock.patch.dict("os.environ", {"AUTOCODE_PROVIDER": "litellm"}, clear=False):
+        with (
+            mock.patch("autocode.config._load_dotenv_values", return_value={}),
+            mock.patch.dict("os.environ", {"AUTOCODE_PROVIDER": "litellm"}, clear=False),
+        ):
             config = Config.from_env()
             assert config.provider == "litellm"
 

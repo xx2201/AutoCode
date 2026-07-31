@@ -165,6 +165,7 @@ _PRICING = {
 
 class LLM:
     api_format = "chat_completions"
+    supports_streaming_tool_calls = False
 
     def __init__(
         self,
@@ -379,6 +380,7 @@ class AnthropicMessagesLLM(LLM):
     """Native Anthropic Messages backend using the official Python SDK."""
 
     api_format = "messages"
+    supports_streaming_tool_calls = True
 
     def __init__(
         self,
@@ -430,6 +432,7 @@ class AnthropicMessagesLLM(LLM):
         messages: list[dict],
         tools: list[dict] | None = None,
         on_token=None,
+        on_tool_call=None,
     ) -> LLMResponse:
         """Send one streaming Messages request and normalize its response."""
         system, message_params = self._split_system(messages)
@@ -474,6 +477,7 @@ class AnthropicMessagesLLM(LLM):
                 final_message, first_content_at = self._call_with_retry(
                     params,
                     on_token=on_token,
+                    on_tool_call=on_tool_call,
                 )
                 if first_content_at is not None:
                     generation.update(completion_start_time=first_content_at)
@@ -512,18 +516,50 @@ class AnthropicMessagesLLM(LLM):
             )
             return response
 
-    def _call_with_retry(self, params: dict, on_token=None, max_retries: int = 3):
+    def _call_with_retry(
+        self,
+        params: dict,
+        on_token=None,
+        on_tool_call=None,
+        max_retries: int = 3,
+    ):
         for attempt in range(max_retries + 1):
-            emitted_text = False
+            emitted_output = False
             try:
                 first_content_at = None
                 with self.client.messages.stream(**params) as stream:
-                    for text in stream.text_stream:
-                        emitted_text = True
+                    for event in stream:
+                        event_type = _field(event, "type")
+                        if event_type == "text":
+                            text = str(_field(event, "text") or "")
+                            if not text:
+                                continue
+                            emitted_output = True
+                            if first_content_at is None:
+                                first_content_at = datetime.now(timezone.utc)
+                            if on_token:
+                                on_token(text)
+                            continue
+                        if event_type != "content_block_stop":
+                            continue
+                        block = _field(event, "content_block")
+                        if _field(block, "type") != "tool_use":
+                            continue
+                        arguments = _field(block, "input") or {}
+                        if not isinstance(arguments, dict):
+                            arguments = {}
+                        emitted_output = True
                         if first_content_at is None:
                             first_content_at = datetime.now(timezone.utc)
-                        if on_token:
-                            on_token(text)
+                        if on_tool_call:
+                            on_tool_call(
+                                ToolCall(
+                                    id=str(_field(block, "id") or ""),
+                                    name=str(_field(block, "name") or ""),
+                                    arguments=dict(arguments),
+                                    raw_arguments=json.dumps(arguments, ensure_ascii=False),
+                                )
+                            )
                     final_message = stream.get_final_message()
                 if first_content_at is None and _field(final_message, "content"):
                     first_content_at = datetime.now(timezone.utc)
@@ -535,14 +571,19 @@ class AnthropicMessagesLLM(LLM):
             ):
                 # Retrying after user-visible text was emitted would duplicate
                 # the prefix in CLI/Web streaming output.
-                if emitted_text or attempt == max_retries:
+                if emitted_output or attempt == max_retries:
                     raise
                 time.sleep((2**attempt) * (1 - 0.25 * random()))
             except AnthropicAPIStatusError as exc:
-                if exc.status_code >= 500 and attempt < max_retries:
+                if (
+                    exc.status_code >= 500
+                    and not emitted_output
+                    and attempt < max_retries
+                ):
                     time.sleep((2**attempt) * (1 - 0.25 * random()))
                     continue
                 raise
+
 
     @staticmethod
     def _split_system(messages: list[dict]) -> tuple[str, list[dict]]:
@@ -609,6 +650,26 @@ class AnthropicMessagesLLM(LLM):
             cache_miss_tokens=input_tokens + cache_creation,
             stop_reason=str(_field(message, "stop_reason") or ""),
         )
+
+
+def is_retryable_llm_error(exc: Exception) -> bool:
+    """Return whether a fresh model-step transaction may safely retry the request."""
+    if isinstance(
+        exc,
+        (
+            RateLimitError,
+            APITimeoutError,
+            APIConnectionError,
+            AnthropicRateLimitError,
+            AnthropicAPITimeoutError,
+            AnthropicAPIConnectionError,
+        ),
+    ):
+        return True
+    if isinstance(exc, (APIError, AnthropicAPIStatusError)):
+        status_code = getattr(exc, "status_code", None)
+        return bool(status_code and status_code >= 500)
+    return False
 
 
 class LiteLLM(LLM):

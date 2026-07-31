@@ -33,8 +33,8 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
                 batch_id="batch_1",
                 turn_id="task_demo",
                 tool_calls=[
-                    {"id": "call_1", "name": "bash", "arguments": {"command": "python --version"}},
-                    {"id": "call_2", "name": "bash", "arguments": {"command": "python -c \"import pika\""}},
+                    {"id": "call_1", "name": "shell_command", "arguments": {"command": "python --version"}},
+                    {"id": "call_2", "name": "shell_command", "arguments": {"command": "python -c \"import pika\""}},
                 ],
                 policy_decisions=[
                     {"action": "confirm", "reason": "confirmation required"},
@@ -44,14 +44,14 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
                     PendingApproval(
                         approval_id="approval_1",
                         tool_call_id="call_1",
-                        tool_name="bash",
+                        tool_name="shell_command",
                         arguments={"command": "python --version"},
                         reason="confirmation required",
                     ),
                     PendingApproval(
                         approval_id="approval_2",
                         tool_call_id="call_2",
-                        tool_name="bash",
+                        tool_name="shell_command",
                         arguments={"command": "python -c \"import pika\""},
                         reason="confirmation required",
                     ),

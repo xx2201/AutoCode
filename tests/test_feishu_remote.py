@@ -47,11 +47,11 @@ def test_build_approval_card_embeds_actions():
         session_id="session_123",
         task_id="task_123",
         status="waiting_approval",
-        pending_tool="bash",
+        pending_tool="shell_command",
         pending_reason="command is not in allowlist",
         pending_arguments={"command": "python app.py"},
         pending_requires_manual=True,
-        pending_approval_scope="tool:bash",
+        pending_approval_scope="tool:shell_command",
         pending_approval_label="本任务允许运行此类命令",
     )
     card = build_approval_card(result, "user:ou_xxx", "ou_owner")

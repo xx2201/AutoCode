@@ -370,7 +370,7 @@ def test_runner_converts_tool_hooks_to_work_events(tmp_path):
                 "tool_calls": [
                     {
                         "id": "call_1",
-                        "name": "bash",
+                        "name": "shell_command",
                         "arguments": {"command": "git status"},
                     }
                 ],
@@ -380,7 +380,7 @@ def test_runner_converts_tool_hooks_to_work_events(tmp_path):
             "before_tool",
             {
                 "tool_call_id": "call_1",
-                "tool_name": "bash",
+                "tool_name": "shell_command",
                 "arguments": {"command": "git status"},
             },
         )
@@ -388,7 +388,7 @@ def test_runner_converts_tool_hooks_to_work_events(tmp_path):
             "after_tool",
             {
                 "tool_call_id": "call_1",
-                "tool_name": "bash",
+                "tool_name": "shell_command",
                 "arguments": {"command": "git status"},
                 "result": "clean",
                 "duration_ms": 1250,
@@ -421,21 +421,21 @@ def test_runner_converts_tool_hooks_to_work_events(tmp_path):
             "type": "work",
             "phase": "planned",
             "tool_call_id": "call_1",
-            "tool_name": "bash",
+            "tool_name": "shell_command",
             "arguments": {"command": "git status"},
         },
         {
             "type": "work",
             "phase": "started",
             "tool_call_id": "call_1",
-            "tool_name": "bash",
+            "tool_name": "shell_command",
             "arguments": {"command": "git status"},
         },
         {
             "type": "work",
             "phase": "completed",
             "tool_call_id": "call_1",
-            "tool_name": "bash",
+            "tool_name": "shell_command",
             "arguments": {"command": "git status"},
             "output": "clean",
             "duration_ms": 1250.0,

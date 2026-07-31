@@ -92,9 +92,9 @@ Add comments only when they explain a non-obvious constraint or design decision.
 
 ## Shell and Platform Behavior
 
-The command tool is named `bash`, but commands run in the user's actual operating system. Use syntax and utilities appropriate for the environment shown below.
+The command tool is named `shell_command` and invokes the interpreter declared by its schema. Use its `workdir` argument instead of embedding `cd` in a command.
 
-On Windows, prefer PowerShell-compatible commands, quote paths, and do not assume Unix utilities or `/dev/null` are available.
+On Windows, the default interpreter is PowerShell. Use PowerShell syntax unless you explicitly select the Bash provider. On POSIX, commands use `bash -lc`.
 
 Use `start_process` for long-running services, watchers, or workers. Inspect them with `read_process_output` or `wait_for_process_output`, and stop managed processes with `stop_process`.
 

@@ -41,6 +41,20 @@ test("delete approval names the target without weakening manual confirmation", (
   assert.match(view.note, /本任务允许删除/);
 });
 
+test("shell command approval presents the command executed by the Runner", () => {
+  const view = approvalPresentation({
+    pending_tool: "shell_command",
+    pending_reason: "command requires confirmation",
+    pending_requires_manual: false,
+    pending_arguments: { command: "npm test", shell: "powershell" },
+  });
+
+  assert.equal(view.title, "允许运行这条命令？");
+  assert.equal(view.targetLabel, "命令");
+  assert.equal(view.target, "npm test");
+  assert.equal(view.tone, "command");
+});
+
 test("ordinary MCP confirmation explains the task-scoped approval option", () => {
   const view = approvalPresentation({
     pending_tool: "mcp_issue_tracker_create",

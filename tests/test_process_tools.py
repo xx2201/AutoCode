@@ -84,6 +84,7 @@ def test_read_output_decodes_non_utf8_log_bytes(tmp_path):
         log_path=str(log_path),
         pid=123,
         started_at="2026-06-13 00:00:00",
+        shell="powershell",
     )
     manager._processes["proc_test"] = (_Proc(), meta, None)
 
@@ -143,7 +144,11 @@ def test_stop_process_kills_child_process_tree_on_windows(tmp_path):
         encoding="utf-8",
     )
 
-    started = manager.start_process(command=f'"{sys.executable}" "{parent_script}"', cwd=".")
+    started = manager.start_process(
+        command=f'& "{sys.executable}" "{parent_script}"',
+        cwd=".",
+        shell="powershell",
+    )
     process_id = started.splitlines()[0].split()[-1]
 
     try:
@@ -207,6 +212,7 @@ def test_cleanup_task_processes_stops_only_temporary_processes_for_task(tmp_path
                 log_path=str(tmp_path / "temp.log"),
                 pid=101,
                 started_at="2026-06-13 00:00:00",
+                shell="powershell",
                 task_id="task_1",
                 keep_alive=False,
             ),
@@ -221,6 +227,7 @@ def test_cleanup_task_processes_stops_only_temporary_processes_for_task(tmp_path
                 log_path=str(tmp_path / "keep.log"),
                 pid=102,
                 started_at="2026-06-13 00:00:00",
+                shell="powershell",
                 task_id="task_1",
                 keep_alive=True,
             ),
@@ -235,6 +242,7 @@ def test_cleanup_task_processes_stops_only_temporary_processes_for_task(tmp_path
                 log_path=str(tmp_path / "other.log"),
                 pid=103,
                 started_at="2026-06-13 00:00:00",
+                shell="powershell",
                 task_id="task_2",
                 keep_alive=False,
             ),
@@ -275,6 +283,7 @@ def test_cleanup_all_stops_persistent_processes_on_manager_close(tmp_path):
                 log_path=str(tmp_path / "temp.log"),
                 pid=201,
                 started_at="2026-06-13 00:00:00",
+                shell="powershell",
                 task_id="task_1",
                 keep_alive=False,
             ),
@@ -289,6 +298,7 @@ def test_cleanup_all_stops_persistent_processes_on_manager_close(tmp_path):
                 log_path=str(tmp_path / "keep.log"),
                 pid=202,
                 started_at="2026-06-13 00:00:00",
+                shell="powershell",
                 task_id="task_1",
                 keep_alive=True,
             ),

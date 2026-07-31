@@ -20,6 +20,15 @@ class ToolExecutionOutcome:
     duration_ms: float
 
 
+@dataclass(frozen=True)
+class PreparedToolExecution:
+    """A tool execution whose result has not entered canonical history yet."""
+
+    outcome: ToolExecutionOutcome
+    group: ExecutionGroup
+    spec: ConcurrencySpec
+
+
 class Runtime:
     def __init__(
         self,
@@ -45,12 +54,28 @@ class Runtime:
         payload.update(extra)
         return payload
 
-    def call_llm(self, llm, messages: list[dict], tools: list[dict], task_state: TaskState, session_id: str, on_token=None):
+    def call_llm(
+        self,
+        llm,
+        messages: list[dict],
+        tools: list[dict],
+        task_state: TaskState,
+        session_id: str,
+        on_token=None,
+        on_tool_call=None,
+    ):
         self.hooks.emit(
             "before_llm",
             self._payload(session_id, task_state, step_index=task_state.step_index + 1),
         )
-        resp = llm.chat(messages=messages, tools=tools, on_token=on_token)
+        kwargs = {
+            "messages": messages,
+            "tools": tools,
+            "on_token": on_token,
+        }
+        if on_tool_call is not None and getattr(llm, "supports_streaming_tool_calls", False):
+            kwargs["on_tool_call"] = on_tool_call
+        resp = llm.chat(**kwargs)
         task_state.next_step()
         self.hooks.emit(
             "after_llm",
@@ -89,6 +114,29 @@ class Runtime:
         on_tool=None,
         decision: PolicyDecision | None = None,
     ) -> str | ToolResult:
+        prepared = self.prepare_tool_call(
+            task_state,
+            tool_call,
+            session_id,
+            on_tool=on_tool,
+            decision=decision,
+        )
+        return self.finalize_prepared_tool_call(
+            task_state,
+            tool_call,
+            session_id,
+            prepared,
+        )
+
+    def prepare_tool_call(
+        self,
+        task_state: TaskState,
+        tool_call,
+        session_id: str,
+        on_tool=None,
+        decision: PolicyDecision | None = None,
+    ) -> PreparedToolExecution:
+        """Run a tool without committing recovery state or its result event."""
         spec = self._concurrency_spec(tool_call)
         group = ExecutionGroup(
             group_id=1,
@@ -110,13 +158,22 @@ class Runtime:
             group=group,
             spec=spec,
         )
+        return PreparedToolExecution(outcome=outcome, group=group, spec=spec)
+
+    def finalize_prepared_tool_call(
+        self,
+        task_state: TaskState,
+        tool_call,
+        session_id: str,
+        prepared: PreparedToolExecution,
+    ) -> str | ToolResult:
         return self._finalize_tool_call(
             task_state,
             tool_call,
             session_id,
-            outcome,
-            group=group,
-            spec=spec,
+            prepared.outcome,
+            group=prepared.group,
+            spec=prepared.spec,
         )
 
     def _run_traced_tool_call(
@@ -157,7 +214,11 @@ class Runtime:
             )
             result = outcome.result
             result_text = result.text if isinstance(result, ToolResult) else result
-            is_error = result_text.startswith("Error:")
+            is_error = (
+                result.is_error
+                if isinstance(result, ToolResult)
+                else result_text.startswith("Error:")
+            )
             observation.update(
                 output={
                     "result": result_text,
@@ -188,7 +249,7 @@ class Runtime:
         execute_kwargs = dict(tool_call.arguments)
         if tool_call.name == "start_process":
             execute_kwargs["_task_id"] = task_state.task_id
-        if tool_call.name == "bash" and decision is not None and decision.requires_manual:
+        if tool_call.name == "shell_command" and decision is not None and decision.requires_manual:
             execute_kwargs["_confirmed_sensitive"] = True
         try:
             result = tool.execute(**execute_kwargs)
@@ -225,7 +286,11 @@ class Runtime:
                 arguments=tool_call.arguments,
                 result=result_text[:4000],
                 duration_ms=outcome.duration_ms,
-                success=not result_text.startswith("Error:"),
+                success=not (
+                    result.is_error
+                    if isinstance(result, ToolResult)
+                    else result_text.startswith("Error:")
+                ),
                 multimodal=bool(isinstance(result, ToolResult) and result.model_content),
                 execution_group_id=group.group_id,
                 execution_group_size=len(group.call_indexes),
@@ -274,6 +339,10 @@ class Runtime:
             return ConcurrencySpec.exclusive(
                 f"invalid concurrency declaration: {type(exc).__name__}: {exc}"
             )
+
+    def concurrency_spec(self, tool_call) -> ConcurrencySpec:
+        """Expose the validated declaration to the streaming scheduler."""
+        return self._concurrency_spec(tool_call)
 
     def execute_tool_calls_parallel(
         self,

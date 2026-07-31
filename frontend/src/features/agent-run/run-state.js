@@ -28,6 +28,11 @@ export function runStateReducer(state, action) {
         ...state,
         streamText: state.streamText + (action.text || ""),
       };
+    case "clear_stream":
+      return {
+        ...state,
+        streamText: "",
+      };
     case "accept_work":
       return {
         ...state,

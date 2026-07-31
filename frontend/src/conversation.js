@@ -16,7 +16,7 @@ export function formatToolTitle(name, argumentsValue = {}) {
     || ""
   );
   const labels = {
-    bash: "Ran command",
+    shell_command: "Ran command",
     read: "Read file",
     write_file: "Wrote file",
     edit_file: "Edited file",

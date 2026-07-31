@@ -22,27 +22,27 @@ def test_policy_protects_env_file(tmp_path):
     assert decision.action == "deny"
 
 
-def test_policy_allows_unknown_bash(tmp_path):
+def test_policy_allows_unknown_shell_command(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("bash", {"command": "python manage.py migrate"})
+    decision = policy.evaluate_tool_call("shell_command", {"command": "python manage.py migrate"})
     assert decision.action == "allow"
 
 
 def test_policy_denies_destructive_delete_in_workspace(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("bash", {"command": "rm -rf build"})
+    decision = policy.evaluate_tool_call("shell_command", {"command": "rm -rf build"})
     assert decision.action == "deny"
 
 
 def test_policy_denies_destructive_delete_outside_workspace(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("bash", {"command": "rm -rf ../outside"})
+    decision = policy.evaluate_tool_call("shell_command", {"command": "rm -rf ../outside"})
     assert decision.action == "deny"
 
 
 def test_policy_denies_workspace_local_del(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("bash", {"command": "del receive.log 2>nul"})
+    decision = policy.evaluate_tool_call("shell_command", {"command": "del receive.log 2>nul"})
     assert decision.action == "deny"
     assert "delete_path" in decision.reason
 
@@ -99,7 +99,7 @@ def test_full_access_skips_confirmations_but_keeps_hard_denies(tmp_path):
         {"path": str(target)},
     ).action == "allow"
     assert policy.evaluate_tool_call(
-        "bash",
+        "shell_command",
         {"command": "rm -rf *"},
     ).action == "deny"
     assert policy.evaluate_tool_call(
@@ -120,7 +120,7 @@ def test_policy_rejects_unknown_permission_mode(tmp_path):
 def test_policy_does_not_mistake_embedded_del_text_for_shell_delete(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
     decision = policy.evaluate_tool_call(
-        "bash",
+        "shell_command",
         {"command": "python -c \"print('DEL label only')\""},
     )
     assert decision.action == "allow"
@@ -129,7 +129,7 @@ def test_policy_does_not_mistake_embedded_del_text_for_shell_delete(tmp_path):
 def test_policy_denies_streaming_redis_monitor_in_bash(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
     decision = policy.evaluate_tool_call(
-        "bash",
+        "shell_command",
         {"command": "docker exec demo-redis redis-cli MONITOR"},
     )
     assert decision.action == "deny"
@@ -138,26 +138,26 @@ def test_policy_denies_streaming_redis_monitor_in_bash(tmp_path):
 
 def test_policy_denies_tail_follow_in_bash(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("bash", {"command": "tail -f backend.log"})
+    decision = policy.evaluate_tool_call("shell_command", {"command": "tail -f backend.log"})
     assert decision.action == "deny"
     assert "start_process" in decision.reason
 
 
 def test_policy_allows_read_only_bash(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("bash", {"command": "git status"})
+    decision = policy.evaluate_tool_call("shell_command", {"command": "git status"})
     assert decision.action == "allow"
 
 
 def test_policy_denies_bash_redirect_to_protected_env(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("bash", {"command": "echo hi > .env"})
+    decision = policy.evaluate_tool_call("shell_command", {"command": "echo hi > .env"})
     assert decision.action == "deny"
 
 
 def test_policy_denies_shell_taskkill_even_with_pid(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("bash", {"command": "taskkill /PID 12345 /T /F"})
+    decision = policy.evaluate_tool_call("shell_command", {"command": "taskkill /PID 12345 /T /F"})
     assert decision.action == "deny"
     assert "use stop_process" in decision.reason
 
@@ -165,7 +165,7 @@ def test_policy_denies_shell_taskkill_even_with_pid(tmp_path):
 def test_policy_denies_shell_stop_process_pipeline(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
     decision = policy.evaluate_tool_call(
-        "bash",
+        "shell_command",
         {"command": "powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force\""},
     )
     assert decision.action == "deny"

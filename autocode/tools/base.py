@@ -13,6 +13,7 @@ class ToolResult:
 
     text: str
     model_content: list[dict] = field(default_factory=list)
+    is_error: bool = False
 
     def __str__(self) -> str:
         return self.text

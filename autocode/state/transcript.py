@@ -32,6 +32,15 @@ class TranscriptLogger:
             {"timestamp": _now(), "kind": "turn_superseded", "payload": payload},
         )
 
+    def append_model_step(self, session_id: str, kind: str, payload: dict):
+        """Record provisional/commit/tombstone lifecycle without forging messages."""
+        if kind not in {"model_step_started", "model_step_committed", "model_step_tombstone"}:
+            raise ValueError(f"Unsupported model step transcript kind: {kind}")
+        self._append_entry(
+            session_id,
+            {"timestamp": _now(), "kind": kind, "payload": payload},
+        )
+
     def _append_entry(self, session_id: str, entry: dict):
         directory = session_dir(session_id)
         directory.mkdir(parents=True, exist_ok=True)

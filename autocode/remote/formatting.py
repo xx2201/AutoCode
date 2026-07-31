@@ -18,7 +18,7 @@ def render_turn_result(result: RemoteTurnResult) -> str:
         )
     if result.pending_tool:
         command_block = ""
-        if result.pending_tool == "bash" and result.pending_arguments:
+        if result.pending_tool == "shell_command" and result.pending_arguments:
             command = result.pending_arguments.get("command", "")
             if command:
                 command_block = f"- Command: {command}\n"

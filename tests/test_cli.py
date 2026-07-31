@@ -53,7 +53,7 @@ from autocode.state.turn_control import TurnController
 
 
 class _Pending:
-    tool_name = "bash"
+    tool_name = "shell_command"
     reason = "confirmation required"
 
 

@@ -7,6 +7,8 @@ export function handleRunEvent(event, {
     run.resetTimeline();
   } else if (event.type === "token") {
     run.appendToken(event.text);
+  } else if (event.type === "tombstone") {
+    run.clearStream();
   } else if (event.type === "stage") {
     run.setStage(event.stage || "");
   } else if (event.type === "work") {

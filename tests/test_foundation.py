@@ -1,3 +1,5 @@
+import hashlib
+import json
 import sys
 from pathlib import Path
 
@@ -27,12 +29,18 @@ def test_workspace_fs_reads_and_writes_utf8(tmp_path):
     assert fs.read_text("utf8.txt") == "你好，Redis Session"
 
 
-def test_sandbox_tracks_cwd(tmp_path):
+def test_sandbox_uses_explicit_workdir_without_shared_cwd(tmp_path):
     sandbox = Sandbox(str(tmp_path))
     child = tmp_path / "child"
     child.mkdir()
-    sandbox.run("cd child && python -c \"print('ok')\"")
-    assert Path(sandbox.cwd) == child.resolve()
+    result = sandbox.run(
+        "python -c \"import os; print(os.getcwd())\"",
+        workdir="child",
+    )
+    assert Path(result.cwd) == child.resolve()
+    assert str(child.resolve()) in result.stdout
+    root_result = sandbox.run("python -c \"import os; print(os.getcwd())\"")
+    assert Path(root_result.cwd) == tmp_path.resolve()
 
 
 def test_sandbox_decodes_utf8_subprocess_output(tmp_path, monkeypatch):
@@ -53,7 +61,7 @@ def test_sandbox_decodes_utf8_subprocess_output(tmp_path, monkeypatch):
     monkeypatch.setattr(sandbox_module.subprocess, "Popen", _fake_popen)
 
     result = Sandbox(str(tmp_path)).run("python -c \"print('hello')\"")
-    assert result.output == "hello 世界"
+    assert result.stdout == "hello 世界"
     assert "text" not in captured
     assert "encoding" not in captured
     assert "errors" not in captured
@@ -75,9 +83,9 @@ def test_sandbox_build_env_forces_python_utf8(monkeypatch):
 
 def test_sandbox_preserves_utf8_from_child_python(tmp_path):
     sandbox = Sandbox(str(tmp_path))
-    command = f'"{sys.executable}" -c "print(\'预计耗时 3 秒\')"'
+    command = f'& "{sys.executable}" -c "print(\'预计耗时 3 秒\')"'
     result = sandbox.run(command)
-    assert "预计耗时 3 秒" in result.output
+    assert "预计耗时 3 秒" in result.stdout
 
 
 def test_memory_manager_reads_project_files(tmp_path, monkeypatch):
@@ -85,7 +93,23 @@ def test_memory_manager_reads_project_files(tmp_path, monkeypatch):
     manager = MemoryManager(str(tmp_path))
     memory_path = manager.memory_file_path()
     memory_path.parent.mkdir(parents=True, exist_ok=True)
-    memory_path.write_text("# Project Memory\n\nproject-one", encoding="utf-8")
+    source = tmp_path / "README.md"
+    source.write_text("project-one", encoding="utf-8")
+    memory_path.write_text(
+        json.dumps(
+            [
+                {
+                    "fact": "project-one",
+                    "source": "README.md",
+                    "source_hash": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "confidence": "verified",
+                    "scope": "project",
+                    "invalidated": False,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
     assert "rule-one" in manager.build_rules_block()
     assert "project-one" in manager.build_project_memory_block()
 

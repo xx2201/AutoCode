@@ -1,6 +1,6 @@
 """Tool registry."""
 
-from .bash import BashTool
+from .shell_command import ShellCommandTool
 from .read import ReadTool
 from .write import WriteFileTool
 from .edit import EditFileTool
@@ -15,7 +15,7 @@ from .web_search import WebSearchTool
 from .web_fetch import WebFetchTool
 
 ALL_TOOLS = [
-    BashTool(),
+    ShellCommandTool(),
     ReadTool(),
     WriteFileTool(),
     EditFileTool(),

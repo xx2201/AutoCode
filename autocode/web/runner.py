@@ -573,6 +573,15 @@ class LocalRunner:
 
     @staticmethod
     def _emit_hook_event(event_handler, event: str, data: dict) -> None:
+        if event == "model_step_tombstone":
+            event_handler(
+                {
+                    "type": "tombstone",
+                    "model_step_id": str(data.get("model_step_id", "")),
+                    "visible_chars": int(data.get("visible_chars", 0) or 0),
+                    "reason": str(data.get("error_type", "stream retry")),
+                }
+            )
         if event == "assistant_step":
             tool_calls = data.get("tool_calls") or []
             if tool_calls:
@@ -625,6 +634,9 @@ class LocalRunner:
             "after_tool": "tool_finished",
             "context_compaction": "context_compacted",
             "turn_started": "turn_started",
+            "model_step_started": "model_step_started",
+            "model_step_committed": "model_step_committed",
+            "model_step_tombstone": "model_step_rolled_back",
         }
         stage = stage_map.get(event)
         if stage:

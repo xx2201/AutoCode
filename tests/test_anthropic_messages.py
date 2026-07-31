@@ -208,7 +208,13 @@ def test_anthropic_backend_streams_text_and_normalizes_tool_calls():
     captured = {}
 
     class _Stream:
-        text_stream = iter(["do", "ne"])
+        def __iter__(self):
+            yield SimpleNamespace(type="text", text="do")
+            yield SimpleNamespace(type="text", text="ne")
+            yield SimpleNamespace(
+                type="content_block_stop",
+                content_block=final.content[1],
+            )
 
         def get_final_message(self):
             return final
@@ -234,6 +240,7 @@ def test_anthropic_backend_streams_text_and_normalizes_tool_calls():
     )
     llm.client = SimpleNamespace(messages=_Messages())
     streamed = []
+    streamed_tools = []
 
     response = llm.chat(
         messages=[
@@ -254,9 +261,12 @@ def test_anthropic_backend_streams_text_and_normalizes_tool_calls():
             }
         ],
         on_token=streamed.append,
+        on_tool_call=streamed_tools.append,
     )
 
     assert streamed == ["do", "ne"]
+    assert streamed_tools[0].id == "call-1"
+    assert streamed_tools[0].arguments == {"file_path": "README.md"}
     assert captured["system"] == "system"
     assert captured["messages"] == [
         {"role": "user", "content": [{"type": "text", "text": "go"}]}
@@ -278,9 +288,8 @@ def test_anthropic_backend_does_not_retry_after_streaming_visible_text():
     calls = 0
 
     class _BrokenStream:
-        @property
-        def text_stream(self):
-            yield "partial"
+        def __iter__(self):
+            yield SimpleNamespace(type="text", text="partial")
             raise APIConnectionError(request=httpx.Request("POST", "https://example.com"))
 
     class _Manager:
@@ -322,7 +331,8 @@ def test_anthropic_backend_retries_transient_server_errors_with_backoff(
     calls = 0
 
     class _Stream:
-        text_stream = iter(())
+        def __iter__(self):
+            return iter(())
 
         def get_final_message(self):
             return _message([])

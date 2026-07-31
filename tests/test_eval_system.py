@@ -8,6 +8,7 @@ import time
 from eval.graders import GradeResult, TrialArtifacts, VerificationCommandResult, VerificationResult, evaluate_cross_agent_trial, evaluate_trial
 from eval.judge import JudgeConfig, LLMJudge
 from eval.harness import (
+    create_llm,
     _build_claude_trace,
     _build_claude_eval_prompt,
     _claude_env,
@@ -30,6 +31,7 @@ from eval.report import aggregate_reports, build_trial_report
 from eval.runner import DEFAULT_EVAL_AGENT_MODEL, _load_eval_config, _resolve_eval_agent_model
 from eval.schema import EvalTaskSpec
 from autocode.config import Config
+from autocode.llm import AnthropicMessagesLLM
 
 
 def _make_claude_spec(**overrides) -> EvalTaskSpec:
@@ -46,6 +48,19 @@ def _make_claude_spec(**overrides) -> EvalTaskSpec:
     }
     payload.update(overrides)
     return EvalTaskSpec.from_dict(payload)
+
+
+def test_eval_create_llm_honors_anthropic_provider():
+    llm = create_llm(
+        Config(
+            provider="anthropic",
+            model="claude-test",
+            api_key="sk-test",
+            base_url="https://example.com",
+        )
+    )
+
+    assert isinstance(llm, AnthropicMessagesLLM)
 
 
 def test_eval_loader_reads_sample_tasks():
@@ -414,7 +429,7 @@ def test_filter_platform_artifacts_ignores_agent_runtime_artifacts():
     filtered = _filter_platform_artifacts(
         "icecoder",
         {
-            ".autocode/PROJECT_MEMORY.md",
+            ".autocode/memory/facts.json",
             ".claude/settings.local.json",
             ".iceCoder/memory.md",
             "data/sessions/default/bg/bg_1.log",

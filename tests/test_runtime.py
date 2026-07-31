@@ -41,8 +41,8 @@ class _InterruptTool(Tool):
         raise KeyboardInterrupt()
 
 
-class _InterruptBashTool(Tool):
-    name = "bash"
+class _InterruptShellTool(Tool):
+    name = "shell_command"
     description = "Interrupts execution"
     parameters = {
         "type": "object",
@@ -54,9 +54,9 @@ class _InterruptBashTool(Tool):
         raise KeyboardInterrupt()
 
 
-class _SafeBashTool(Tool):
-    name = "bash"
-    description = "Runs a fake bash command"
+class _SafeShellTool(Tool):
+    name = "shell_command"
+    description = "Runs a fake shell command"
     parameters = {
         "type": "object",
         "properties": {"command": {"type": "string"}},
@@ -152,7 +152,7 @@ def test_runtime_emits_hooks(tmp_path):
 
 def test_agent_waits_for_approval(tmp_path):
     responses = [
-        LLMResponse(content="", tool_calls=[ToolCall(id="1", name="bash", arguments={"command": "python manage.py migrate"})]),
+        LLMResponse(content="", tool_calls=[ToolCall(id="1", name="shell_command", arguments={"command": "python manage.py migrate"})]),
     ]
     agent = Agent(
         llm=_FakeLLM(responses),
@@ -246,14 +246,14 @@ def test_agent_returns_explicit_error_for_invalid_tool_call_json(tmp_path):
 def test_agent_scope_approval_completes_matching_tool_calls_before_next_llm(tmp_path):
     llm = _RecordingLLM([
         LLMResponse(content="", tool_calls=[
-            ToolCall(id="1", name="bash", arguments={"command": "python --version"}),
-            ToolCall(id="2", name="bash", arguments={"command": "python -c \"import pika\""}),
+            ToolCall(id="1", name="shell_command", arguments={"command": "python --version"}),
+            ToolCall(id="2", name="shell_command", arguments={"command": "python -c \"import pika\""}),
         ]),
         LLMResponse(content="done"),
     ])
     agent = Agent(
         llm=llm,
-        tools=[_SafeBashTool()],
+        tools=[_SafeShellTool()],
         workspace_root=str(tmp_path),
     )
     agent.policy = _ConfirmAllPolicy(workspace_root=str(tmp_path))
@@ -278,14 +278,14 @@ def test_agent_scope_approval_completes_matching_tool_calls_before_next_llm(tmp_
 def test_agent_requeues_next_pending_tool_from_same_batch(tmp_path):
     llm = _RecordingLLM([
         LLMResponse(content="", tool_calls=[
-            ToolCall(id="1", name="bash", arguments={"command": "python --version"}),
-            ToolCall(id="2", name="bash", arguments={"command": "python -c \"import pika\""}),
+            ToolCall(id="1", name="shell_command", arguments={"command": "python --version"}),
+            ToolCall(id="2", name="shell_command", arguments={"command": "python -c \"import pika\""}),
         ]),
         LLMResponse(content="done"),
     ])
     agent = Agent(
         llm=llm,
-        tools=[_SafeBashTool()],
+        tools=[_SafeShellTool()],
         workspace_root=str(tmp_path),
     )
     agent.policy = _ConfirmAllPolicy(workspace_root=str(tmp_path))
@@ -311,14 +311,14 @@ def test_agent_requeues_next_pending_tool_from_same_batch(tmp_path):
 def test_agent_records_independent_decisions_before_executing_batch(tmp_path):
     llm = _RecordingLLM([
         LLMResponse(content="", tool_calls=[
-            ToolCall(id="1", name="bash", arguments={"command": "first"}),
-            ToolCall(id="2", name="bash", arguments={"command": "second"}),
+            ToolCall(id="1", name="shell_command", arguments={"command": "first"}),
+            ToolCall(id="2", name="shell_command", arguments={"command": "second"}),
         ]),
         LLMResponse(content="done"),
     ])
     agent = Agent(
         llm=llm,
-        tools=[_SafeBashTool()],
+        tools=[_SafeShellTool()],
         workspace_root=str(tmp_path),
     )
     agent.policy = _ConfirmAllPolicy(workspace_root=str(tmp_path))
@@ -451,18 +451,18 @@ def test_agent_backfills_placeholder_tool_result_after_interrupt(tmp_path):
 
 def test_agent_backfills_placeholder_after_approved_interrupt(tmp_path):
     responses = [
-        LLMResponse(content="", tool_calls=[ToolCall(id="1", name="bash", arguments={"command": "echo hi > out.txt"})]),
+        LLMResponse(content="", tool_calls=[ToolCall(id="1", name="shell_command", arguments={"command": "echo hi > out.txt"})]),
         LLMResponse(content="approval path handled"),
     ]
     agent = Agent(
         llm=_FakeLLM(responses),
-        tools=[_InterruptBashTool()],
+        tools=[_InterruptShellTool()],
         workspace_root=str(tmp_path),
     )
     agent.policy = _ConfirmAllPolicy(workspace_root=str(tmp_path))
     agent.runtime.policy = agent.policy
 
-    waiting = agent.chat("run bash", approval_handler=None)
+    waiting = agent.chat("run shell", approval_handler=None)
     assert "waiting for approval" in waiting
 
     reply = agent.approve_pending(True, approval_handler=None)

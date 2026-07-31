@@ -145,6 +145,7 @@ class TaskState:
     last_tool_result: str = ""
     langfuse_trace_id: str = ""
     langfuse_root_observation_id: str = ""
+    prompt_snapshot: dict = field(default_factory=dict)
 
     def touch(self, status: str | None = None):
         if status:
@@ -224,6 +225,7 @@ class TaskState:
             "last_tool_result": self.last_tool_result,
             "langfuse_trace_id": self.langfuse_trace_id,
             "langfuse_root_observation_id": self.langfuse_root_observation_id,
+            "prompt_snapshot": dict(self.prompt_snapshot),
         }
 
     @classmethod
@@ -274,6 +276,7 @@ class TaskState:
             last_tool_result=data.get("last_tool_result", ""),
             langfuse_trace_id=data.get("langfuse_trace_id", ""),
             langfuse_root_observation_id=data.get("langfuse_root_observation_id", ""),
+            prompt_snapshot=dict(data.get("prompt_snapshot") or {}),
         )
 
 

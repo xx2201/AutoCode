@@ -7,10 +7,10 @@ from contextlib import contextmanager
 
 from ..context import ContextManager, MemoryManager, estimate_tokens, render_todos, runtime_state_block, static_system_prompt
 from ..infra import BackgroundProcessManager, Sandbox, WorkspaceFS
-from ..llm import LLM, ToolCall
+from ..llm import LLM, ToolCall, is_retryable_llm_error
 from ..message_content import content_text, is_internal_visual_context, user_content
 from ..message_projection import serialize_anthropic_messages, serialize_chat_completions
-from ..runtime import HookBus, Policy, RecoveryManager, Runtime
+from ..runtime import HookBus, Policy, RecoveryManager, Runtime, StreamingToolExecutor
 from ..skills import SkillError, SkillManager
 from ..state import (
     AuditLogger,
@@ -39,6 +39,7 @@ from ..tools.read import ReadTool
 from ..tools.write import WriteFileTool
 from ..tools.skill import SkillTool
 from ..tools.todo_write import TodoWriteTool
+from .model_step import PromptSnapshot, new_model_step_id
 
 
 class Agent:
@@ -78,6 +79,8 @@ class Agent:
         ]
         self.tools: list[Tool] = []
         self.tool_registry: dict[str, Tool] = {}
+        self._prompt_tool_registry: dict[str, Tool] = {}
+        self._prompt_snapshot: PromptSnapshot | None = None
         self.messages: list[dict] = []
         self.context = ContextManager(
             max_tokens=max_context_tokens,
@@ -114,6 +117,10 @@ class Agent:
             "task_status",
             "task_error",
             "todo_updated",
+            "model_step_started",
+            "model_step_committed",
+            "model_step_tombstone",
+            "tool_discarded",
         ):
             self.hooks.on(event, self.audit.handle)
             self.hooks.on(event, self.trace.handle)
@@ -242,13 +249,20 @@ class Agent:
         if hasattr(self, "runtime"):
             self.runtime.tool_registry = self.tool_registry
 
-    def _request_messages(self) -> list[dict]:
-        self._sync_mcp_tools()
-        system_prompt = self._build_static_system_prompt()
+    def _request_messages(self, snapshot: PromptSnapshot | None = None) -> list[dict]:
+        prompt_snapshot = snapshot or self._ensure_prompt_snapshot()
         runtime_tail = self._build_runtime_tail()
         if getattr(self.llm, "api_format", "chat_completions") == "messages":
-            return serialize_anthropic_messages(system_prompt, self.messages, runtime_tail)
-        return serialize_chat_completions(system_prompt, self.messages, runtime_tail)
+            return serialize_anthropic_messages(
+                prompt_snapshot.system_prompt,
+                self.messages,
+                runtime_tail,
+            )
+        return serialize_chat_completions(
+            prompt_snapshot.system_prompt,
+            self.messages,
+            runtime_tail,
+        )
 
     @classmethod
     def _project_model_history(cls, history: list[dict]) -> list[dict]:
@@ -288,9 +302,9 @@ class Agent:
             for item in items
         ]
 
-    def _tool_schemas(self) -> list[dict]:
-        self._sync_mcp_tools()
-        return [tool.schema() for tool in self.tools]
+    def _tool_schemas(self, snapshot: PromptSnapshot | None = None) -> list[dict]:
+        prompt_snapshot = snapshot or self._ensure_prompt_snapshot()
+        return [dict(schema) for schema in prompt_snapshot.tool_schemas]
 
     def _ensure_session(self) -> SessionState:
         if self.session_state is None:
@@ -324,11 +338,66 @@ class Agent:
         if self.task_state and self.task_state.recent_failures:
             recovery_block = "\n".join(f"- {item}" for item in self.task_state.recent_failures[-3:])
         return runtime_state_block(
-            project_memory_block=self.memory.build_project_memory_block(),
             todo_block=todo_block,
             task_block=task_block,
             recovery_block=recovery_block,
         )
+
+    def _create_prompt_snapshot(self, query: str = "") -> PromptSnapshot:
+        if self.task_state is None:
+            raise RuntimeError("Cannot create PromptSnapshot without an active task.")
+        self._sync_mcp_tools()
+        memory_block = self.memory.build_project_memory_block(query=query)
+        system_prompt = self._build_static_system_prompt()
+        if memory_block:
+            system_prompt += (
+                "\n\n# Retrieved Project Memory\n"
+                f"{memory_block}\n\n"
+                "These are fallible, file-grounded facts. If current code or tests conflict "
+                "with a fact, trust current evidence and do not repeat the stale fact."
+            )
+        snapshot = PromptSnapshot.create(
+            turn_id=self.task_state.task_id,
+            system_prompt=system_prompt,
+            tool_schemas=[tool.schema() for tool in self.tools],
+            tool_names=[tool.name for tool in self.tools],
+        )
+        self._prompt_snapshot = snapshot
+        self._prompt_tool_registry = {
+            name: self.tool_registry[name]
+            for name in snapshot.tool_names
+            if name in self.tool_registry
+        }
+        self.runtime.tool_registry = self._prompt_tool_registry
+        self.task_state.prompt_snapshot = snapshot.to_dict()
+        return snapshot
+
+    def _ensure_prompt_snapshot(self, query: str = "") -> PromptSnapshot:
+        task = self.task_state
+        if task is None:
+            self._ensure_task(query)
+            task = self.task_state
+        if task is None:
+            raise RuntimeError("Cannot load PromptSnapshot without an active task.")
+        if (
+            self._prompt_snapshot is not None
+            and self._prompt_snapshot.turn_id == task.task_id
+        ):
+            return self._prompt_snapshot
+        if task.prompt_snapshot:
+            snapshot = PromptSnapshot.from_dict(task.prompt_snapshot)
+            if snapshot.turn_id != task.task_id:
+                raise ValueError("Persisted PromptSnapshot belongs to another turn.")
+            self._sync_mcp_tools()
+            self._prompt_snapshot = snapshot
+            self._prompt_tool_registry = {
+                name: self.tool_registry[name]
+                for name in snapshot.tool_names
+                if name in self.tool_registry
+            }
+            self.runtime.tool_registry = self._prompt_tool_registry
+            return snapshot
+        return self._create_prompt_snapshot(query=query)
 
     def _handle_lifecycle_event(self, event: str, payload: dict):
         task_id = payload.get("task_id", "")
@@ -343,14 +412,17 @@ class Agent:
     def _ensure_task(self, title: str | None = None):
         session = self._ensure_session()
         if session.current_task is None or session.current_task.status in {"completed", "failed"}:
+            title_lines = (title or "").splitlines()
             session.set_current_task(
                 TaskState(
                     task_id=new_task_id(),
                     revision_id=new_revision_id(),
-                    title=(title or "").splitlines()[0][:120],
+                    title=(title_lines[0] if title_lines else "")[:120],
                     status="running",
                 )
             )
+            self._prompt_snapshot = None
+            self._prompt_tool_registry = {}
             return
         session.current_task.touch("running")
         session.touch()
@@ -581,6 +653,7 @@ class Agent:
                 self._append_message(user_message)
                 self.hooks.emit("user_message", self._event_payload(content_preview=original_prompt[:200]))
                 self._maybe_compress_messages()
+                self._create_prompt_snapshot(query=original_prompt)
                 self.persist_session()
                 response = self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
             except Exception as exc:
@@ -647,6 +720,8 @@ class Agent:
         )
         self.messages = self.messages[:prompt_index]
         self.session_state.set_current_task(new_task)
+        self._prompt_snapshot = None
+        self._prompt_tool_registry = {}
         self.transcript.append_turn_superseded(
             self.session_state.session_id,
             {
@@ -774,6 +849,7 @@ class Agent:
             raise ValueError("The approval batch is stale.")
         if not batch.is_ready():
             raise ValueError("All approvals must be resolved before continuing.")
+        self._ensure_prompt_snapshot(task.title)
 
         with self._turn_trace(
             name="agent.continue_pending_batch",
@@ -858,25 +934,126 @@ class Agent:
             self.turn_controller.start_turn(task.task_id)
         if model:
             self.llm.model = model
+        self._prompt_snapshot = None
+        self._prompt_tool_registry = {}
+        if task is not None and task.prompt_snapshot:
+            self._ensure_prompt_snapshot(task.title)
+
+    def _sample_model_step(
+        self,
+        *,
+        snapshot: PromptSnapshot,
+        on_token=None,
+        on_tool=None,
+        max_attempts: int = 2,
+    ):
+        """Run a retryable model-step transaction against one immutable prompt snapshot."""
+        for attempt in range(1, max_attempts + 1):
+            step_id = new_model_step_id()
+            executor = (
+                StreamingToolExecutor(
+                    runtime=self.runtime,
+                    task_state=self.task_state,
+                    session_id=self.session_state.session_id,
+                    on_tool=on_tool,
+                )
+                if getattr(self.llm, "supports_streaming_tool_calls", False)
+                else None
+            )
+            visible_chars = 0
+            started_payload = self._event_payload(
+                model_step_id=step_id,
+                attempt=attempt,
+                prompt_snapshot_digest=snapshot.digest,
+            )
+            self.hooks.emit("model_step_started", started_payload)
+            self.transcript.append_model_step(
+                self.session_state.session_id,
+                "model_step_started",
+                started_payload,
+            )
+
+            def provisional_token(text: str) -> None:
+                nonlocal visible_chars
+                visible_chars += len(text)
+                if on_token:
+                    on_token(text)
+
+            def streamed_tool_call(tool_call: ToolCall) -> None:
+                if executor is not None:
+                    executor.add_tool(tool_call)
+
+            try:
+                resp = self.runtime.call_llm(
+                    llm=self.llm,
+                    messages=self._request_messages(snapshot),
+                    tools=self._tool_schemas(snapshot),
+                    task_state=self.task_state,
+                    session_id=self.session_state.session_id,
+                    on_token=provisional_token,
+                    on_tool_call=streamed_tool_call,
+                )
+            except Exception as exc:
+                discarded_tool_call_ids = executor.discard() if executor is not None else []
+                tombstone_payload = self._event_payload(
+                    model_step_id=step_id,
+                    attempt=attempt,
+                    visible_chars=visible_chars,
+                    discarded_tool_call_ids=discarded_tool_call_ids,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                self.hooks.emit("model_step_tombstone", tombstone_payload)
+                self.transcript.append_model_step(
+                    self.session_state.session_id,
+                    "model_step_tombstone",
+                    tombstone_payload,
+                )
+                for tool_call_id in discarded_tool_call_ids:
+                    self.hooks.emit(
+                        "tool_discarded",
+                        self._event_payload(
+                            model_step_id=step_id,
+                            tool_call_id=tool_call_id,
+                            reason="model step rolled back",
+                        ),
+                    )
+                if attempt < max_attempts and is_retryable_llm_error(exc):
+                    continue
+                raise
+
+            committed_payload = self._event_payload(
+                model_step_id=step_id,
+                attempt=attempt,
+                visible_chars=visible_chars,
+                tool_calls=len(resp.tool_calls),
+                prompt_snapshot_digest=snapshot.digest,
+            )
+            self.hooks.emit("model_step_committed", committed_payload)
+            self.transcript.append_model_step(
+                self.session_state.session_id,
+                "model_step_committed",
+                committed_payload,
+            )
+            return resp, executor
+        raise RuntimeError("Model step exhausted all transaction attempts.")
 
     def _continue_loop(self, on_token=None, on_tool=None, approval_handler=None) -> str:
         if self.task_state is None:
             self._ensure_task()
+        snapshot = self._ensure_prompt_snapshot(self.task_state.title)
 
         for _ in range(self.max_rounds):
             self._append_pending_steer()
-            full_messages = self._request_messages()
-            tool_schemas = self._tool_schemas()
-            resp = self.runtime.call_llm(
-                llm=self.llm,
-                messages=full_messages,
-                tools=tool_schemas,
-                task_state=self.task_state,
-                session_id=self.session_state.session_id,
+            resp, streaming_executor = self._sample_model_step(
+                snapshot=snapshot,
                 on_token=on_token,
+                on_tool=on_tool,
             )
             self._record_prompt_usage(resp.prompt_tokens)
             if resp.stop_reason in {"max_tokens", "length"}:
+                if streaming_executor is not None:
+                    streaming_executor.discard()
                 raise RuntimeError(
                     "模型输出达到 token 上限，回答未完成。"
                     f"当前 AUTOCODE_MAX_TOKENS={self.context.output_reserve_tokens}，"
@@ -901,6 +1078,8 @@ class Agent:
                 )
 
             if not resp.tool_calls:
+                if streaming_executor is not None:
+                    streaming_executor.commit([])
                 self._append_message(resp.message)
                 steer_items, finished = self.turn_controller.drain_steer_or_finish(
                     self.task_state.task_id
@@ -921,7 +1100,12 @@ class Agent:
             self._append_message(resp.message)
             self.persist_session()
 
-            wait = self._handle_tool_calls(resp.tool_calls, on_tool=on_tool, approval_handler=approval_handler)
+            wait = self._handle_tool_calls(
+                resp.tool_calls,
+                on_tool=on_tool,
+                approval_handler=approval_handler,
+                streaming_executor=streaming_executor,
+            )
             if wait is not None:
                 return wait
 
@@ -962,14 +1146,30 @@ class Agent:
                 self._event_payload(content_preview=item.content[:200], message_kind="steer"),
             )
 
-    def _handle_tool_calls(self, tool_calls, on_tool=None, approval_handler=None) -> str | None:
+    def _handle_tool_calls(
+        self,
+        tool_calls,
+        on_tool=None,
+        approval_handler=None,
+        streaming_executor: StreamingToolExecutor | None = None,
+    ) -> str | None:
         decisions: list[PolicyDecision | None] = []
         for tool_call in tool_calls:
             if tool_call.parse_error:
                 decisions.append(None)
                 continue
+            streamed_decision = (
+                streaming_executor.decision_for(tool_call)
+                if streaming_executor is not None
+                else None
+            )
             decisions.append(
-                self.runtime.evaluate_tool_call(self.task_state, tool_call, self.session_state.session_id)
+                streamed_decision
+                or self.runtime.evaluate_tool_call(
+                    self.task_state,
+                    tool_call,
+                    self.session_state.session_id,
+                )
             )
 
         decisions = [
@@ -1011,6 +1211,8 @@ class Agent:
             self.task_state.mark_waiting(batch)
             self.persist_session()
             if approval_handler is None:
+                if streaming_executor is not None:
+                    streaming_executor.discard()
                 return f"(waiting for approval: {len(approvals)} tool call(s))"
 
             for approval in list(batch.approvals):
@@ -1031,9 +1233,15 @@ class Agent:
                     expected_batch_id=batch.batch_id,
                 )
 
+        prefetched_results = (
+            streaming_executor.commit(tool_calls)
+            if streaming_executor is not None
+            else {}
+        )
         return self._execute_pending_batch(
             batch,
             on_tool=on_tool,
+            prefetched_results=prefetched_results,
         )
 
     def _execute_pending_batch(
@@ -1041,6 +1249,7 @@ class Agent:
         batch: PendingToolBatch,
         *,
         on_tool=None,
+        prefetched_results: dict[str, str | ToolResult] | None = None,
     ) -> str | None:
         tool_calls = self._deserialize_tool_calls(batch.tool_calls)
         decision_data = list(batch.policy_decisions)
@@ -1057,7 +1266,7 @@ class Agent:
         }
         executable_calls: list[ToolCall] = []
         executable_decisions: list[PolicyDecision | None] = []
-        results_by_call: dict[str, str | ToolResult] = {}
+        results_by_call: dict[str, str | ToolResult] = dict(prefetched_results or {})
 
         for index, (tool_call, decision) in enumerate(zip(tool_calls, decisions)):
             if tool_call.parse_error:
@@ -1115,6 +1324,8 @@ class Agent:
                         PolicyDecision("deny", "approval denied by user"),
                     )
                     continue
+            if tool_call.id in results_by_call:
+                continue
             executable_calls.append(tool_call)
             executable_decisions.append(decision)
 
@@ -1165,7 +1376,6 @@ class Agent:
         on_tool=None,
         decision: PolicyDecision | None = None,
     ) -> str | ToolResult:
-        self._sync_mcp_tools()
         try:
             return self.runtime.execute_tool_call(
                 self.task_state,
@@ -1209,6 +1419,8 @@ class Agent:
         self.close(shutdown_observability=False)
         self.messages.clear()
         self.session_state = None
+        self._prompt_snapshot = None
+        self._prompt_tool_registry = {}
 
     def close(self, *, shutdown_observability: bool = True):
         try:

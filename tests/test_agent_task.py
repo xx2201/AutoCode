@@ -63,9 +63,9 @@ def test_agent_rejects_output_truncated_response_instead_of_completing(tmp_path)
     assert not any(message["role"] == "assistant" for message in agent.messages)
 
 
-class _SafeBashTool(Tool):
-    name = "bash"
-    description = "fake bash"
+class _SafeShellTool(Tool):
+    name = "shell_command"
+    description = "fake shell"
     parameters = {
         "type": "object",
         "properties": {"command": {"type": "string"}},
@@ -86,13 +86,13 @@ class _BashLLM:
     def chat(self, messages, tools=None, on_token=None):
         self._calls += 1
         if self._calls == 1:
-            return LLMResponse(content="", tool_calls=[ToolCall(id="1", name="bash", arguments={"command": "python app.py"})])
+            return LLMResponse(content="", tool_calls=[ToolCall(id="1", name="shell_command", arguments={"command": "python app.py"})])
         if self._calls == 2:
-            return LLMResponse(content="", tool_calls=[ToolCall(id="2", name="bash", arguments={"command": "echo ok"})])
+            return LLMResponse(content="", tool_calls=[ToolCall(id="2", name="shell_command", arguments={"command": "echo ok"})])
         if self._calls == 3:
-            return LLMResponse(content="", tool_calls=[ToolCall(id="3", name="bash", arguments={"command": "rm -rf build"})])
+            return LLMResponse(content="", tool_calls=[ToolCall(id="3", name="shell_command", arguments={"command": "rm -rf build"})])
         if self._calls == 4:
-            return LLMResponse(content="", tool_calls=[ToolCall(id="4", name="bash", arguments={"command": "rm -rf ../outside"})])
+            return LLMResponse(content="", tool_calls=[ToolCall(id="4", name="shell_command", arguments={"command": "rm -rf ../outside"})])
         return LLMResponse(content="done")
 
 
@@ -105,7 +105,7 @@ def test_agent_full_access_allows_safe_tools_but_keeps_hard_denies(tmp_path):
 
     agent = Agent(
         llm=_BashLLM(),
-        tools=[_SafeBashTool()],
+        tools=[_SafeShellTool()],
         workspace_root=str(tmp_path),
     )
     reply = agent.chat("run commands", approval_handler=approval_handler)

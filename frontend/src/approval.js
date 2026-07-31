@@ -80,7 +80,7 @@ export function approvalPresentation(pending) {
     };
   }
 
-  if (tool === "bash") {
+  if (tool === "shell_command") {
     const command = textValue(argumentsValue.command);
     return {
       ...base,

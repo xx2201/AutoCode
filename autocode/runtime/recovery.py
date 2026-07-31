@@ -14,12 +14,13 @@ class RecoveryManager:
         result: str | ToolResult,
     ) -> str | ToolResult:
         text = result.text if isinstance(result, ToolResult) else result
-        if self._is_failure(text):
+        failed = result.is_error if isinstance(result, ToolResult) else self._is_failure(text)
+        if failed:
             task_state.note_failure(f"{tool_name}: {text.splitlines()[0][:200]}")
+            if isinstance(result, ToolResult):
+                return result
             hint = self._hint_for_result(text)
             recovered = text + f"\n\n[recovery]\n{hint}"
-            if isinstance(result, ToolResult):
-                return ToolResult(text=recovered, model_content=result.model_content)
             return recovered
 
         task_state.clear_failures()

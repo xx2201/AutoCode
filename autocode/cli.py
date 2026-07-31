@@ -879,7 +879,7 @@ def _render_conversation_history(messages: list[dict]) -> None:
 
 def _prompt_approval(pending) -> str | bool | None:
     command = ""
-    if getattr(pending, "tool_name", "") == "bash":
+    if getattr(pending, "tool_name", "") == "shell_command":
         command = getattr(pending, "arguments", {}).get("command", "")
 
     body = (

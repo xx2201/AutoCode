@@ -15,7 +15,7 @@ from urllib.parse import urlparse, urlunparse
 
 from autocode.agent import Agent
 from autocode.config import Config
-from autocode.llm import LLM, LiteLLM
+from autocode.llm import llm_class_for_provider
 from autocode.state import SessionStore, load_events, load_trace
 from autocode.state import checkpoint as checkpoint_module
 
@@ -43,7 +43,7 @@ class CapturedProcessError(RuntimeError):
 
 
 def create_llm(config: Config, model_override: str | None = None):
-    llm_cls = LiteLLM if config.provider == "litellm" else LLM
+    llm_cls = llm_class_for_provider(config.provider)
     return llm_cls(
         model=model_override or config.model,
         api_key=config.api_key,

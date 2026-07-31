@@ -402,12 +402,12 @@ def test_render_turn_result_includes_approval_hint():
             "session_id": "session_123",
             "task_id": "task_123",
             "status": "waiting_approval",
-            "pending_tool": "bash",
+            "pending_tool": "shell_command",
             "pending_reason": "confirmation required",
             "pending_arguments": {"command": "python app.py"},
             "pending_requires_manual": False,
-            "pending_approval_scope": "tool:bash",
-            "pending_approval_label": "本任务允许运行 bash",
+            "pending_approval_scope": "tool:shell_command",
+            "pending_approval_label": "本任务允许运行 shell_command",
             "permission_mode": "ask",
         })()
     )

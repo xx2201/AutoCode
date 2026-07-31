@@ -2,6 +2,8 @@
 
 import os
 import pathlib
+import hashlib
+import json
 
 from autocode import Agent, LLM, Config, ALL_TOOLS, __version__
 from autocode import cli as cli_module
@@ -416,109 +418,112 @@ def test_agent_ignores_unanchored_usage_from_legacy_checkpoint(tmp_path):
     assert agent.context_usage()["used_tokens"] == estimate_tokens(agent.messages)
 
 
-def test_memory_manager_reads_project_memory(monkeypatch, tmp_path):
+def test_memory_manager_separates_rules_and_verified_file_facts(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "AGENTS.md").write_text("项目规则\n", encoding="utf-8")
-    (workspace / "CLAUDE.md").write_text("项目备注\n", encoding="utf-8")
-
+    source = workspace / "RUNBOOK.md"
+    source.write_text("测试前运行 npm ci\n", encoding="utf-8")
     manager = MemoryManager(str(workspace))
     memory_path = manager.memory_file_path()
-    memory_path.parent.mkdir(parents=True, exist_ok=True)
-    memory_path.write_text("# Project Memory\n\n- 使用 conda 环境 langgraph\n", encoding="utf-8")
-    rules_block = manager.build_rules_block()
-    project_memory_block = manager.build_project_memory_block()
-
-    assert "## Project Rules" in rules_block
-    assert "使用 conda 环境 langgraph" in project_memory_block
-    assert "## Recent Sessions" not in project_memory_block
-
-
-def test_memory_manager_refreshes_project_memory_without_duplicates(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    manager = MemoryManager(str(workspace))
-
-    class FakeLLM:
-        def chat(self, messages, tools=None, on_token=None):
-            return LLMResponse(content="- [fact] 当前项目使用 conda 环境 langgraph\n- [pitfall] README 中启动命令已过期")
-
-    messages = [
-        {"role": "user", "content": "请确认这个项目真实使用的环境和启动方式"},
-        {"role": "tool", "content": "environment.yml: name: langgraph\nREADME.md: python old.py"},
-    ]
-
-    assert manager.refresh_project_memory(messages, FakeLLM()) is True
-    assert manager.refresh_project_memory(messages, FakeLLM()) is False
-
-    memory_path = manager.memory_file_path()
-    content = memory_path.read_text(encoding="utf-8")
-    assert "# Project Memory" in content
-    assert content.count("- [fact] 当前项目使用 conda 环境 langgraph") == 1
-    assert content.count("- [pitfall] README 中启动命令已过期") == 1
-
-
-def test_memory_manager_refresh_rewrites_project_memory_with_llm_judgment(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    manager = MemoryManager(str(workspace))
-    memory_path = manager.memory_file_path()
-    memory_path.parent.mkdir(parents=True, exist_ok=True)
+    memory_path.parent.mkdir(parents=True)
     memory_path.write_text(
-        "# Project Memory\n\n"
-        "- Project root: `G:/demo` contains `main.py` and `utils.py`\n"
-        "- Entry point: `python main.py`\n"
-        "- [pitfall] PowerShell here-string must end at column 1\n"
-        "- [pitfall] PowerShell here string must end at column 1\n",
+        json.dumps(
+            [
+                {
+                    "fact": "测试前运行 npm ci",
+                    "source": "RUNBOOK.md",
+                    "source_hash": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "confidence": "verified",
+                    "scope": "testing",
+                    "invalidated": False,
+                }
+            ],
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
-    class FakeLLM:
-        def chat(self, messages, tools=None, on_token=None):
-            return LLMResponse(content="- [pitfall] PowerShell here-string terminator must stay at column 1")
-
-    messages = [
-        {"role": "user", "content": "总结这个项目里真正值得长期记住的坑"},
-        {"role": "tool", "content": "PowerShell here-string terminator must stay at column 1"},
-    ]
-
-    assert manager.refresh_project_memory(messages, FakeLLM(), force=True) is True
-
-    content = memory_path.read_text(encoding="utf-8")
-    assert "Project root" not in content
-    assert "Entry point" not in content
-    assert content.count("- [pitfall] PowerShell here-string terminator must stay at column 1") == 1
+    assert "## Project Rules" in manager.build_rules_block()
+    block = manager.build_project_memory_block(query="怎么运行测试")
+    assert "测试前运行 npm ci" in block
+    assert "source: RUNBOOK.md" in block
 
 
-def test_memory_manager_allows_model_selected_runbook_lines(tmp_path):
+def test_memory_manager_invalidates_fact_when_source_changes(tmp_path):
+    source = tmp_path / "config.toml"
+    source.write_text("port = 8000\n", encoding="utf-8")
+    manager = MemoryManager(str(tmp_path))
+    memory_path = manager.memory_file_path()
+    memory_path.parent.mkdir(parents=True)
+    memory_path.write_text(
+        json.dumps(
+            [
+                {
+                    "fact": "服务端口是 8000",
+                    "source": "config.toml",
+                    "source_hash": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "confidence": "verified",
+                    "scope": "runtime",
+                    "invalidated": False,
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    source.write_text("port = 9000\n", encoding="utf-8")
+    assert manager.build_project_memory_block(query="端口") == ""
+    saved = json.loads(memory_path.read_text(encoding="utf-8"))
+    assert saved[0]["confidence"] == "stale"
+    assert saved[0]["invalidated"] is True
+
+
+def test_memory_refresh_uses_only_selected_file_evidence(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    source = workspace / "README.md"
+    source.write_text("启动命令: python app.py\n", encoding="utf-8")
     manager = MemoryManager(str(workspace))
 
     class FakeLLM:
+        def __init__(self):
+            self.calls = []
+
         def chat(self, messages, tools=None, on_token=None):
-            return LLMResponse(content=(
-                "- 后台进程命名格式 `proc_20260610_xxx`，日志落在 `.autocode\\\\processes\\\\`\n"
-                "- 跑通流程固定顺序：先启动 worker -> 再发消息 -> 最后 stop_process\n"
-                "- [pitfall] Windows 下重定向 stdout 的子 Python 进程要强制 UTF-8 输出\n"
-            ))
+            self.calls.append(messages)
+            if len(self.calls) == 1:
+                return LLMResponse(content="README.md")
+            return LLMResponse(
+                content=json.dumps(
+                    [
+                        {
+                            "fact": "启动命令是 python app.py",
+                            "source": "README.md",
+                            "scope": "runtime",
+                        }
+                    ],
+                    ensure_ascii=False,
+                )
+            )
 
-    messages = [
-        {"role": "user", "content": "总结这里真正值得长期记住的内容"},
-        {"role": "tool", "content": "背景进程日志和 UTF-8 输出验证"},
-    ]
-
-    assert manager.refresh_project_memory(messages, FakeLLM(), force=True) is True
-
-    content = manager.memory_file_path().read_text(encoding="utf-8")
-    assert "proc_20260610_xxx" in content
-    assert "固定顺序" in content
-    assert "强制 UTF-8 输出" in content
+    llm = FakeLLM()
+    assert manager.refresh_project_memory(
+        [{"role": "user", "content": "记住启动方式"}],
+        llm,
+        force=True,
+    )
+    facts = json.loads(manager.memory_file_path().read_text(encoding="utf-8"))
+    assert facts[0]["fact"] == "启动命令是 python app.py"
+    assert facts[0]["source_hash"] == hashlib.sha256(source.read_bytes()).hexdigest()
+    assert "Existing PROJECT_MEMORY" not in llm.calls[0][1]["content"]
+    assert "Project file evidence (authoritative)" in llm.calls[1][1]["content"]
 
 
 def test_memory_manager_can_schedule_async_refresh(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
+    (workspace / "README.md").write_text("run: python app.py", encoding="utf-8")
     manager = MemoryManager(str(workspace))
 
     class FakeLLM:
@@ -530,7 +535,9 @@ def test_memory_manager_can_schedule_async_refresh(tmp_path):
 
         def chat(self, messages, tools=None, on_token=None):
             self.calls += 1
-            return LLMResponse(content="- [fact] 项目真实 conda 环境是 langgraph")
+            if self.calls == 1:
+                return LLMResponse(content="README.md")
+            return LLMResponse(content="[]")
 
     llm = FakeLLM()
     messages = [{"role": "user", "content": "请记住项目真实 conda 环境"}]
@@ -572,13 +579,31 @@ def test_memory_refresh_scheduling_does_not_scan_workspace_on_response_thread(tm
     assert len(submitted) == 1
 
 
-def test_agent_request_messages_keep_rules_in_system_and_runtime_state_in_tail(tmp_path):
+def test_agent_prompt_snapshot_keeps_rules_and_memory_in_stable_system_prompt(tmp_path):
     from autocode.agent import Agent
 
     (tmp_path / "AGENTS.md").write_text("规则一\n", encoding="utf-8")
-    memory_dir = tmp_path / ".autocode"
-    memory_dir.mkdir()
-    (memory_dir / "PROJECT_MEMORY.md").write_text("# Project Memory\n\n- 项目记忆一\n", encoding="utf-8")
+    source = tmp_path / "README.md"
+    source.write_text("项目记忆一\n", encoding="utf-8")
+    manager = MemoryManager(str(tmp_path))
+    memory_path = manager.memory_file_path()
+    memory_path.parent.mkdir(parents=True)
+    memory_path.write_text(
+        json.dumps(
+            [
+                {
+                    "fact": "项目记忆一",
+                    "source": "README.md",
+                    "source_hash": hashlib.sha256(source.read_bytes()).hexdigest(),
+                    "confidence": "verified",
+                    "scope": "project",
+                    "invalidated": False,
+                }
+            ],
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
 
     class _NoopLLM:
         def __init__(self):
@@ -593,68 +618,22 @@ def test_agent_request_messages_keep_rules_in_system_and_runtime_state_in_tail(t
     agent.task_state.todos = [{"content": "读文件", "status": "pending"}]
     agent.messages = [{"role": "user", "content": "开始"}]
 
-    request_messages = agent._request_messages()
+    snapshot = agent._create_prompt_snapshot(query="开始")
+    request_messages = agent._request_messages(snapshot)
+    second_request = agent._request_messages(snapshot)
 
     assert request_messages[0]["role"] == "system"
     assert "# Rules Memory" in request_messages[0]["content"]
     assert "## Progress Updates" in request_messages[0]["content"]
     assert "without exposing private chain-of-thought" in request_messages[0]["content"]
     assert "Do not repeat intentions as though the tool result had not arrived" in request_messages[0]["content"]
-    assert "# Task" not in request_messages[0]["content"]
+    assert "# Retrieved Project Memory" in request_messages[0]["content"]
+    assert "项目记忆一" in request_messages[0]["content"]
+    assert request_messages[0]["content"] == second_request[0]["content"]
+    assert snapshot.digest == agent.task_state.prompt_snapshot["digest"]
     assert request_messages[-1]["role"] == "user"
     assert "[Runtime state for this turn." in request_messages[-1]["content"]
-    assert "# Project Memory" in request_messages[-1]["content"]
     assert "# Current Todo" in request_messages[-1]["content"]
-
-
-def test_memory_manager_uses_llm_selected_project_file_evidence(tmp_path):
-    workspace = tmp_path / "workspace"
-    (workspace / "backend").mkdir(parents=True)
-    (workspace / "frontend").mkdir(parents=True)
-    (workspace / "README.md").write_text("启动方式: 先启动 backend 再启动 frontend", encoding="utf-8")
-    (workspace / "backend" / "models.py").write_text(
-        "from sqlalchemy import Column, Integer\n\nid = Column(Integer, primary_key=True)\n",
-        encoding="utf-8",
-    )
-    (workspace / "frontend" / "vite.config.js").write_text(
-        "export default { server: { proxy: { '/api': 'http://localhost:8000' } } }\n",
-        encoding="utf-8",
-    )
-    (workspace / "backend" / ".venv").mkdir()
-    (workspace / "backend" / ".venv" / "ignored.py").write_text("ignored", encoding="utf-8")
-
-    manager = MemoryManager(str(workspace))
-
-    class FakeLLM:
-        def __init__(self):
-            self.calls = []
-
-        def chat(self, messages, tools=None, on_token=None):
-            self.calls.append(messages)
-            if len(self.calls) == 1:
-                return LLMResponse(content="README.md\nfrontend/vite.config.js")
-            return LLMResponse(content="- 后端监听 8000，前端通过 /api 代理联调")
-
-    llm = FakeLLM()
-    messages = [{"role": "user", "content": "总结这个 demo 真正值得记住的项目事实"}]
-
-    assert manager.refresh_project_memory(messages, llm, force=True) is True
-    assert len(llm.calls) == 2
-
-    selector_prompt = llm.calls[0][1]["content"]
-    summary_system_prompt = llm.calls[1][0]["content"]
-    summary_user_prompt = llm.calls[1][1]["content"]
-    assert "Project file inventory:" in selector_prompt
-    assert "- README.md (" in selector_prompt
-    assert "- backend/models.py (" in selector_prompt
-    assert "- frontend/vite.config.js (" in selector_prompt
-    assert ".venv/ignored.py" not in selector_prompt
-    assert "Never infer from generic library best practices" in summary_system_prompt
-    assert "[README.md]" in summary_user_prompt
-    assert "[frontend/vite.config.js]" in summary_user_prompt
-    assert "启动方式: 先启动 backend 再启动 frontend" in summary_user_prompt
-    assert "proxy" in summary_user_prompt
-    assert "[backend/models.py]" not in summary_user_prompt
 
 
 def test_memory_refresh_key_changes_when_project_inventory_changes(tmp_path):

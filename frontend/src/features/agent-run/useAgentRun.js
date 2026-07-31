@@ -14,6 +14,9 @@ export default function useAgentRun() {
   const appendToken = useCallback((text) => {
     dispatch({ type: "append_token", text });
   }, []);
+  const clearStream = useCallback(() => {
+    dispatch({ type: "clear_stream" });
+  }, []);
   const acceptWork = useCallback((event) => {
     dispatch({ type: "accept_work", event });
   }, []);
@@ -32,6 +35,7 @@ export default function useAgentRun() {
     acceptWork,
     appendToken,
     begin,
+    clearStream,
     reset,
     resetTimeline,
     setStage,
