@@ -4,8 +4,11 @@ from __future__ import annotations
 
 import contextvars
 import logging
+import threading
 from contextlib import contextmanager
 from typing import Any
+
+from opentelemetry.instrumentation.threading import ThreadingInstrumentor
 
 from .diagnostics import get_diagnostic_logger, log_event
 
@@ -14,6 +17,17 @@ _ACTIVE_OBSERVATION_DEPTH: contextvars.ContextVar[int] = contextvars.ContextVar(
     "autocode_langfuse_active_observation_depth",
     default=0,
 )
+_THREADING_INSTRUMENTATION_LOCK = threading.Lock()
+
+
+def _ensure_thread_context_propagation() -> None:
+    """Propagate the active OTel observation through every worker-thread entry point."""
+    instrumentor = ThreadingInstrumentor()
+    if instrumentor.is_instrumented_by_opentelemetry:
+        return
+    with _THREADING_INSTRUMENTATION_LOCK:
+        if not instrumentor.is_instrumented_by_opentelemetry:
+            instrumentor.instrument()
 
 
 def _clean_mapping(data: dict[str, Any] | None) -> dict[str, Any] | None:
@@ -63,6 +77,7 @@ class LangfuseTracer:
                 error=self._last_error,
             )
             raise RuntimeError(self._last_error) from exc
+        _ensure_thread_context_propagation()
         kwargs = {
             "public_key": self.public_key,
             "secret_key": self.secret_key,

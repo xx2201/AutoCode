@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import concurrent.futures
-import contextvars
 import time
 from dataclasses import dataclass
 
@@ -389,10 +388,8 @@ class Runtime:
                 with concurrent.futures.ThreadPoolExecutor(
                     max_workers=min(8, len(group.call_indexes))
                 ) as pool:
-                    # 每个线程复制当前 OTel 上下文，确保并行 tool span 仍归属于当前 agent。
                     futures = [
                         pool.submit(
-                            contextvars.copy_context().run,
                             self._run_traced_tool_call,
                             task_state,
                             tool_calls[index],

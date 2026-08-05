@@ -1,13 +1,18 @@
 import sys
 import types as builtin_types
 
+from opentelemetry import context as otel_context
+
 from autocode.agent import Agent
 from autocode.llm import LLM, LLMResponse, ToolCall
 from autocode.observability import LangfuseTracer
-from autocode.runtime import Policy, Runtime
+from autocode.runtime import Policy, Runtime, StreamingToolExecutor
 from autocode.state import PolicyDecision, TaskState, load_checkpoint
 from autocode.state import checkpoint as checkpoint_module
-from autocode.tools.base import Tool
+from autocode.tools.base import ConcurrencySpec, Tool
+
+
+_FAKE_OBSERVATION_KEY = otel_context.create_key("autocode-test-current-observation")
 
 
 class _EchoTool(Tool):
@@ -23,6 +28,29 @@ class _EchoTool(Tool):
         return f"echo:{text}"
 
 
+class _StreamingReadTool(_EchoTool):
+    name = "read"
+    parameters = {
+        "type": "object",
+        "properties": {"file_path": {"type": "string"}},
+        "required": ["file_path"],
+    }
+
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.resources(
+            reads={f"file:{arguments['file_path']}"},
+            reason="read-only observability probe",
+        )
+
+    def execute(self, file_path: str):
+        return f"read:{file_path}"
+
+
+class _ParallelEchoTool(_EchoTool):
+    def concurrency_spec(self, arguments: dict) -> ConcurrencySpec:
+        return ConcurrencySpec.parallel("parallel observability probe")
+
+
 def _install_fake_langfuse(monkeypatch):
     events: list[dict] = []
     observation_counter = 0
@@ -33,8 +61,18 @@ def _install_fake_langfuse(monkeypatch):
             observation_counter += 1
             self.kwargs = dict(kwargs)
             trace_context = kwargs.get("trace_context") or {}
-            self.trace_id = trace_context.get("trace_id") or f"{observation_counter:032x}"
+            self.parent = otel_context.get_value(_FAKE_OBSERVATION_KEY)
+            self.trace_id = (
+                trace_context.get("trace_id")
+                or getattr(self.parent, "trace_id", None)
+                or f"{observation_counter:032x}"
+            )
+            self.parent_id = (
+                trace_context.get("parent_span_id")
+                or getattr(self.parent, "id", None)
+            )
             self.id = f"{observation_counter:016x}"
+            self._token = None
 
         def __enter__(self):
             events.append(
@@ -43,11 +81,17 @@ def _install_fake_langfuse(monkeypatch):
                     "kwargs": dict(self.kwargs),
                     "trace_id": self.trace_id,
                     "observation_id": self.id,
+                    "parent_observation_id": self.parent_id,
                 }
+            )
+            self._token = otel_context.attach(
+                otel_context.set_value(_FAKE_OBSERVATION_KEY, self)
             )
             return self
 
         def __exit__(self, exc_type, exc, tb):
+            if self._token is not None:
+                otel_context.detach(self._token)
             events.append({"event": "exit", "name": self.kwargs.get("name")})
 
         def update(self, **kwargs):
@@ -327,7 +371,7 @@ def test_runtime_emits_nested_tool_observations_for_parallel_calls(monkeypatch):
         langfuse_public_key="pk-test",
         langfuse_secret_key="sk-lf-test",
     )
-    runtime = Runtime({"echo": _EchoTool()}, tracer=llm.tracer)
+    runtime = Runtime({"echo": _ParallelEchoTool()}, tracer=llm.tracer)
     state = TaskState(task_id="task-observation", status="running")
     tool_calls = [
         ToolCall(id="call-1", name="echo", arguments={"text": "one"}),
@@ -366,3 +410,51 @@ def test_runtime_emits_nested_tool_observations_for_parallel_calls(monkeypatch):
         "echo:one",
         "echo:two",
     }
+    agent_enter = next(
+        item
+        for item in events
+        if item["event"] == "enter" and item["kwargs"].get("name") == "agent.chat"
+    )
+    assert {item["trace_id"] for item in tool_enters} == {agent_enter["trace_id"]}
+    assert {item["parent_observation_id"] for item in tool_enters} == {
+        agent_enter["observation_id"]
+    }
+
+
+def test_streaming_speculative_tool_observation_stays_in_agent_trace(monkeypatch):
+    events = _install_fake_langfuse(monkeypatch)
+    tracer = LangfuseTracer(public_key="pk-test", secret_key="sk-lf-test")
+    runtime = Runtime({"read": _StreamingReadTool()}, tracer=tracer)
+    state = TaskState(task_id="task-streaming-observation", status="running")
+    tool_call = ToolCall(
+        id="call-read",
+        name="read",
+        arguments={"file_path": "README.md"},
+    )
+
+    with tracer.start_agent_turn(
+        name="agent.chat",
+        input_payload={"user_message": "read while streaming"},
+        session_id="session-streaming-observation",
+        trace_name="autocode-agent-turn",
+    ):
+        executor = StreamingToolExecutor(
+            runtime=runtime,
+            task_state=state,
+            session_id="session-streaming-observation",
+        )
+        assert executor.add_tool(tool_call) is True
+        assert executor.commit([tool_call]) == {"call-read": "read:README.md"}
+
+    agent_enter = next(
+        item
+        for item in events
+        if item["event"] == "enter" and item["kwargs"].get("name") == "agent.chat"
+    )
+    tool_enter = next(
+        item
+        for item in events
+        if item["event"] == "enter" and item["kwargs"].get("name") == "tool.read"
+    )
+    assert tool_enter["trace_id"] == agent_enter["trace_id"]
+    assert tool_enter["parent_observation_id"] == agent_enter["observation_id"]
