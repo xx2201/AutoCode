@@ -161,6 +161,9 @@ def test_system_prompt_requests_independent_batches_and_rejects_blind_retries():
     assert "Batch independent tool calls" in prompt
     assert "Keep dependencies sequential" in prompt
     assert "Do not repeat successful calls blindly" in prompt
+    assert "normally two to four complete sentences" in prompt
+    assert "user-facing summaries of the work" in prompt
+    assert "follow the investigation without opening every tool result" in prompt
     assert "what was learned, why it matters, and what will happen next" in prompt
     assert "Treat that block as metadata" in prompt
     assert "继续执行" not in prompt
