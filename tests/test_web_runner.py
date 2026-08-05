@@ -8,6 +8,7 @@ pytest.importorskip("httpx")
 
 from autocode.config import Config
 from autocode.remote.manager import RemoteTurnResult
+from autocode.web import runner as runner_module
 from autocode.web.runner import LocalRunner, RunnerSettings, changed_git_files
 from autocode.workspaces import WorkspaceRegistry
 
@@ -610,3 +611,70 @@ def test_runner_drops_result_when_relay_job_expired(tmp_path):
     manager = managers[str((tmp_path / "project-a").resolve())]
     assert len(client.posts) == 1
     assert manager.calls == [("chat", "web_12345678", "hello")]
+
+
+def test_runner_builds_isolated_relay_clients(tmp_path, monkeypatch):
+    class _Client:
+        def __init__(self, **kwargs):
+            self.kwargs = kwargs
+            self.closed = False
+
+        def close(self):
+            self.closed = True
+
+    clients = []
+
+    def build_client(**kwargs):
+        client = _Client(**kwargs)
+        clients.append(client)
+        return client
+
+    monkeypatch.setattr(runner_module.ssl, "create_default_context", lambda **_: object())
+    monkeypatch.setattr(runner_module.httpx, "Client", build_client)
+    settings = RunnerSettings(
+        relay_url="https://relay.example",
+        token="runner-token-that-is-long-enough",
+        ca_cert=str(tmp_path / "relay-ca.pem"),
+    )
+    runner = LocalRunner(
+        settings,
+        config=Config(model="fake-model", api_key="secret"),
+        registry=WorkspaceRegistry(tmp_path / "workspaces.json"),
+    )
+
+    assert len(clients) == 3
+    assert runner.client is clients[0]
+    assert runner._poll_client is clients[1]
+    assert runner._heartbeat_client is clients[2]
+
+    runner.close()
+    assert all(client.closed for client in clients)
+
+
+def test_runner_watchdog_exits_when_idle_connection_is_stale(tmp_path, monkeypatch):
+    runner, _, _ = _runner(tmp_path)
+    exits = []
+    monkeypatch.setattr(runner_module, "log_event", lambda *args, **kwargs: None)
+    runner._fatal_exit = exits.append
+    runner._last_heartbeat_success_at = 0.0
+    runner._last_poll_success_at = 0.0
+
+    expired = runner._check_liveness(now=runner.settings.watchdog_timeout + 1.0)
+
+    assert expired is True
+    assert exits == [1]
+
+
+def test_runner_watchdog_defers_exit_while_a_job_is_active(tmp_path, monkeypatch):
+    runner, _, _ = _runner(tmp_path)
+    exits = []
+    monkeypatch.setattr(runner_module, "log_event", lambda *args, **kwargs: None)
+    runner._fatal_exit = exits.append
+    runner._last_heartbeat_success_at = 0.0
+    runner._last_poll_success_at = 0.0
+    runner._active_jobs.add("job-1")
+
+    expired = runner._check_liveness(now=runner.settings.watchdog_timeout + 1.0)
+
+    assert expired is False
+    assert exits == []

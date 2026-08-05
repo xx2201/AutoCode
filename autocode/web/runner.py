@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from dataclasses import asdict, dataclass, replace
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 import httpx
 from dotenv import dotenv_values
@@ -107,6 +107,8 @@ class RunnerSettings:
     token: str
     ca_cert: str
     poll_wait: float = 25.0
+    heartbeat_interval: float = 15.0
+    watchdog_timeout: float = 120.0
 
 
 def _setting(values: dict[str, str | None], name: str, default: str = "") -> str:
@@ -124,6 +126,12 @@ def load_runner_settings(env_file: str | None = None) -> RunnerSettings:
     token = _setting(values, "AUTOCODE_RUNNER_TOKEN")
     ca_cert = _setting(values, "AUTOCODE_RELAY_CA_CERT")
     poll_wait = float(_setting(values, "AUTOCODE_RUNNER_POLL_WAIT", "25"))
+    heartbeat_interval = float(
+        _setting(values, "AUTOCODE_RUNNER_HEARTBEAT_INTERVAL", "15")
+    )
+    watchdog_timeout = float(
+        _setting(values, "AUTOCODE_RUNNER_WATCHDOG_TIMEOUT", "120")
+    )
 
     if not relay_url.startswith("https://"):
         raise RuntimeError("AUTOCODE_RELAY_URL must use HTTPS.")
@@ -131,11 +139,18 @@ def load_runner_settings(env_file: str | None = None) -> RunnerSettings:
         raise RuntimeError("AUTOCODE_RUNNER_TOKEN must contain at least 24 characters.")
     if not ca_cert or not Path(ca_cert).expanduser().is_file():
         raise RuntimeError("AUTOCODE_RELAY_CA_CERT must point to the relay CA certificate.")
+    heartbeat_interval = max(5.0, min(heartbeat_interval, 60.0))
+    watchdog_timeout = max(
+        heartbeat_interval * 3,
+        min(watchdog_timeout, 600.0),
+    )
     return RunnerSettings(
         relay_url=relay_url,
         token=token,
         ca_cert=str(Path(ca_cert).expanduser().resolve()),
         poll_wait=max(1.0, min(poll_wait, 30.0)),
+        heartbeat_interval=heartbeat_interval,
+        watchdog_timeout=watchdog_timeout,
     )
 
 
@@ -150,6 +165,7 @@ class LocalRunner:
         registry: WorkspaceRegistry | None = None,
         manager_factory: Any | None = None,
         client: httpx.Client | Any | None = None,
+        fatal_exit: Callable[[int], None] = os._exit,
     ):
         self.settings = settings
         self.registry = registry or WorkspaceRegistry()
@@ -164,32 +180,61 @@ class LocalRunner:
         self._workspace_locks_guard = threading.Lock()
         self._workspace_locks: dict[str, threading.RLock] = {}
         self._pending_changes: dict[tuple[str, str], tuple[ChangeSetStore, Any, str]] = {}
-        self._owns_client = client is None
+        self._owned_clients: list[httpx.Client] = []
         if client is None:
             ssl_context = ssl.create_default_context(cafile=settings.ca_cert)
-            timeout = httpx.Timeout(
-                connect=10.0,
-                read=settings.poll_wait + 15.0,
-                write=30.0,
-                pool=10.0,
+            client = self._build_relay_client(ssl_context, read_timeout=30.0)
+            poll_client = self._build_relay_client(
+                ssl_context,
+                read_timeout=settings.poll_wait + 15.0,
             )
-            client = httpx.Client(
-                base_url=settings.relay_url,
-                headers={
-                    "Authorization": f"Bearer {settings.token}",
-                    "User-Agent": f"AutoCode-Local-Runner/{__version__}",
-                },
-                verify=ssl_context,
-                timeout=timeout,
+            heartbeat_client = self._build_relay_client(
+                ssl_context,
+                read_timeout=15.0,
             )
+            self._owned_clients.extend((client, poll_client, heartbeat_client))
+        else:
+            poll_client = client
+            heartbeat_client = client
         self.client = client
+        self._poll_client = poll_client
+        self._heartbeat_client = heartbeat_client
         self._stopping = False
+        self._stop_event = threading.Event()
+        self._fatal_exit = fatal_exit
+        self._liveness_lock = threading.Lock()
+        now = time.monotonic()
+        self._last_heartbeat_success_at = now
+        self._last_poll_success_at = now
+        self._active_jobs: set[str] = set()
+        self._watchdog_deferral_logged = False
         self._logger = get_diagnostic_logger("web-runner")
         self._file_context = threading.local()
         self._web_files = WebFileStore()
         self._job_executor = ThreadPoolExecutor(
             max_workers=8,
             thread_name_prefix="autocode-runner-job",
+        )
+
+    def _build_relay_client(
+        self,
+        ssl_context: ssl.SSLContext,
+        *,
+        read_timeout: float,
+    ) -> httpx.Client:
+        return httpx.Client(
+            base_url=self.settings.relay_url,
+            headers={
+                "Authorization": f"Bearer {self.settings.token}",
+                "User-Agent": f"AutoCode-Local-Runner/{__version__}",
+            },
+            verify=ssl_context,
+            timeout=httpx.Timeout(
+                connect=10.0,
+                read=read_timeout,
+                write=30.0,
+                pool=10.0,
+            ),
         )
 
     def execute(self, action: str, payload: dict[str, Any], event_handler=None) -> Any:
@@ -663,18 +708,26 @@ class LocalRunner:
             name="autocode-runner-heartbeat",
             daemon=True,
         )
+        watchdog = threading.Thread(
+            target=self._watchdog_loop,
+            name="autocode-runner-watchdog",
+            daemon=True,
+        )
         heartbeat.start()
+        watchdog.start()
         try:
             while not self._stopping:
                 try:
-                    response = self.client.get(
+                    response = self._poll_client.get(
                         "/api/runner/next",
                         params={"wait": self.settings.poll_wait},
                     )
                     if response.status_code == 204:
+                        self._record_poll_success()
                         retry_delay = 1.0
                         continue
                     response.raise_for_status()
+                    self._record_poll_success()
                     job = response.json()
                     self._job_executor.submit(self._run_job, job)
                     retry_delay = 1.0
@@ -682,20 +735,33 @@ class LocalRunner:
                     if self._stopping:
                         break
                     print(f"Runner relay error: {exc}", file=sys.stderr, flush=True)
-                    time.sleep(retry_delay)
+                    log_event(
+                        self._logger,
+                        logging.WARNING,
+                        "Runner relay request failed",
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                        retry_delay_seconds=retry_delay,
+                    )
+                    self._stop_event.wait(retry_delay)
                     retry_delay = min(retry_delay * 2, 30.0)
         finally:
             self._stopping = True
+            self._stop_event.set()
             heartbeat.join(timeout=2.0)
+            watchdog.join(timeout=2.0)
             self._job_executor.shutdown(wait=True, cancel_futures=False)
 
     def stop(self) -> None:
         self._stopping = True
+        self._stop_event.set()
 
     def close(self) -> None:
+        self.stop()
         self._job_executor.shutdown(wait=True, cancel_futures=False)
-        if self._owns_client:
-            self.client.close()
+        for client in self._owned_clients:
+            client.close()
+        self._owned_clients.clear()
         with self._manager_lock:
             managers = list(self._managers.values())
             self._managers.clear()
@@ -758,6 +824,16 @@ class LocalRunner:
         return f"Attached {metadata['name']} to the current Web response."
 
     def _run_job(self, job: dict[str, Any]) -> None:
+        job_id = str(job["job_id"])
+        with self._liveness_lock:
+            self._active_jobs.add(job_id)
+        try:
+            self._run_active_job(job)
+        finally:
+            with self._liveness_lock:
+                self._active_jobs.discard(job_id)
+
+    def _run_active_job(self, job: dict[str, Any]) -> None:
         job_id = str(job["job_id"])
         action = str(job.get("action", ""))
         payload = dict(job.get("payload") or {})
@@ -847,20 +923,85 @@ class LocalRunner:
                 return
             except httpx.HTTPError as exc:
                 print(f"Runner result delivery error: {exc}", file=sys.stderr, flush=True)
-                time.sleep(2.0)
+                log_event(
+                    self._logger,
+                    logging.WARNING,
+                    "Runner result delivery failed",
+                    job_id=job_id,
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+                self._stop_event.wait(2.0)
 
     def _heartbeat_loop(self) -> None:
         while not self._stopping:
             try:
-                response = self.client.post("/api/runner/heartbeat")
+                response = self._heartbeat_client.post("/api/runner/heartbeat")
                 response.raise_for_status()
+                with self._liveness_lock:
+                    self._last_heartbeat_success_at = time.monotonic()
             except httpx.HTTPError as exc:
                 if not self._stopping:
                     print(f"Runner heartbeat error: {exc}", file=sys.stderr, flush=True)
-            for _ in range(15):
-                if self._stopping:
-                    return
-                time.sleep(1.0)
+                    log_event(
+                        self._logger,
+                        logging.WARNING,
+                        "Runner heartbeat failed",
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+            self._stop_event.wait(self.settings.heartbeat_interval)
+
+    def _record_poll_success(self) -> None:
+        with self._liveness_lock:
+            self._last_poll_success_at = time.monotonic()
+
+    def _watchdog_loop(self) -> None:
+        while not self._stop_event.wait(self.settings.heartbeat_interval):
+            self._check_liveness()
+
+    def _check_liveness(self, *, now: float | None = None) -> bool:
+        checked_at = time.monotonic() if now is None else now
+        with self._liveness_lock:
+            heartbeat_age = checked_at - self._last_heartbeat_success_at
+            poll_age = checked_at - self._last_poll_success_at
+            active_jobs = tuple(sorted(self._active_jobs))
+            stale = (
+                heartbeat_age > self.settings.watchdog_timeout
+                or poll_age > self.settings.watchdog_timeout
+            )
+            if not stale:
+                self._watchdog_deferral_logged = False
+                return False
+            should_log_deferral = bool(active_jobs) and not self._watchdog_deferral_logged
+            if should_log_deferral:
+                self._watchdog_deferral_logged = True
+
+        details = {
+            "heartbeat_age_seconds": round(heartbeat_age, 1),
+            "poll_age_seconds": round(poll_age, 1),
+            "watchdog_timeout_seconds": self.settings.watchdog_timeout,
+            "active_job_count": len(active_jobs),
+            "active_job_ids": list(active_jobs),
+        }
+        if active_jobs:
+            if should_log_deferral:
+                log_event(
+                    self._logger,
+                    logging.WARNING,
+                    "Runner liveness restart deferred while jobs are active",
+                    **details,
+                )
+            return False
+
+        log_event(
+            self._logger,
+            logging.CRITICAL,
+            "Runner liveness watchdog expired; terminating for scheduled restart",
+            **details,
+        )
+        self._fatal_exit(1)
+        return True
 
 
 class _RunnerEventPublisher:
