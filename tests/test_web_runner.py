@@ -651,7 +651,9 @@ def test_runner_builds_isolated_relay_clients(tmp_path, monkeypatch):
     assert all(client.closed for client in clients)
 
 
-def test_runner_watchdog_exits_when_idle_connection_is_stale(tmp_path, monkeypatch):
+def test_runner_watchdog_exits_when_all_idle_connections_are_stale(
+    tmp_path, monkeypatch
+):
     runner, _, _ = _runner(tmp_path)
     exits = []
     monkeypatch.setattr(runner_module, "log_event", lambda *args, **kwargs: None)
@@ -663,6 +665,30 @@ def test_runner_watchdog_exits_when_idle_connection_is_stale(tmp_path, monkeypat
 
     assert expired is True
     assert exits == [1]
+
+
+@pytest.mark.parametrize(
+    ("heartbeat_age", "poll_age"),
+    [
+        (121.0, 14.0),
+        (14.0, 121.0),
+    ],
+)
+def test_runner_watchdog_keeps_running_when_one_relay_channel_is_healthy(
+    tmp_path, monkeypatch, heartbeat_age, poll_age
+):
+    runner, _, _ = _runner(tmp_path)
+    exits = []
+    monkeypatch.setattr(runner_module, "log_event", lambda *args, **kwargs: None)
+    runner._fatal_exit = exits.append
+    now = 200.0
+    runner._last_heartbeat_success_at = now - heartbeat_age
+    runner._last_poll_success_at = now - poll_age
+
+    expired = runner._check_liveness(now=now)
+
+    assert expired is False
+    assert exits == []
 
 
 def test_runner_watchdog_defers_exit_while_a_job_is_active(tmp_path, monkeypatch):

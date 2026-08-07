@@ -966,9 +966,11 @@ class LocalRunner:
             heartbeat_age = checked_at - self._last_heartbeat_success_at
             poll_age = checked_at - self._last_poll_success_at
             active_jobs = tuple(sorted(self._active_jobs))
+            # 心跳和长轮询都会在 Relay 端刷新 Runner 在线状态。单个 HTTP
+            # 连接池异常时，另一个通道仍可维持任务收发，不能误杀整个进程。
             stale = (
                 heartbeat_age > self.settings.watchdog_timeout
-                or poll_age > self.settings.watchdog_timeout
+                and poll_age > self.settings.watchdog_timeout
             )
             if not stale:
                 self._watchdog_deferral_logged = False
@@ -997,7 +999,7 @@ class LocalRunner:
         log_event(
             self._logger,
             logging.CRITICAL,
-            "Runner liveness watchdog expired; terminating for scheduled restart",
+            "All Runner relay channels are stale; terminating for scheduled restart",
             **details,
         )
         self._fatal_exit(1)

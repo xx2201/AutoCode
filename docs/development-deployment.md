@@ -157,6 +157,17 @@ Working directory: G:/mycode/AutoCoder
 Restart this task after Runner code changes. Do not start a second manual Runner
 while the scheduled task is running.
 
+Register or repair the task with the repository script:
+
+```powershell
+pwsh.exe -NoLogo -NoProfile -File deploy/install-windows-runner-task.ps1
+```
+
+The task combines `RestartOnFailure` with a one-minute repeating recovery
+trigger. `MultipleInstances=IgnoreNew` prevents duplicate Runner instances while
+the repeating trigger brings back a task that exited without being restarted by
+Task Scheduler's failure policy.
+
 ## Verification
 
 Verify independent signals after every deployment:
