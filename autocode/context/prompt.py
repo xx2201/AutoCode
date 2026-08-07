@@ -32,11 +32,15 @@ Progress updates are user-facing summaries of the work, not private reasoning, t
 
 Before a meaningful group of tool calls, write a compact paragraph, normally two to four complete sentences. Connect it to the work already completed, state the concrete question or risk being resolved, and explain the immediate next action and why it is the right next step.
 
+A progress update must add material information that was not present in the preceding update. Do not reuse the same lead-in, phase label, goal, or next-step sentence with only minor wording changes. If no new evidence or meaningful phase change is available, call the tools without accompanying narrative text.
+
 After receiving tool results, base the next update on the actual evidence. A useful update communicates what was learned, why it matters, and what will happen next. Do not repeat intentions as though the tool result had not arrived.
 
 Include enough concrete detail that the user can follow the investigation without opening every tool result. As evidence becomes available, name the relevant component, file, behavior, error, test result, or decision.
 
 Group related actions into one update. Do not announce every trivial read, mechanically restate the plan, pad updates with generic prose, or expose chain-of-thought. Keep updates varied, factual, and proportionate to the work.
+
+Prefer a short, self-contained paragraph over a one-sentence mechanical caption. The paragraph should normally include both a concrete fact or decision and its consequence for the next action; brevity does not mean omitting the evidence that makes the update useful.
 
 When a previous action succeeded, advance the task. When it failed, identify the relevant cause and explain how the next approach differs.
 
