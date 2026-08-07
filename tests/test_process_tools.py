@@ -23,6 +23,13 @@ def _wire(tool, tmp_path, manager):
     return tool
 
 
+def _python_background_command(code: str) -> tuple[str, str]:
+    """Build the test command for the Runtime's platform-default explicit shell."""
+    if sys.platform == "win32":
+        return f'& "{sys.executable}" -c "{code}"', "powershell"
+    return f'"{sys.executable}" -c "{code}"', "bash"
+
+
 def test_background_process_tools_round_trip(tmp_path):
     manager = BackgroundProcessManager(str(tmp_path))
     start = _wire(StartProcessTool(), tmp_path, manager)
@@ -30,12 +37,11 @@ def test_background_process_tools_round_trip(tmp_path):
     wait = _wire(WaitForProcessOutputTool(), tmp_path, manager)
     stop = _wire(StopProcessTool(), tmp_path, manager)
 
-    command = (
-        f'"{sys.executable}" -c "import sys,time; '
-        "print('ready'); sys.stdout.flush(); time.sleep(30)\""
+    command, shell = _python_background_command(
+        "import sys,time; print('ready'); sys.stdout.flush(); time.sleep(30)"
     )
 
-    started = start.execute(command=command, cwd=".")
+    started = start.execute(command=command, cwd=".", shell=shell)
     process_id = started.splitlines()[0].split()[-1]
 
     waited = wait.execute(process_id=process_id, pattern="ready", timeout=10)
@@ -51,12 +57,11 @@ def test_background_process_tools_round_trip(tmp_path):
 
 def test_background_process_preserves_utf8_output(tmp_path):
     manager = BackgroundProcessManager(str(tmp_path))
-    command = (
-        f'"{sys.executable}" -c "import sys,time; '
-        "print('预计耗时 2 秒'); sys.stdout.flush(); time.sleep(30)\""
+    command, shell = _python_background_command(
+        "import sys,time; print('预计耗时 2 秒'); sys.stdout.flush(); time.sleep(30)"
     )
 
-    started = manager.start_process(command=command, cwd=".")
+    started = manager.start_process(command=command, cwd=".", shell=shell)
     process_id = started.splitlines()[0].split()[-1]
     try:
         waited = manager.wait_for_output(process_id, pattern="预计耗时 2 秒", timeout=10)
