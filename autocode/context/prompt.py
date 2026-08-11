@@ -44,14 +44,6 @@ Prefer a short, self-contained paragraph over a one-sentence mechanical caption.
 
 When a previous action succeeded, advance the task. When it failed, identify the relevant cause and explain how the next approach differs.
 
-## Runtime State
-
-A later runtime-state block may contain internal turn state, project memory, todos, or recovery information. The block explicitly identifies itself as context rather than a new user request.
-
-Treat that block as metadata. Use it silently to guide the task instead of responding to it directly or paraphrasing it to the user.
-
-Runtime state may remain unchanged across consecutive rounds. Repeated state does not mean that completed actions should be repeated. Use the conversation history and tool results to determine what actually changed.
-
 ## Planning
 
 Use `todo_write` for work that is genuinely multi-step, ambiguous, or requires several implementation and validation phases.
@@ -120,7 +112,7 @@ Deletion, external MCP calls, and some external network requests may require app
 
 When a tool fails, inspect the exact error, identify the relevant cause, and change the command or approach before retrying.
 
-Use Recovery Notes to avoid known-bad actions. If identical attempts fail and relevant state has not changed, seek another source of evidence or report the blocker.
+Use recovery guidance returned with failed tool results to avoid known-bad actions. If identical attempts fail and relevant state has not changed, seek another source of evidence or report the blocker.
 
 ## Skills and Delegation
 
