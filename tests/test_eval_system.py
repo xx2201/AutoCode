@@ -429,7 +429,7 @@ def test_filter_platform_artifacts_ignores_agent_runtime_artifacts():
     filtered = _filter_platform_artifacts(
         "icecoder",
         {
-            ".autocode/memory/facts.json",
+            ".autocode/PROJECT_MEMORY.md",
             ".claude/settings.local.json",
             ".iceCoder/memory.md",
             "data/sessions/default/bg/bg_1.log",

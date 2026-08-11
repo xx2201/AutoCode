@@ -1,5 +1,3 @@
-import hashlib
-import json
 import sys
 from pathlib import Path
 
@@ -88,26 +86,13 @@ def test_sandbox_preserves_utf8_from_child_python(tmp_path):
     assert "预计耗时 3 秒" in result.stdout
 
 
-def test_memory_manager_reads_project_files(tmp_path, monkeypatch):
+def test_memory_manager_reads_rules_and_project_memory(tmp_path):
     (tmp_path / "AGENTS.md").write_text("rule-one")
     manager = MemoryManager(str(tmp_path))
     memory_path = manager.memory_file_path()
     memory_path.parent.mkdir(parents=True, exist_ok=True)
-    source = tmp_path / "README.md"
-    source.write_text("project-one", encoding="utf-8")
     memory_path.write_text(
-        json.dumps(
-            [
-                {
-                    "fact": "project-one",
-                    "source": "README.md",
-                    "source_hash": hashlib.sha256(source.read_bytes()).hexdigest(),
-                    "confidence": "verified",
-                    "scope": "project",
-                    "invalidated": False,
-                }
-            ]
-        ),
+        "# Project Memory\n\n## 项目经验\n\n- project-one\n",
         encoding="utf-8",
     )
     assert "rule-one" in manager.build_rules_block()

@@ -2,8 +2,6 @@
 
 import os
 import pathlib
-import hashlib
-import json
 
 from autocode import Agent, LLM, Config, ALL_TOOLS, __version__
 from autocode import cli as cli_module
@@ -418,73 +416,34 @@ def test_agent_ignores_unanchored_usage_from_legacy_checkpoint(tmp_path):
     assert agent.context_usage()["used_tokens"] == estimate_tokens(agent.messages)
 
 
-def test_memory_manager_separates_rules_and_verified_file_facts(tmp_path):
+def test_memory_manager_separates_rules_and_project_memory(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     (workspace / "AGENTS.md").write_text("项目规则\n", encoding="utf-8")
-    source = workspace / "RUNBOOK.md"
-    source.write_text("测试前运行 npm ci\n", encoding="utf-8")
     manager = MemoryManager(str(workspace))
     memory_path = manager.memory_file_path()
     memory_path.parent.mkdir(parents=True)
     memory_path.write_text(
-        json.dumps(
-            [
-                {
-                    "fact": "测试前运行 npm ci",
-                    "source": "RUNBOOK.md",
-                    "source_hash": hashlib.sha256(source.read_bytes()).hexdigest(),
-                    "confidence": "verified",
-                    "scope": "testing",
-                    "invalidated": False,
-                }
-            ],
-            ensure_ascii=False,
-        ),
+        "# Project Memory\n\n## 项目经验\n\n- 测试前运行 npm ci\n",
         encoding="utf-8",
     )
 
     assert "## Project Rules" in manager.build_rules_block()
     block = manager.build_project_memory_block(query="怎么运行测试")
     assert "测试前运行 npm ci" in block
-    assert "source: RUNBOOK.md" in block
+    assert memory_path == workspace / ".autocode" / "PROJECT_MEMORY.md"
 
 
-def test_memory_manager_invalidates_fact_when_source_changes(tmp_path):
-    source = tmp_path / "config.toml"
-    source.write_text("port = 8000\n", encoding="utf-8")
-    manager = MemoryManager(str(tmp_path))
+def test_memory_refresh_rewrites_one_markdown_file_from_task_trajectory(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    manager = MemoryManager(str(workspace))
     memory_path = manager.memory_file_path()
     memory_path.parent.mkdir(parents=True)
     memory_path.write_text(
-        json.dumps(
-            [
-                {
-                    "fact": "服务端口是 8000",
-                    "source": "config.toml",
-                    "source_hash": hashlib.sha256(source.read_bytes()).hexdigest(),
-                    "confidence": "verified",
-                    "scope": "runtime",
-                    "invalidated": False,
-                }
-            ]
-        ),
+        "# Project Memory\n\n## 项目经验\n\n- 项目使用 npm\n",
         encoding="utf-8",
     )
-
-    source.write_text("port = 9000\n", encoding="utf-8")
-    assert manager.build_project_memory_block(query="端口") == ""
-    saved = json.loads(memory_path.read_text(encoding="utf-8"))
-    assert saved[0]["confidence"] == "stale"
-    assert saved[0]["invalidated"] is True
-
-
-def test_memory_refresh_uses_only_selected_file_evidence(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    source = workspace / "README.md"
-    source.write_text("启动命令: python app.py\n", encoding="utf-8")
-    manager = MemoryManager(str(workspace))
 
     class FakeLLM:
         def __init__(self):
@@ -492,32 +451,73 @@ def test_memory_refresh_uses_only_selected_file_evidence(tmp_path):
 
         def chat(self, messages, tools=None, on_token=None):
             self.calls.append(messages)
-            if len(self.calls) == 1:
-                return LLMResponse(content="README.md")
             return LLMResponse(
-                content=json.dumps(
-                    [
-                        {
-                            "fact": "启动命令是 python app.py",
-                            "source": "README.md",
-                            "scope": "runtime",
-                        }
-                    ],
-                    ensure_ascii=False,
+                content=(
+                    "# Project Memory\n\n"
+                    "## 用户偏好\n\n- 修改前先说明方案\n\n"
+                    "## 项目经验\n\n- 项目统一使用 pnpm\n\n"
+                    "## 已知问题\n\n- Windows 子进程需要强制 UTF-8\n"
                 )
             )
 
     llm = FakeLLM()
     assert manager.refresh_project_memory(
-        [{"role": "user", "content": "记住启动方式"}],
+        [
+            {"role": "user", "content": "不要使用 npm，统一使用 pnpm"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "function": {
+                            "name": "shell",
+                            "arguments": '{"command":"pnpm test"}',
+                        }
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_name": "shell",
+                "tool_arguments": {"command": "pnpm test"},
+                "content": "10 passed",
+            },
+        ],
         llm,
         force=True,
     )
-    facts = json.loads(manager.memory_file_path().read_text(encoding="utf-8"))
-    assert facts[0]["fact"] == "启动命令是 python app.py"
-    assert facts[0]["source_hash"] == hashlib.sha256(source.read_bytes()).hexdigest()
-    assert "Existing PROJECT_MEMORY" not in llm.calls[0][1]["content"]
-    assert "Project file evidence (authoritative)" in llm.calls[1][1]["content"]
+    saved = memory_path.read_text(encoding="utf-8")
+    assert "项目统一使用 pnpm" in saved
+    assert "项目使用 npm" not in saved
+    assert "## 用户偏好" in saved
+    assert "## 项目经验" in saved
+    assert "## 已知问题" in saved
+    assert not memory_path.with_suffix(".tmp").exists()
+    assert len(llm.calls) == 1
+    prompt = llm.calls[0][1]["content"]
+    assert "项目使用 npm" in prompt
+    assert "tool call: shell" in prompt
+    assert "tool result: shell" in prompt
+    assert "10 passed" in prompt
+
+
+def test_memory_refresh_no_change_preserves_existing_file(tmp_path):
+    manager = MemoryManager(str(tmp_path))
+    memory_path = manager.memory_file_path()
+    memory_path.parent.mkdir(parents=True)
+    original = "# Project Memory\n\n## 项目经验\n\n- 使用 pytest\n"
+    memory_path.write_text(original, encoding="utf-8")
+
+    class FakeLLM:
+        def chat(self, messages, tools=None, on_token=None):
+            return LLMResponse(content="NO_CHANGE")
+
+    assert not manager.refresh_project_memory(
+        [{"role": "user", "content": "解释一个临时错误"}],
+        FakeLLM(),
+        force=True,
+    )
+    assert memory_path.read_text(encoding="utf-8") == original
 
 
 def test_memory_manager_can_schedule_async_refresh(tmp_path):
@@ -545,7 +545,7 @@ def test_memory_manager_can_schedule_async_refresh(tmp_path):
     assert manager.schedule_project_memory_refresh(messages, llm, force=True) is True
 
 
-def test_memory_refresh_scheduling_does_not_scan_workspace_on_response_thread(tmp_path):
+def test_memory_refresh_scheduling_does_not_call_model_on_response_thread(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
     manager = MemoryManager(str(workspace))
@@ -567,10 +567,6 @@ def test_memory_refresh_scheduling_does_not_scan_workspace_on_response_thread(tm
 
     manager._executor.shutdown(wait=False, cancel_futures=True)
     manager._executor = DeferredExecutor()
-    manager._project_file_inventory_key = lambda: (_ for _ in ()).throw(
-        AssertionError("workspace scan must stay in the background refresh")
-    )
-
     assert manager.schedule_project_memory_refresh(
         [{"role": "user", "content": "hello"}],
         FakeLLM(),
@@ -583,25 +579,11 @@ def test_agent_prompt_snapshot_keeps_rules_and_memory_in_stable_system_prompt(tm
     from autocode.agent import Agent
 
     (tmp_path / "AGENTS.md").write_text("规则一\n", encoding="utf-8")
-    source = tmp_path / "README.md"
-    source.write_text("项目记忆一\n", encoding="utf-8")
     manager = MemoryManager(str(tmp_path))
     memory_path = manager.memory_file_path()
     memory_path.parent.mkdir(parents=True)
     memory_path.write_text(
-        json.dumps(
-            [
-                {
-                    "fact": "项目记忆一",
-                    "source": "README.md",
-                    "source_hash": hashlib.sha256(source.read_bytes()).hexdigest(),
-                    "confidence": "verified",
-                    "scope": "project",
-                    "invalidated": False,
-                }
-            ],
-            ensure_ascii=False,
-        ),
+        "# Project Memory\n\n## 项目经验\n\n- 项目记忆一\n",
         encoding="utf-8",
     )
 
@@ -634,21 +616,6 @@ def test_agent_prompt_snapshot_keeps_rules_and_memory_in_stable_system_prompt(tm
     assert request_messages[-1]["role"] == "user"
     assert "[Runtime state for this turn." in request_messages[-1]["content"]
     assert "# Current Todo" in request_messages[-1]["content"]
-
-
-def test_memory_refresh_key_changes_when_project_inventory_changes(tmp_path):
-    workspace = tmp_path / "workspace"
-    workspace.mkdir()
-    (workspace / "README.md").write_text("first", encoding="utf-8")
-
-    manager = MemoryManager(str(workspace))
-    source = manager._flatten_messages([{"role": "user", "content": "hello"}])
-    key_before = manager._memory_refresh_key(source, manager._project_file_inventory_key())
-
-    (workspace / "README.md").write_text("second", encoding="utf-8")
-    key_after = manager._memory_refresh_key(source, manager._project_file_inventory_key())
-
-    assert key_before != key_after
 
 
 # --- Cost estimation ---
