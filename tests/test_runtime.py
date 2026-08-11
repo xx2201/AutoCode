@@ -533,7 +533,7 @@ def test_agent_reuses_same_session_id_and_rotates_current_task_after_completion(
 
 
 def test_agent_schedules_project_memory_refresh_in_background(tmp_path):
-    responses = [LLMResponse(content="done")]
+    responses = [LLMResponse(content="first done"), LLMResponse(content="second done")]
     agent = Agent(
         llm=_FakeLLM(responses),
         workspace_root=str(tmp_path),
@@ -543,15 +543,22 @@ def test_agent_schedules_project_memory_refresh_in_background(tmp_path):
     calls = []
 
     def _schedule(messages, llm, force=False):
-        calls.append(force)
+        calls.append((list(messages), force))
         return True
 
     agent.memory.schedule_project_memory_refresh = _schedule
 
-    reply = agent.chat("hello")
+    first_reply = agent.chat("first prompt")
+    first_turn_id = agent.task_state.task_id
+    second_reply = agent.chat("second prompt")
+    second_turn_id = agent.task_state.task_id
 
-    assert reply == "done"
-    assert calls == [True]
+    assert first_reply == "first done"
+    assert second_reply == "second done"
+    assert len(calls) == 2
+    assert {message["turn_id"] for message in calls[0][0]} == {first_turn_id}
+    assert {message["turn_id"] for message in calls[1][0]} == {second_turn_id}
+    assert [force for _, force in calls] == [True, True]
 
 
 def test_agent_cleans_temporary_processes_when_task_completes(tmp_path):

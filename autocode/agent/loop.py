@@ -456,6 +456,9 @@ class Agent:
         if self.session_state is not None:
             self.transcript.append_message(self.session_state.session_id, stored)
 
+    def _turn_messages(self, turn_id: str) -> list[dict]:
+        return [message for message in self.messages if message.get("turn_id") == turn_id]
+
     def _append_tool_result(self, tool_call: ToolCall, result: str | ToolResult) -> str:
         text = result.text if isinstance(result, ToolResult) else result
         message = {
@@ -477,7 +480,10 @@ class Agent:
             and hasattr(self.llm, "_call_with_retry")
             and effective_used > int(self.context.input_budget_tokens * 0.50)
         ):
-            self.memory.schedule_project_memory_refresh(self.messages, self.llm)
+            self.memory.schedule_project_memory_refresh(
+                self._turn_messages(self.task_state.task_id),
+                self.llm,
+            )
         result = self.context.maybe_compress(
             self.messages,
             self.llm,
@@ -1217,7 +1223,11 @@ class Agent:
                     if not finished:
                         raise RuntimeError("Turn controller did not finish an idle turn.")
                     if hasattr(self.llm, "_call_with_retry"):
-                        self.memory.schedule_project_memory_refresh(self.messages, self.llm, force=True)
+                        self.memory.schedule_project_memory_refresh(
+                            self._turn_messages(self.task_state.task_id),
+                            self.llm,
+                            force=True,
+                        )
                     self.task_state.mark_completed()
                     self.hooks.emit("task_status", self._event_payload(status=self.task_state.status))
                     self.persist_session()
