@@ -342,7 +342,7 @@ def test_model_projection_strips_presentation_metadata(tmp_path):
     assert any(part["type"] == "image_url" for part in request_user["content"])
 
 
-def test_runtime_state_stays_inside_the_final_multimodal_message(tmp_path):
+def test_tool_visual_context_is_the_final_multimodal_message(tmp_path):
     agent = Agent(
         llm=LLM(model="vision-model", api_key="sk-test"),
         tools=[],
@@ -373,18 +373,11 @@ def test_runtime_state_stays_inside_the_final_multimodal_message(tmp_path):
     final_message = request_messages[-1]
     assert final_message["role"] == "user"
     assert isinstance(final_message["content"], list)
-    assert final_message["content"][0]["type"] == "text"
-    assert "[Runtime state for this turn." in final_message["content"][0]["text"]
-    assert final_message["content"][1] == {
+    assert final_message["content"][0] == {
         "type": "text",
         "text": "Visual content returned by tools: read.",
     }
     assert final_message["content"][-1]["type"] == "image_url"
-    assert not any(
-        isinstance(message.get("content"), str)
-        and "[Runtime state for this turn." in message["content"]
-        for message in request_messages[:-1]
-    )
 
 
 def test_restore_removes_legacy_tool_visual_carriers(tmp_path):

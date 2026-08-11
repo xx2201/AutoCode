@@ -5,7 +5,7 @@ import json
 import uuid
 from contextlib import contextmanager
 
-from ..context import ContextManager, MemoryManager, estimate_tokens, render_todos, runtime_state_block, static_system_prompt
+from ..context import ContextManager, MemoryManager, estimate_tokens, static_system_prompt
 from ..infra import BackgroundProcessManager, Sandbox, WorkspaceFS
 from ..llm import LLM, ToolCall, is_retryable_llm_error
 from ..message_content import content_text, is_internal_visual_context, user_content
@@ -251,17 +251,14 @@ class Agent:
 
     def _request_messages(self, snapshot: PromptSnapshot | None = None) -> list[dict]:
         prompt_snapshot = snapshot or self._ensure_prompt_snapshot()
-        runtime_tail = self._build_runtime_tail()
         if getattr(self.llm, "api_format", "chat_completions") == "messages":
             return serialize_anthropic_messages(
                 prompt_snapshot.system_prompt,
                 self.messages,
-                runtime_tail,
             )
         return serialize_chat_completions(
             prompt_snapshot.system_prompt,
             self.messages,
-            runtime_tail,
         )
 
     @classmethod
@@ -328,18 +325,6 @@ class Agent:
             cwd=str(self.fs.workspace_root),
             rules_block=self.memory.build_rules_block(),
             skills_block=self.skills.catalog_block() if "skill" in self.tool_registry else "",
-        )
-
-    def _build_runtime_tail(self) -> str:
-        todo_block = render_todos(self.turn_state.todos) if self.turn_state else ""
-        turn_block = self.sessions.render_turn(self.turn_state) if self.turn_state else ""
-        recovery_block = ""
-        if self.turn_state and self.turn_state.recent_failures:
-            recovery_block = "\n".join(f"- {item}" for item in self.turn_state.recent_failures[-3:])
-        return runtime_state_block(
-            todo_block=todo_block,
-            turn_block=turn_block,
-            recovery_block=recovery_block,
         )
 
     def _create_prompt_snapshot(self, query: str = "") -> PromptSnapshot:

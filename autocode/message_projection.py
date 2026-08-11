@@ -16,7 +16,6 @@ _DATA_URL = re.compile(r"^data:(?P<media_type>[^;,]+);base64,(?P<data>.+)$", re.
 def serialize_chat_completions(
     system_prompt: str,
     history: list[dict],
-    runtime_tail: str = "",
 ) -> list[dict]:
     """Translate canonical history into strict Chat Completions messages."""
     projected: list[dict] = [{"role": "system", "content": system_prompt}]
@@ -76,14 +75,12 @@ def serialize_chat_completions(
             pending_media.extend((source, dict(item)) for item in model_content)
 
     flush_tool_media()
-    _append_chat_runtime_tail(projected, runtime_tail)
     return projected
 
 
 def serialize_anthropic_messages(
     system_prompt: str,
     history: list[dict],
-    runtime_tail: str = "",
 ) -> list[dict]:
     """Translate canonical history into Anthropic Messages wire messages.
 
@@ -116,13 +113,6 @@ def serialize_anthropic_messages(
             block = _anthropic_tool_result(message)
             _append_anthropic_message(projected, "user", [block])
 
-    if runtime_tail:
-        _append_anthropic_message(
-            projected,
-            "user",
-            [{"type": "text", "text": runtime_tail}],
-        )
-
     return [
         {"role": "system", "content": "\n\n".join(part for part in system_parts if part)},
         *projected,
@@ -135,31 +125,6 @@ def model_content_identity(item: dict) -> tuple[str, str]:
     if isinstance(image, dict):
         return part_type, str(image.get("url", ""))
     return part_type, json.dumps(item, ensure_ascii=False, sort_keys=True)
-
-
-def _append_chat_runtime_tail(messages: list[dict], runtime_tail: str) -> None:
-    if not runtime_tail:
-        return
-    final_message = messages[-1]
-    final_content = final_message.get("content")
-    has_visual_content = (
-        final_message.get("role") == "user"
-        and isinstance(final_content, list)
-        and any(
-            isinstance(part, dict)
-            and part.get("type") in {"image_url", "input_image"}
-            for part in final_content
-        )
-    )
-    if has_visual_content:
-        final_message["content"] = [
-            {"type": "text", "text": runtime_tail},
-            *final_content,
-        ]
-    else:
-        messages.append({"role": "user", "content": runtime_tail})
-
-
 def _append_anthropic_message(messages: list[dict], role: str, blocks: list[dict]) -> None:
     if messages and messages[-1]["role"] == role:
         messages[-1]["content"].extend(blocks)

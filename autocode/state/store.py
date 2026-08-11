@@ -5,9 +5,8 @@ from __future__ import annotations
 import json
 import time
 
-from ..context.todo import render_todos
 from .checkpoint import list_sessions, session_dir
-from .model import SessionState, TurnState
+from .model import SessionState
 
 
 class SessionStore:
@@ -41,19 +40,6 @@ class SessionStore:
         if not path.exists():
             return None
         return json.loads(path.read_text(encoding="utf-8"))
-
-    @staticmethod
-    def render_turn(turn_state: TurnState | None) -> str:
-        if turn_state is None:
-            return "Turn: (none)\nStatus: idle\nStep: 0\nTodos:\n(no todos)"
-        title = turn_state.title or "(untitled turn)"
-        return (
-            f"Turn Id: {turn_state.turn_id}\n"
-            f"Turn: {title}\n"
-            f"Status: {turn_state.status}\n"
-            f"Step: {turn_state.step_index}\n"
-            f"Todos:\n{render_todos(turn_state.todos)}"
-        )
 
     @staticmethod
     def recent_session_summaries(limit: int = 3) -> list[str]:

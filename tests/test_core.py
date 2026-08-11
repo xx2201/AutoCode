@@ -597,7 +597,6 @@ def test_agent_prompt_snapshot_keeps_rules_and_memory_in_stable_system_prompt(tm
 
     agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
     agent._ensure_turn("处理任务")
-    agent.turn_state.todos = [{"content": "读文件", "status": "pending"}]
     agent.messages = [{"role": "user", "content": "开始"}]
 
     snapshot = agent._create_prompt_snapshot(query="开始")
@@ -613,9 +612,11 @@ def test_agent_prompt_snapshot_keeps_rules_and_memory_in_stable_system_prompt(tm
     assert "项目记忆一" in request_messages[0]["content"]
     assert request_messages[0]["content"] == second_request[0]["content"]
     assert snapshot.digest == agent.turn_state.prompt_snapshot["digest"]
-    assert request_messages[-1]["role"] == "user"
-    assert "[Runtime state for this turn." in request_messages[-1]["content"]
-    assert "# Current Todo" in request_messages[-1]["content"]
+    assert request_messages == [
+        request_messages[0],
+        {"role": "user", "content": "开始"},
+    ]
+    assert second_request == request_messages
 
 
 # --- Cost estimation ---

@@ -83,7 +83,7 @@ def test_anthropic_projection_keeps_image_inside_its_tool_result():
         },
     ]
 
-    projected = serialize_anthropic_messages("system", history, "runtime")
+    projected = serialize_anthropic_messages("system", history)
 
     assert projected[0] == {"role": "system", "content": "system"}
     assert projected[1]["role"] == "user"
@@ -104,13 +104,11 @@ def test_anthropic_projection_keeps_image_inside_its_tool_result():
     assert [block["type"] for block in tool_result_message["content"]] == [
         "tool_result",
         "tool_result",
-        "text",
     ]
     image_result = tool_result_message["content"][0]
     assert image_result["tool_use_id"] == "read-image"
     assert image_result["content"][1]["type"] == "image"
     assert image_result["content"][1]["source"]["media_type"] == "image/png"
-    assert tool_result_message["content"][-1] == {"type": "text", "text": "runtime"}
     assert "Visual content returned by tools" not in str(projected)
 
 

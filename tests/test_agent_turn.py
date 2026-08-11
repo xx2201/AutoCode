@@ -21,8 +21,10 @@ class _ToolLLM:
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
         self._calls = 0
+        self.requests = []
 
     def chat(self, messages, tools=None, on_token=None):
+        self.requests.append(messages)
         self._calls += 1
         if self._calls == 1:
             from autocode.llm import ToolCall
@@ -31,10 +33,17 @@ class _ToolLLM:
 
 
 def test_agent_uses_instance_tool_registry(tmp_path):
-    agent = Agent(llm=_ToolLLM(), tools=[_CustomTool()], workspace_root=str(tmp_path), permission_mode="full_access")
+    llm = _ToolLLM()
+    agent = Agent(llm=llm, tools=[_CustomTool()], workspace_root=str(tmp_path), permission_mode="full_access")
     reply = agent.chat("use custom")
     assert reply == "done"
     assert any(m.get("content") == "custom-ok" for m in agent.messages if m.get("role") == "tool")
+    assert llm.requests[0][-1] == {"role": "user", "content": "use custom"}
+    assert llm.requests[1][-1] == {
+        "role": "tool",
+        "tool_call_id": "1",
+        "content": "custom-ok",
+    }
 
 
 def test_agent_rejects_output_truncated_response_instead_of_completing(tmp_path):

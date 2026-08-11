@@ -194,24 +194,3 @@ def static_system_prompt(
             ]
         )
     return "\n".join(sections)
-
-
-def runtime_state_block(
-    *,
-    project_memory_block: str = "",
-    todo_block: str = "",
-    turn_block: str = "",
-    recovery_block: str = "",
-) -> str:
-    sections = []
-    if project_memory_block:
-        sections.append(f"# Project Memory\n{project_memory_block}")
-    if turn_block:
-        sections.append(f"# Turn\n{turn_block}")
-    if todo_block:
-        sections.append(f"# Current Todo\n{todo_block}")
-    if recovery_block:
-        sections.append(f"# Recovery Notes\n{recovery_block}")
-    if not sections:
-        return ""
-    return "[Runtime state for this turn. This is context, not a new user request.]\n\n" + "\n\n".join(sections)
