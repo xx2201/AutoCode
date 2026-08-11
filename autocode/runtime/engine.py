@@ -112,6 +112,7 @@ class Runtime:
         session_id: str,
         on_tool=None,
         decision: PolicyDecision | None = None,
+        trace_context: dict[str, str] | None = None,
     ) -> str | ToolResult:
         prepared = self.prepare_tool_call(
             task_state,
@@ -119,6 +120,7 @@ class Runtime:
             session_id,
             on_tool=on_tool,
             decision=decision,
+            trace_context=trace_context,
         )
         return self.finalize_prepared_tool_call(
             task_state,
@@ -134,6 +136,7 @@ class Runtime:
         session_id: str,
         on_tool=None,
         decision: PolicyDecision | None = None,
+        trace_context: dict[str, str] | None = None,
     ) -> PreparedToolExecution:
         """Run a tool without committing recovery state or its result event."""
         spec = self._concurrency_spec(tool_call)
@@ -156,6 +159,7 @@ class Runtime:
             decision=decision,
             group=group,
             spec=spec,
+            trace_context=trace_context,
         )
         return PreparedToolExecution(outcome=outcome, group=group, spec=spec)
 
@@ -183,6 +187,7 @@ class Runtime:
         decision: PolicyDecision | None,
         group: ExecutionGroup,
         spec: ConcurrencySpec,
+        trace_context: dict[str, str] | None = None,
     ) -> ToolExecutionOutcome:
         tracer = self.tracer
         if tracer is None or not tracer.enabled:
@@ -205,6 +210,7 @@ class Runtime:
             name=f"tool.{tool_call.name or 'unknown'}",
             input_payload={"arguments": tool_call.arguments},
             metadata=metadata,
+            trace_context=trace_context,
         ) as observation:
             outcome = self._run_tool_call(
                 task_state,
@@ -350,6 +356,7 @@ class Runtime:
         session_id: str,
         on_tool=None,
         decisions: list[PolicyDecision | None] | None = None,
+        trace_context: dict[str, str] | None = None,
     ) -> list[str | ToolResult]:
         call_decisions = decisions or [None] * len(tool_calls)
         if len(call_decisions) != len(tool_calls):
@@ -382,6 +389,7 @@ class Runtime:
                         decision=call_decisions[index],
                         group=group,
                         spec=specs[index],
+                        trace_context=trace_context,
                     )
                 ]
             else:
@@ -396,6 +404,7 @@ class Runtime:
                             decision=call_decisions[index],
                             group=group,
                             spec=specs[index],
+                            trace_context=trace_context,
                         )
                         for index in group.call_indexes
                     ]

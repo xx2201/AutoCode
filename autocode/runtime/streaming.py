@@ -29,11 +29,13 @@ class StreamingToolExecutor:
         session_id: str,
         on_tool=None,
         max_workers: int = 8,
+        trace_context: dict[str, str] | None = None,
     ):
         self.runtime = runtime
         self.task_state = task_state
         self.session_id = session_id
         self.on_tool = on_tool
+        self.trace_context = trace_context
         self._pool = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
         self._entries: dict[str, _Entry] = {}
         self._discarded = False
@@ -66,6 +68,7 @@ class StreamingToolExecutor:
                 self.session_id,
                 self.on_tool,
                 decision,
+                self.trace_context,
             )
         with self._lock:
             if self._discarded:

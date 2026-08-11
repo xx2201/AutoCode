@@ -222,13 +222,14 @@ class LangfuseTracer:
                 yield observation
 
     @contextmanager
-    def start_tool(
+    def start_agent_step(
         self,
         *,
         name: str,
         input_payload: Any,
         metadata: dict[str, Any] | None = None,
     ):
+        """Group one model decision and its resulting tool executions."""
         if not self.enabled:
             yield _NoopObservation()
             return
@@ -236,9 +237,36 @@ class LangfuseTracer:
         with self._observation_scope():
             with self._client.start_as_current_observation(
                 name=name,
-                as_type="tool",
+                as_type="chain",
                 input=input_payload,
             ) as observation:
+                metadata = _clean_mapping(metadata)
+                if metadata:
+                    observation.update(metadata=metadata)
+                yield observation
+
+    @contextmanager
+    def start_tool(
+        self,
+        *,
+        name: str,
+        input_payload: Any,
+        metadata: dict[str, Any] | None = None,
+        trace_context: dict[str, str] | None = None,
+    ):
+        if not self.enabled:
+            yield _NoopObservation()
+            return
+
+        observation_kwargs = {
+            "name": name,
+            "as_type": "tool",
+            "input": input_payload,
+        }
+        if trace_context:
+            observation_kwargs["trace_context"] = trace_context
+        with self._observation_scope():
+            with self._client.start_as_current_observation(**observation_kwargs) as observation:
                 metadata = _clean_mapping(metadata)
                 if metadata:
                     observation.update(metadata=metadata)

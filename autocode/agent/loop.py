@@ -594,6 +594,61 @@ class Agent:
             status_message=str(exc),
         )
 
+    @contextmanager
+    def _agent_step_trace(self, step_index: int, snapshot: PromptSnapshot, *, phase: str = "execute"):
+        tracer = getattr(self.llm, "tracer", None)
+        if tracer is None or not tracer.enabled:
+            yield None, None
+            return
+
+        metadata = self._event_payload(
+            step_index=step_index,
+            phase=phase,
+            task_status=self.task_state.status if self.task_state else None,
+        )
+        with tracer.start_agent_step(
+            name=f"agent.step.{step_index}",
+            input_payload={
+                "step_index": step_index,
+                "phase": phase,
+                "prompt_snapshot_digest": snapshot.digest,
+            },
+            metadata=metadata,
+        ) as observation:
+            trace_id = str(getattr(observation, "trace_id", "") or "")
+            observation_id = str(getattr(observation, "id", "") or "")
+            trace_context = (
+                {"trace_id": trace_id, "parent_span_id": observation_id}
+                if trace_id and observation_id
+                else None
+            )
+            yield observation, trace_context
+
+    def _finalize_step_trace(self, observation, *, status: str, **output):
+        if observation is None:
+            return
+        observation.update(
+            output={"status": status, **output},
+            metadata=self._event_payload(
+                step_index=self.task_state.step_index if self.task_state else None,
+                task_status=self.task_state.status if self.task_state else None,
+            ),
+        )
+
+    def _record_step_error(self, observation, exc: Exception):
+        if observation is None:
+            return
+        observation.update(
+            output={"status": "failed", "error": str(exc)},
+            metadata=self._event_payload(
+                step_index=self.task_state.step_index if self.task_state else None,
+                task_status=self.task_state.status if self.task_state else None,
+                error_type=type(exc).__name__,
+            ),
+            level="ERROR",
+            status_message=str(exc),
+        )
+
     def chat(
         self,
         user_input: str,
@@ -865,7 +920,26 @@ class Agent:
                 batch.state = "running"
                 task.touch("running")
                 self.persist_session()
-                wait = self._execute_pending_batch(batch, on_tool=on_tool)
+                snapshot = self._ensure_prompt_snapshot(task.title)
+                with self._agent_step_trace(
+                    max(1, task.step_index),
+                    snapshot,
+                    phase="approval_resume",
+                ) as (step_observation, trace_context):
+                    try:
+                        wait = self._execute_pending_batch(
+                            batch,
+                            on_tool=on_tool,
+                            tool_trace_context=trace_context,
+                        )
+                    except Exception as exc:
+                        self._record_step_error(step_observation, exc)
+                        raise
+                    self._finalize_step_trace(
+                        step_observation,
+                        status="waiting_approval" if wait is not None else "resumed",
+                        tool_calls=len(batch.tool_calls),
+                    )
                 if wait is not None:
                     response = wait
                 else:
@@ -946,6 +1020,7 @@ class Agent:
         on_token=None,
         on_tool=None,
         max_attempts: int = 2,
+        tool_trace_context: dict[str, str] | None = None,
     ):
         """Run a retryable model-step transaction against one immutable prompt snapshot."""
         for attempt in range(1, max_attempts + 1):
@@ -956,6 +1031,7 @@ class Agent:
                     task_state=self.task_state,
                     session_id=self.session_state.session_id,
                     on_tool=on_tool,
+                    trace_context=tool_trace_context,
                 )
                 if getattr(self.llm, "supports_streaming_tool_calls", False)
                 else None
@@ -1035,7 +1111,11 @@ class Agent:
                 "model_step_committed",
                 committed_payload,
             )
-            return resp, executor
+            return resp, executor, {
+                "attempt": attempt,
+                "model_step_id": step_id,
+                "tombstones": attempt - 1,
+            }
         raise RuntimeError("Model step exhausted all transaction attempts.")
 
     def _continue_loop(self, on_token=None, on_tool=None, approval_handler=None) -> str:
@@ -1044,75 +1124,31 @@ class Agent:
         snapshot = self._ensure_prompt_snapshot(self.task_state.title)
 
         for _ in range(self.max_rounds):
-            self._append_pending_steer()
-            resp, streaming_executor = self._sample_model_step(
+            action, response = self._run_agent_step(
                 snapshot=snapshot,
                 on_token=on_token,
                 on_tool=on_tool,
-            )
-            self._record_prompt_usage(resp.prompt_tokens)
-            if resp.stop_reason in {"max_tokens", "length"}:
-                if streaming_executor is not None:
-                    streaming_executor.discard()
-                raise RuntimeError(
-                    "模型输出达到 token 上限，回答未完成。"
-                    f"当前 AUTOCODE_MAX_TOKENS={self.context.output_reserve_tokens}，"
-                    "请提高输出预算后重试。"
-                )
-
-            if resp.tool_calls:
-                self.hooks.emit(
-                    "assistant_step",
-                    self._event_payload(
-                        step_index=self.task_state.step_index,
-                        content=resp.content,
-                        tool_calls=[
-                            {
-                                "id": tool_call.id,
-                                "name": tool_call.name,
-                                "arguments": tool_call.arguments,
-                            }
-                            for tool_call in resp.tool_calls
-                        ],
-                    ),
-                )
-
-            if not resp.tool_calls:
-                if streaming_executor is not None:
-                    streaming_executor.commit([])
-                self._append_message(resp.message)
-                steer_items, finished = self.turn_controller.drain_steer_or_finish(
-                    self.task_state.task_id
-                )
-                if steer_items:
-                    self._append_steer_items(steer_items)
-                    self.persist_session()
-                    continue
-                if not finished:
-                    raise RuntimeError("Turn controller did not finish an idle turn.")
-                if hasattr(self.llm, "_call_with_retry"):
-                    self.memory.schedule_project_memory_refresh(self.messages, self.llm, force=True)
-                self.task_state.mark_completed()
-                self.hooks.emit("task_status", self._event_payload(status=self.task_state.status))
-                self.persist_session()
-                return resp.content
-
-            self._append_message(resp.message)
-            self.persist_session()
-
-            wait = self._handle_tool_calls(
-                resp.tool_calls,
-                on_tool=on_tool,
                 approval_handler=approval_handler,
-                streaming_executor=streaming_executor,
             )
-            if wait is not None:
-                return wait
+            if action == "continue":
+                continue
+            return response
 
-            self._maybe_compress_messages()
-            self.persist_session()
-
-        summary = self._summarize_round_limit(on_token=on_token)
+        step_index = self.task_state.step_index + 1
+        with self._agent_step_trace(step_index, snapshot, phase="round_limit_summary") as (
+            observation,
+            _,
+        ):
+            try:
+                summary = self._summarize_round_limit(on_token=on_token)
+            except Exception as exc:
+                self._record_step_error(observation, exc)
+                raise
+            self._finalize_step_trace(
+                observation,
+                status="round_limit",
+                tool_calls=0,
+            )
         self._append_message({"role": "assistant", "content": summary})
         self.task_state.mark_failed("reached maximum tool-call rounds")
         self.hooks.emit(
@@ -1122,6 +1158,104 @@ class Agent:
         self.persist_session()
         self.turn_controller.finish_turn(self.task_state.task_id)
         return summary
+
+    def _run_agent_step(self, *, snapshot, on_token=None, on_tool=None, approval_handler=None):
+        self._append_pending_steer()
+        step_index = self.task_state.step_index + 1
+        with self._agent_step_trace(step_index, snapshot) as (observation, trace_context):
+            try:
+                resp, streaming_executor, transaction = self._sample_model_step(
+                    snapshot=snapshot,
+                    on_token=on_token,
+                    on_tool=on_tool,
+                    tool_trace_context=trace_context,
+                )
+                self._record_prompt_usage(resp.prompt_tokens)
+                if resp.stop_reason in {"max_tokens", "length"}:
+                    if streaming_executor is not None:
+                        streaming_executor.discard()
+                    raise RuntimeError(
+                        "模型输出达到 token 上限，回答未完成。"
+                        f"当前 AUTOCODE_MAX_TOKENS={self.context.output_reserve_tokens}，"
+                        "请提高输出预算后重试。"
+                    )
+
+                if resp.tool_calls:
+                    self.hooks.emit(
+                        "assistant_step",
+                        self._event_payload(
+                            step_index=self.task_state.step_index,
+                            content=resp.content,
+                            tool_calls=[
+                                {
+                                    "id": tool_call.id,
+                                    "name": tool_call.name,
+                                    "arguments": tool_call.arguments,
+                                }
+                                for tool_call in resp.tool_calls
+                            ],
+                        ),
+                    )
+
+                if not resp.tool_calls:
+                    if streaming_executor is not None:
+                        streaming_executor.commit([])
+                    self._append_message(resp.message)
+                    steer_items, finished = self.turn_controller.drain_steer_or_finish(
+                        self.task_state.task_id
+                    )
+                    if steer_items:
+                        self._append_steer_items(steer_items)
+                        self.persist_session()
+                        self._finalize_step_trace(
+                            observation,
+                            status="steered",
+                            tool_calls=0,
+                            **transaction,
+                        )
+                        return "continue", ""
+                    if not finished:
+                        raise RuntimeError("Turn controller did not finish an idle turn.")
+                    if hasattr(self.llm, "_call_with_retry"):
+                        self.memory.schedule_project_memory_refresh(self.messages, self.llm, force=True)
+                    self.task_state.mark_completed()
+                    self.hooks.emit("task_status", self._event_payload(status=self.task_state.status))
+                    self.persist_session()
+                    self._finalize_step_trace(
+                        observation,
+                        status="completed",
+                        tool_calls=0,
+                        stop_reason=resp.stop_reason,
+                        **transaction,
+                    )
+                    return "return", resp.content
+
+                self._append_message(resp.message)
+                self.persist_session()
+                wait = self._handle_tool_calls(
+                    resp.tool_calls,
+                    on_tool=on_tool,
+                    approval_handler=approval_handler,
+                    streaming_executor=streaming_executor,
+                    tool_trace_context=trace_context,
+                )
+                status = "waiting_approval" if wait is not None else "committed"
+                self._finalize_step_trace(
+                    observation,
+                    status=status,
+                    tool_calls=len(resp.tool_calls),
+                    stop_reason=resp.stop_reason,
+                    **transaction,
+                )
+                if wait is not None:
+                    return "return", wait
+
+                self._maybe_compress_messages()
+                self.persist_session()
+                return "continue", ""
+            except Exception as exc:
+                self._record_step_error(observation, exc)
+                raise
 
     def _append_pending_steer(self) -> bool:
         if self.task_state is None:
@@ -1152,6 +1286,7 @@ class Agent:
         on_tool=None,
         approval_handler=None,
         streaming_executor: StreamingToolExecutor | None = None,
+        tool_trace_context: dict[str, str] | None = None,
     ) -> str | None:
         decisions: list[PolicyDecision | None] = []
         for tool_call in tool_calls:
@@ -1242,6 +1377,7 @@ class Agent:
             batch,
             on_tool=on_tool,
             prefetched_results=prefetched_results,
+            tool_trace_context=tool_trace_context,
         )
 
     def _execute_pending_batch(
@@ -1250,6 +1386,7 @@ class Agent:
         *,
         on_tool=None,
         prefetched_results: dict[str, str | ToolResult] | None = None,
+        tool_trace_context: dict[str, str] | None = None,
     ) -> str | None:
         tool_calls = self._deserialize_tool_calls(batch.tool_calls)
         decision_data = list(batch.policy_decisions)
@@ -1337,6 +1474,7 @@ class Agent:
                     self.session_state.session_id,
                     on_tool=on_tool,
                     decisions=executable_decisions,
+                    trace_context=tool_trace_context,
                 )
             except KeyboardInterrupt:
                 executed = [

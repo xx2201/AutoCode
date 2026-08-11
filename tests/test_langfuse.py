@@ -158,6 +158,14 @@ def _content_chunk(content: str):
     return builtin_types.SimpleNamespace(choices=[choice], usage=None)
 
 
+def _tool_chunk(*, call_id: str, name: str, arguments: str):
+    function = builtin_types.SimpleNamespace(name=name, arguments=arguments)
+    tool_call = builtin_types.SimpleNamespace(index=0, id=call_id, function=function)
+    delta = builtin_types.SimpleNamespace(content=None, tool_calls=[tool_call])
+    choice = builtin_types.SimpleNamespace(delta=delta)
+    return builtin_types.SimpleNamespace(choices=[choice], usage=None)
+
+
 def _usage_chunk(prompt: int = 7, completion: int = 3, cached: int = 0):
     details = builtin_types.SimpleNamespace(cached_tokens=cached) if cached else None
     usage = builtin_types.SimpleNamespace(
@@ -242,6 +250,162 @@ def test_agent_chat_batches_turn_trace_until_shutdown(monkeypatch, tmp_path):
     agent.close()
     assert any(item["event"] == "shutdown" for item in events)
     assert not any(item["event"] == "get_current_trace_id" for item in events)
+
+
+def test_agent_turn_groups_generations_and_tools_by_step(monkeypatch, tmp_path):
+    events = _install_fake_langfuse(monkeypatch)
+    llm = LLM(
+        model="fake-model",
+        api_key="sk-test",
+        langfuse_public_key="pk-test",
+        langfuse_secret_key="sk-lf-test",
+    )
+    streams = [
+        iter(
+            [
+                _tool_chunk(
+                    call_id="call-1",
+                    name="echo",
+                    arguments='{"text":"hello"}',
+                ),
+                _usage_chunk(),
+            ]
+        ),
+        iter([_content_chunk("done"), _usage_chunk()]),
+    ]
+    llm._call_with_retry = lambda params: streams.pop(0)
+    agent = Agent(
+        llm=llm,
+        tools=[_EchoTool()],
+        workspace_root=str(tmp_path),
+        permission_mode="full_access",
+    )
+
+    assert agent.chat("use echo") == "done"
+
+    enters = [item for item in events if item["event"] == "enter"]
+    by_name = {
+        item["kwargs"]["name"]: item
+        for item in enters
+        if item["kwargs"]["name"] in {"agent.chat", "agent.step.1", "agent.step.2", "tool.echo"}
+    }
+    generations = [item for item in enters if item["kwargs"]["name"] == "llm.chat"]
+    assert by_name["agent.step.1"]["kwargs"]["as_type"] == "chain"
+    assert by_name["agent.step.2"]["kwargs"]["as_type"] == "chain"
+    assert by_name["agent.step.1"]["parent_observation_id"] == by_name["agent.chat"]["observation_id"]
+    assert by_name["agent.step.2"]["parent_observation_id"] == by_name["agent.chat"]["observation_id"]
+    assert generations[0]["parent_observation_id"] == by_name["agent.step.1"]["observation_id"]
+    assert by_name["tool.echo"]["parent_observation_id"] == by_name["agent.step.1"]["observation_id"]
+    assert generations[1]["parent_observation_id"] == by_name["agent.step.2"]["observation_id"]
+
+
+class _TracedStreamingLLM:
+    supports_streaming_tool_calls = True
+
+    def __init__(self, tracer):
+        self.tracer = tracer
+        self.model = "fake-streaming"
+        self.api_format = "messages"
+        self.calls = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+
+    def chat(self, messages, tools=None, on_token=None, on_tool_call=None):
+        self.calls += 1
+        with self.tracer.start_generation(
+            name="llm.chat",
+            input_payload={"messages": messages, "tools": tools or []},
+            model=self.model,
+        ) as generation:
+            if self.calls == 1:
+                call = ToolCall(
+                    id="call-read",
+                    name="read",
+                    arguments={"file_path": "README.md"},
+                )
+                on_tool_call(call)
+                response = LLMResponse(content="", tool_calls=[call], stop_reason="tool_use")
+            else:
+                response = LLMResponse(content="done")
+            generation.update(output={"content": response.content})
+            return response
+
+
+def test_speculative_tool_is_sibling_of_generation_inside_step(monkeypatch, tmp_path):
+    events = _install_fake_langfuse(monkeypatch)
+    tracer = LangfuseTracer(public_key="pk-test", secret_key="sk-lf-test")
+    agent = Agent(
+        llm=_TracedStreamingLLM(tracer),
+        tools=[_StreamingReadTool()],
+        workspace_root=str(tmp_path),
+        permission_mode="full_access",
+    )
+
+    assert agent.chat("read then finish") == "done"
+
+    enters = [item for item in events if item["event"] == "enter"]
+    step = next(item for item in enters if item["kwargs"]["name"] == "agent.step.1")
+    generation = next(item for item in enters if item["kwargs"]["name"] == "llm.chat")
+    tool = next(item for item in enters if item["kwargs"]["name"] == "tool.read")
+    assert generation["parent_observation_id"] == step["observation_id"]
+    assert tool["parent_observation_id"] == step["observation_id"]
+    assert tool["parent_observation_id"] != generation["observation_id"]
+
+
+class _RetryingTracedLLM:
+    supports_streaming_tool_calls = False
+
+    def __init__(self, tracer):
+        self.tracer = tracer
+        self.model = "fake-retrying"
+        self.api_format = "chat_completions"
+        self.calls = 0
+        self.total_prompt_tokens = 0
+        self.total_completion_tokens = 0
+
+    def chat(self, messages, tools=None, on_token=None):
+        self.calls += 1
+        with self.tracer.start_generation(
+            name="llm.chat",
+            input_payload={"messages": messages, "tools": tools or []},
+            model=self.model,
+        ) as generation:
+            if self.calls == 1:
+                raise RuntimeError("transient generation failure")
+            generation.update(output={"content": "done"})
+            return LLMResponse(content="done")
+
+
+def test_generation_retry_stays_in_same_agent_step(monkeypatch, tmp_path):
+    events = _install_fake_langfuse(monkeypatch)
+    tracer = LangfuseTracer(public_key="pk-test", secret_key="sk-lf-test")
+    monkeypatch.setattr("autocode.agent.loop.is_retryable_llm_error", lambda exc: True)
+    agent = Agent(
+        llm=_RetryingTracedLLM(tracer),
+        tools=[],
+        workspace_root=str(tmp_path),
+    )
+
+    assert agent.chat("retry once") == "done"
+
+    enters = [item for item in events if item["event"] == "enter"]
+    steps = [item for item in enters if item["kwargs"]["name"].startswith("agent.step.")]
+    generations = [item for item in enters if item["kwargs"]["name"] == "llm.chat"]
+    assert len(steps) == 1
+    assert len(generations) == 2
+    assert all(
+        item["parent_observation_id"] == steps[0]["observation_id"]
+        for item in generations
+    )
+    committed = next(
+        item
+        for item in events
+        if item["event"] == "update"
+        and item["name"] == "agent.step.1"
+        and item["kwargs"].get("output", {}).get("status") == "completed"
+    )
+    assert committed["kwargs"]["output"]["attempt"] == 2
+    assert committed["kwargs"]["output"]["tombstones"] == 1
 
 
 def test_approval_continues_original_turn_trace_after_checkpoint_restore(monkeypatch, tmp_path):
