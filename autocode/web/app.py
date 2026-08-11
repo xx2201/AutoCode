@@ -571,13 +571,13 @@ def create_app(
             timeout=control_request_timeout,
         )
 
-    @app.get("/api/task/{client_id}", dependencies=browser_auth)
-    async def task(
+    @app.get("/api/turn/{client_id}", dependencies=browser_auth)
+    async def turn(
         client_id: str,
         workspace_id: str = Query(min_length=20, max_length=20),
     ):
         return await dispatch(
-            "task",
+            "turn",
             {
                 "client_id": _validate_client_id(client_id),
                 "workspace_id": workspace_id,

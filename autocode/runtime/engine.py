@@ -6,7 +6,7 @@ import concurrent.futures
 import time
 from dataclasses import dataclass
 
-from ..state import PolicyDecision, TaskState
+from ..state import PolicyDecision, TurnState
 from ..tools.base import ConcurrencySpec, ToolResult
 from .hooks import HookBus
 from .policy import Policy
@@ -44,11 +44,11 @@ class Runtime:
         self.tracer = tracer
 
     @staticmethod
-    def _payload(session_id: str, task_state: TaskState, **extra) -> dict:
+    def _payload(session_id: str, turn_state: TurnState, **extra) -> dict:
         payload = {
             "session_id": session_id,
-            "task_id": task_state.task_id,
-            "task_title": task_state.title,
+            "turn_id": turn_state.turn_id,
+            "turn_title": turn_state.title,
         }
         payload.update(extra)
         return payload
@@ -58,14 +58,14 @@ class Runtime:
         llm,
         messages: list[dict],
         tools: list[dict],
-        task_state: TaskState,
+        turn_state: TurnState,
         session_id: str,
         on_token=None,
         on_tool_call=None,
     ):
         self.hooks.emit(
             "before_llm",
-            self._payload(session_id, task_state, step_index=task_state.step_index + 1),
+            self._payload(session_id, turn_state, step_index=turn_state.step_index + 1),
         )
         kwargs = {
             "messages": messages,
@@ -75,13 +75,13 @@ class Runtime:
         if on_tool_call is not None and getattr(llm, "supports_streaming_tool_calls", False):
             kwargs["on_tool_call"] = on_tool_call
         resp = llm.chat(**kwargs)
-        task_state.next_step()
+        turn_state.next_step()
         self.hooks.emit(
             "after_llm",
             self._payload(
                 session_id,
-                task_state,
-                step_index=task_state.step_index,
+                turn_state,
+                step_index=turn_state.step_index,
                 prompt_tokens=resp.prompt_tokens,
                 completion_tokens=resp.completion_tokens,
                 cache_read_tokens=resp.cache_read_tokens,
@@ -91,13 +91,13 @@ class Runtime:
         )
         return resp
 
-    def evaluate_tool_call(self, task_state: TaskState, tool_call, session_id: str) -> PolicyDecision:
+    def evaluate_tool_call(self, turn_state: TurnState, tool_call, session_id: str) -> PolicyDecision:
         decision = self.policy.evaluate_tool_call(tool_call.name, tool_call.arguments)
         self.hooks.emit(
             "policy_decision",
             self._payload(
                 session_id,
-                task_state,
+                turn_state,
                 tool_name=tool_call.name,
                 arguments=tool_call.arguments,
                 decision=decision.to_dict(),
@@ -107,7 +107,7 @@ class Runtime:
 
     def execute_tool_call(
         self,
-        task_state: TaskState,
+        turn_state: TurnState,
         tool_call,
         session_id: str,
         on_tool=None,
@@ -115,7 +115,7 @@ class Runtime:
         trace_context: dict[str, str] | None = None,
     ) -> str | ToolResult:
         prepared = self.prepare_tool_call(
-            task_state,
+            turn_state,
             tool_call,
             session_id,
             on_tool=on_tool,
@@ -123,7 +123,7 @@ class Runtime:
             trace_context=trace_context,
         )
         return self.finalize_prepared_tool_call(
-            task_state,
+            turn_state,
             tool_call,
             session_id,
             prepared,
@@ -131,7 +131,7 @@ class Runtime:
 
     def prepare_tool_call(
         self,
-        task_state: TaskState,
+        turn_state: TurnState,
         tool_call,
         session_id: str,
         on_tool=None,
@@ -146,7 +146,7 @@ class Runtime:
             mode=spec.mode.value,
         )
         self._announce_tool_call(
-            task_state,
+            turn_state,
             tool_call,
             session_id,
             on_tool=on_tool,
@@ -154,7 +154,7 @@ class Runtime:
             spec=spec,
         )
         outcome = self._run_traced_tool_call(
-            task_state,
+            turn_state,
             tool_call,
             decision=decision,
             group=group,
@@ -165,13 +165,13 @@ class Runtime:
 
     def finalize_prepared_tool_call(
         self,
-        task_state: TaskState,
+        turn_state: TurnState,
         tool_call,
         session_id: str,
         prepared: PreparedToolExecution,
     ) -> str | ToolResult:
         return self._finalize_tool_call(
-            task_state,
+            turn_state,
             tool_call,
             session_id,
             prepared.outcome,
@@ -181,7 +181,7 @@ class Runtime:
 
     def _run_traced_tool_call(
         self,
-        task_state: TaskState,
+        turn_state: TurnState,
         tool_call,
         *,
         decision: PolicyDecision | None,
@@ -192,13 +192,13 @@ class Runtime:
         tracer = self.tracer
         if tracer is None or not tracer.enabled:
             return self._run_tool_call(
-                task_state,
+                turn_state,
                 tool_call,
                 decision=decision,
             )
 
         metadata = {
-            "task_id": task_state.task_id,
+            "turn_id": turn_state.turn_id,
             "tool_call_id": tool_call.id,
             "policy_action": decision.action if decision else "allow",
             "execution_group_id": group.group_id,
@@ -213,7 +213,7 @@ class Runtime:
             trace_context=trace_context,
         ) as observation:
             outcome = self._run_tool_call(
-                task_state,
+                turn_state,
                 tool_call,
                 decision=decision,
             )
@@ -239,7 +239,7 @@ class Runtime:
 
     def _run_tool_call(
         self,
-        task_state: TaskState,
+        turn_state: TurnState,
         tool_call,
         decision: PolicyDecision | None = None,
     ) -> ToolExecutionOutcome:
@@ -253,7 +253,7 @@ class Runtime:
             )
         execute_kwargs = dict(tool_call.arguments)
         if tool_call.name == "start_process":
-            execute_kwargs["_task_id"] = task_state.task_id
+            execute_kwargs["_turn_id"] = turn_state.turn_id
         if tool_call.name == "shell_command" and decision is not None and decision.requires_manual:
             execute_kwargs["_confirmed_sensitive"] = True
         try:
@@ -269,7 +269,7 @@ class Runtime:
 
     def _finalize_tool_call(
         self,
-        task_state: TaskState,
+        turn_state: TurnState,
         tool_call,
         session_id: str,
         outcome: ToolExecutionOutcome,
@@ -279,13 +279,13 @@ class Runtime:
     ) -> str | ToolResult:
         result = outcome.result
         if self.recovery is not None:
-            result = self.recovery.note_tool_result(task_state, tool_call.name, result)
+            result = self.recovery.note_tool_result(turn_state, tool_call.name, result)
         result_text = result.text if isinstance(result, ToolResult) else result
         self.hooks.emit(
             "after_tool",
             self._payload(
                 session_id,
-                task_state,
+                turn_state,
                 tool_call_id=tool_call.id,
                 tool_name=tool_call.name,
                 arguments=tool_call.arguments,
@@ -307,7 +307,7 @@ class Runtime:
 
     def _announce_tool_call(
         self,
-        task_state: TaskState,
+        turn_state: TurnState,
         tool_call,
         session_id: str,
         *,
@@ -323,7 +323,7 @@ class Runtime:
             "before_tool",
             self._payload(
                 session_id,
-                task_state,
+                turn_state,
                 tool_call_id=tool_call.id,
                 tool_name=tool_call.name,
                 arguments=tool_call.arguments,
@@ -351,7 +351,7 @@ class Runtime:
 
     def execute_tool_calls_parallel(
         self,
-        task_state: TaskState,
+        turn_state: TurnState,
         tool_calls,
         session_id: str,
         on_tool=None,
@@ -371,7 +371,7 @@ class Runtime:
         for group in groups:
             for index in group.call_indexes:
                 self._announce_tool_call(
-                    task_state,
+                    turn_state,
                     tool_calls[index],
                     session_id,
                     on_tool=on_tool,
@@ -384,7 +384,7 @@ class Runtime:
                 index = group.call_indexes[0]
                 outcomes = [
                     self._run_traced_tool_call(
-                        task_state,
+                        turn_state,
                         tool_calls[index],
                         decision=call_decisions[index],
                         group=group,
@@ -399,7 +399,7 @@ class Runtime:
                     futures = [
                         pool.submit(
                             self._run_traced_tool_call,
-                            task_state,
+                            turn_state,
                             tool_calls[index],
                             decision=call_decisions[index],
                             group=group,
@@ -412,7 +412,7 @@ class Runtime:
 
             for index, outcome in zip(group.call_indexes, outcomes):
                 results[index] = self._finalize_tool_call(
-                    task_state,
+                    turn_state,
                     tool_calls[index],
                     session_id,
                     outcome,
@@ -424,7 +424,7 @@ class Runtime:
             raise RuntimeError("Tool scheduler did not produce a result for every call.")
         return list(results)
 
-    def invalid_tool_call_result(self, task_state: TaskState, tool_call, session_id: str) -> str:
+    def invalid_tool_call_result(self, turn_state: TurnState, tool_call, session_id: str) -> str:
         tool_name = tool_call.name or "<unknown>"
         raw_arguments = getattr(tool_call, "raw_arguments", "") or ""
         parse_error = getattr(tool_call, "parse_error", "") or "tool-call arguments could not be parsed"
@@ -435,12 +435,12 @@ class Runtime:
             f"Resend the same tool call with complete valid JSON arguments that match the tool schema."
         )
         if self.recovery is not None:
-            result = self.recovery.note_tool_result(task_state, tool_name, result)
+            result = self.recovery.note_tool_result(turn_state, tool_name, result)
         self.hooks.emit(
             "after_tool",
             self._payload(
                 session_id,
-                task_state,
+                turn_state,
                 tool_call_id=tool_call.id,
                 tool_name=tool_name,
                 result=result[:4000],

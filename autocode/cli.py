@@ -40,7 +40,7 @@ _PROMPT_MESSAGE = [("ansibrightblue bold", "You > ")]
 _APPROVAL_PROMPT_MESSAGE = [("ansibrightyellow bold", "Approve > ")]
 _APPROVAL_OPTIONS = [
     ("/approve", "Approve the pending tool call"),
-    ("/approve_scope", "Approve and allow the displayed scope for this task"),
+    ("/approve_scope", "Approve and allow the displayed scope for this turn"),
     ("/reject", "Reject the pending tool call"),
     ("/later", "Keep approval pending and return"),
 ]
@@ -166,7 +166,7 @@ class _AgentWorker:
             nonlocal change_store, change_before, change_turn_id
             if event != "turn_started":
                 return
-            change_turn_id = str(data.get("task_id", ""))
+            change_turn_id = str(data.get("turn_id", ""))
             try:
                 change_store = ChangeSetStore(
                     self.agent.workspace_root,
@@ -223,8 +223,8 @@ class _AgentWorker:
         save_turn_queue(session.session_id, queued)
 
     def _has_pending_approval(self) -> bool:
-        task = self.agent.task_state
-        return task is not None and getattr(task, "pending_tool_batch", None) is not None
+        turn = self.agent.turn_state
+        return turn is not None and getattr(turn, "pending_tool_batch", None) is not None
 
 
 class _ApprovalCompleter(Completer):
@@ -344,8 +344,8 @@ def main():
             if not args.model:
                 agent.llm.model = loaded_model
                 config.model = loaded_model
-            current_task = session_state.current_task
-            status = current_task.status if current_task else "idle"
+            current_turn = session_state.current_turn
+            status = current_turn.status if current_turn else "idle"
             console.print(
                 f"[green]Resumed session: {session_state.session_id} "
                 f"(status: {status}, model: {agent.llm.model})[/green]"
@@ -452,7 +452,7 @@ def _repl(agent: Agent, config: Config):
         event.current_buffer.insert_text("\n")
 
     def _prompt_pending_approval() -> bool:
-        batch = agent.task_state.pending_tool_batch
+        batch = agent.turn_state.pending_tool_batch
         pending_items = batch.unresolved() if batch else []
         if not pending_items:
             return False
@@ -472,8 +472,8 @@ def _repl(agent: Agent, config: Config):
         while True:
             if (
                 not worker.is_running
-                and agent.task_state is not None
-                and agent.task_state.pending_tool_batch is not None
+                and agent.turn_state is not None
+                and agent.turn_state.pending_tool_batch is not None
             ):
                 if _prompt_pending_approval():
                     continue
@@ -505,8 +505,8 @@ def _repl(agent: Agent, config: Config):
                 continue
 
             if (
-                agent.task_state is not None
-                and agent.task_state.pending_tool_batch is not None
+                agent.turn_state is not None
+                and agent.turn_state.pending_tool_batch is not None
                 and not worker.is_running
                 and not user_input.startswith("/")
             ):
@@ -604,32 +604,32 @@ def _repl(agent: Agent, config: Config):
                     for f in sorted(_changed_files):
                         console.print(f"  [cyan]{f}[/cyan]")
                 continue
-            if user_input == "/task":
+            if user_input == "/turn":
                 if agent.session_state is None:
                     console.print("[dim]No active session.[/dim]")
                 else:
-                    if agent.task_state is None:
-                        console.print(f"Session: [cyan]{agent.session_state.session_id}[/cyan]  current task: [dim](none)[/dim]")
+                    if agent.turn_state is None:
+                        console.print(f"Session: [cyan]{agent.session_state.session_id}[/cyan]  current turn: [dim](none)[/dim]")
                         continue
                     pending = ""
-                    batch = agent.task_state.pending_tool_batch
+                    batch = agent.turn_state.pending_tool_batch
                     if batch:
                         unresolved = batch.unresolved()
                         pending = f"  pending approvals: {len(unresolved)}"
                     console.print(
                         f"Session: [cyan]{agent.session_state.session_id}[/cyan]  "
-                        f"Task: [cyan]{agent.task_state.task_id}[/cyan]  "
-                        f"title: [bold]{agent.task_state.title or '(untitled)'}[/bold]  "
-                        f"status: [yellow]{agent.task_state.status}[/yellow]  "
-                        f"steps: [bold]{agent.task_state.step_index}[/bold]  "
+                        f"Turn: [cyan]{agent.turn_state.turn_id}[/cyan]  "
+                        f"title: [bold]{agent.turn_state.title or '(untitled)'}[/bold]  "
+                        f"status: [yellow]{agent.turn_state.status}[/yellow]  "
+                        f"steps: [bold]{agent.turn_state.step_index}[/bold]  "
                         f"permissions: [bold]{agent.policy.permission_mode}[/bold]{pending}"
                     )
                 continue
             if user_input == "/todo":
-                if agent.task_state is None:
-                    console.print("[dim]No active task.[/dim]")
+                if agent.turn_state is None:
+                    console.print("[dim]No active turn.[/dim]")
                 else:
-                    console.print(Panel(render_todos(agent.task_state.todos), title="Todo", border_style="dim"))
+                    console.print(Panel(render_todos(agent.turn_state.todos), title="Todo", border_style="dim"))
                 continue
             if user_input == "/resume" or user_input.startswith("/resume "):
                 target = user_input[8:].strip() if user_input.startswith("/resume ") else ""
@@ -642,8 +642,8 @@ def _repl(agent: Agent, config: Config):
                     agent.restore_session(session_state, messages, loaded_model)
                     agent.llm.model = loaded_model
                     config.model = loaded_model
-                    current_task = session_state.current_task
-                    status = current_task.status if current_task else "idle"
+                    current_turn = session_state.current_turn
+                    status = current_turn.status if current_turn else "idle"
                     console.print(
                         f"[green]Resumed session: {session_state.session_id} "
                         f"(status: {status}, model: {agent.llm.model})[/green]"
@@ -747,28 +747,28 @@ def _repl(agent: Agent, config: Config):
 
 
 def _last_editable_prompt(agent: Agent) -> tuple[str, str]:
-    task = agent.task_state
-    if task is None or task.status != "completed":
+    turn = agent.turn_state
+    if turn is None or turn.status != "completed":
         raise ValueError("Only the last completed turn can be edited.")
     for message in reversed(agent.messages):
         if (
             message.get("role") == "user"
             and message.get("message_kind", "prompt") == "prompt"
-            and message.get("turn_id", task.task_id) == task.task_id
+            and message.get("turn_id", turn.turn_id) == turn.turn_id
         ):
-            return task.task_id, str(
+            return turn.turn_id, str(
                 message.get("raw_prompt") or content_text(message.get("content", ""))
             )
-    raise ValueError(f"Prompt for turn '{task.task_id}' was not found.")
+    raise ValueError(f"Prompt for turn '{turn.turn_id}' was not found.")
 
 
 def _apply_changeset_action(agent: Agent, action: str, turn_id: str = ""):
     """Small CLI adapter around the state-layer ChangeSet API."""
     session = agent.session_state
-    task = agent.task_state
+    turn = agent.turn_state
     if session is None:
         raise ValueError("No active session.")
-    resolved_turn_id = turn_id or (task.task_id if task is not None else "")
+    resolved_turn_id = turn_id or (turn.turn_id if turn is not None else "")
     if not resolved_turn_id:
         raise ValueError("Turn id is required.")
     store = ChangeSetStore(agent.workspace_root, session.session_id)
@@ -793,7 +793,7 @@ def _show_help():
         "  /diff          Show files modified this session\n"
         "  /resume        List resumable sessions for the current project\n"
         "  /resume <id>   Resume a session by id\n"
-        "  /task          Show the current session and task state\n"
+        "  /turn          Show the current session and turn state\n"
         "  /todo          Show the current todo list\n"
         "  /trace         Show the current session trace\n"
         "  /mcp           Show MCP server status and loaded tools\n"
@@ -801,7 +801,7 @@ def _show_help():
         "  /undo [turn]   Undo one turn's workspace changes\n"
         "  /reapply [turn] Reapply a previously undone turn\n"
         "  /approve       Approve the pending tool call\n"
-        "  /approve_scope Approve and allow this scope for the current task\n"
+        "  /approve_scope Approve and allow this scope for the current turn\n"
         "  /permissions   Set ask or full_access tool permissions\n"
         "  /reject        Reject the pending tool call\n"
         "  quit           Exit AutoCode\n"

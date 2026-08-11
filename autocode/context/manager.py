@@ -217,7 +217,7 @@ class ContextManager:
                             "content": (
                                 "Compress this conversation into a brief summary. "
                                 "Preserve: file paths edited, key decisions made, "
-                                "errors encountered, current task state. "
+                                "errors encountered, current turn state. "
                                 "Drop: verbose command output, code listings, "
                                 "redundant back-and-forth."
                             ),

@@ -17,7 +17,7 @@ SESSIONS_DIR = Path(
     os.getenv("AUTOCODE_SESSIONS_DIR", str(Path.home() / ".autocode" / "sessions"))
 ).expanduser()
 _SAFE_SESSION_RE = re.compile(r"[^A-Za-z0-9._-]+")
-_SAFE_TASK_RE = re.compile(r"[^A-Za-z0-9._-]+")
+_SAFE_TURN_RE = re.compile(r"[^A-Za-z0-9._-]+")
 _CHECKPOINT_CACHE: dict[Path, tuple[int, int, dict]] = {}
 _CHECKPOINT_CACHE_LOCK = threading.Lock()
 _TURN_QUEUE_LOCK = threading.Lock()
@@ -27,8 +27,8 @@ def new_session_id() -> str:
     return f"session_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
 
-def new_task_id() -> str:
-    return f"task_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
+def new_turn_id() -> str:
+    return f"turn_{time.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:8]}"
 
 
 def _normalize_name(value: str, pattern: re.Pattern[str]) -> str:
@@ -178,17 +178,17 @@ def delete_session(session_id: str, workspace_root: str) -> None:
 
 def _session_summary(data: dict, fallback_session_id: str) -> dict:
     session = data.get("session", {})
-    current_task = session.get("current_task") or {}
+    current_turn = session.get("current_turn") or {}
     return {
         "session_id": session.get("session_id", fallback_session_id),
-        "task_id": current_task.get("task_id", ""),
+        "turn_id": current_turn.get("turn_id", ""),
         "title": (
             session.get("title")
             or _first_user_title(data.get("messages", []))
-            or current_task.get("title", "")
+            or current_turn.get("title", "")
         ),
-        "status": current_task.get("status", "idle"),
-        "step_index": current_task.get("step_index", 0),
+        "status": current_turn.get("status", "idle"),
+        "step_index": current_turn.get("step_index", 0),
         "saved_at": data.get("saved_at", "?"),
         "model": data.get("model", "?"),
         "workspace_root": _normalize_workspace_root(data.get("workspace_root", "")),

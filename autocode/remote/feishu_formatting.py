@@ -48,7 +48,7 @@ def build_live_status_card(
     phase: str,
     status: str,
     session_id: str,
-    task_id: str,
+    turn_id: str,
     step_index: int,
     llm_calls: int,
     tool_calls: int,
@@ -70,12 +70,12 @@ def build_live_status_card(
     cache_total = cache_read_tokens + cache_miss_tokens
     cache_hit_rate = f"{(cache_read_tokens / cache_total * 100):.1f}%" if cache_total else "n/a"
     lines = [
-        f"**{_clip_markdown(title or '(untitled task)')}**",
+        f"**{_clip_markdown(title or '(untitled turn)')}**",
         "",
         f"Phase: `{phase}`",
         f"Status: `{status or 'running'}`",
         f"Session: `{session_id or 'starting...'}`",
-        f"Task: `{task_id or 'starting...'}`",
+        f"Turn: `{turn_id or 'starting...'}`",
         f"Step: `{step_index}`",
         f"LLM Calls: `{llm_calls}`",
         f"Tool Calls: `{tool_calls}`",
@@ -114,7 +114,7 @@ def build_approval_card(
         _clip_markdown(result.text.strip() or "(no response)"),
         "",
         f"Session: `{result.session_id}`",
-        f"Task: `{result.task_id}`",
+        f"Turn: `{result.turn_id}`",
         f"Status: `{result.status or 'unknown'}`",
         f"Permissions: `{result.permission_mode}`",
         f"Tool: `{result.pending_tool or 'unknown'}`",
@@ -154,7 +154,7 @@ def build_error_card(title: str, text: str) -> dict:
 
 
 def build_resume_card(
-    tasks: list[dict],
+    sessions: list[dict],
     session_key: str,
     owner_open_id: str,
     workspace_root: str,
@@ -164,17 +164,17 @@ def build_resume_card(
         "tag": "markdown",
         "content": (
             f"Project: `{_clip_markdown(workspace_name, limit=80)}`\n"
-            f"Showing the latest `{len(tasks)}` resumable sessions. Selecting one replaces the current chat context."
+            f"Showing the latest `{len(sessions)}` resumable sessions. Selecting one replaces the current chat context."
         ),
     }]
-    for item in tasks:
+    for item in sessions:
         title = _clip_markdown(item.get("title") or item["session_id"], limit=100)
         elements.append({
             "tag": "markdown",
             "content": (
                 f"**{title}**\n"
                 f"Session: `{item['session_id']}`\n"
-                f"Task: `{item.get('task_id') or '(none)'}`\n"
+                f"Turn: `{item.get('turn_id') or '(none)'}`\n"
                 f"Status: `{item['status']}`\n"
                 f"Updated: `{item['saved_at']}`"
             ),

@@ -5,7 +5,7 @@ from autocode.runtime import HookBus, Policy, Runtime
 from autocode.state import checkpoint as checkpoint_module
 from autocode.state import load_events
 from autocode.llm import LLMResponse, ToolCall
-from autocode.state import PolicyDecision, TaskState
+from autocode.state import PolicyDecision, TurnState
 from autocode.state import load_trace
 from autocode.tools.base import Tool
 
@@ -123,7 +123,7 @@ def test_runtime_emits_hooks(tmp_path):
     hooks.on("before_tool", lambda event, payload: events.append((event, payload)))
     hooks.on("after_tool", lambda event, payload: events.append((event, payload)))
     runtime = Runtime({"echo": _EchoTool()}, policy=Policy(workspace_root=str(tmp_path)), hooks=hooks)
-    state = TaskState(task_id="task_test", status="running")
+    state = TurnState(turn_id="turn_test", status="running")
     tc = ToolCall(id="1", name="echo", arguments={"text": "hi"})
     result = runtime.execute_tool_call(state, tc, "session_test")
 
@@ -131,8 +131,8 @@ def test_runtime_emits_hooks(tmp_path):
     assert events[0][0] == "before_tool"
     assert events[0][1] == {
         "session_id": "session_test",
-        "task_id": "task_test",
-        "task_title": "",
+        "turn_id": "turn_test",
+        "turn_title": "",
         "tool_call_id": "1",
         "tool_name": "echo",
         "arguments": {"text": "hi"},
@@ -163,10 +163,10 @@ def test_agent_waits_for_approval(tmp_path):
     agent.runtime.policy = agent.policy
     reply = agent.chat("run migration")
     assert "waiting for approval" in reply
-    assert agent.task_state is not None
-    assert agent.task_state.status == "waiting_approval"
-    assert agent.task_state.pending_tool_batch is not None
-    assert len(agent.task_state.pending_tool_batch.approvals) == 1
+    assert agent.turn_state is not None
+    assert agent.turn_state.status == "waiting_approval"
+    assert agent.turn_state.pending_tool_batch is not None
+    assert len(agent.turn_state.pending_tool_batch.approvals) == 1
 
 
 def test_agent_emits_ordered_assistant_step_before_tool_execution(tmp_path):
@@ -204,8 +204,8 @@ def test_agent_approves_pending_tool(tmp_path):
     agent.runtime.policy = agent.policy
     reply = agent.chat("run echo", approval_handler=lambda pending: True)
     assert reply == "done"
-    assert agent.task_state is not None
-    assert agent.task_state.status == "completed"
+    assert agent.turn_state is not None
+    assert agent.turn_state.status == "completed"
 
 
 def test_agent_returns_explicit_error_for_invalid_tool_call_json(tmp_path):
@@ -261,9 +261,9 @@ def test_agent_scope_approval_completes_matching_tool_calls_before_next_llm(tmp_
 
     waiting = agent.chat("check environment", approval_handler=None)
     assert "waiting for approval" in waiting
-    assert agent.task_state is not None
-    assert agent.task_state.pending_tool_batch is not None
-    assert len(agent.task_state.pending_tool_batch.approvals) == 2
+    assert agent.turn_state is not None
+    assert agent.turn_state.pending_tool_batch is not None
+    assert len(agent.turn_state.pending_tool_batch.approvals) == 2
 
     reply = agent.approve_pending(True, approval_handler=None, grant_scope=True)
 
@@ -297,9 +297,9 @@ def test_agent_requeues_next_pending_tool_from_same_batch(tmp_path):
     still_waiting = agent.approve_pending(True, approval_handler=None)
     assert "waiting for approval" in still_waiting
     assert len(llm.calls) == 1
-    assert agent.task_state is not None
-    assert agent.task_state.pending_tool_batch is not None
-    unresolved = agent.task_state.pending_tool_batch.unresolved()
+    assert agent.turn_state is not None
+    assert agent.turn_state.pending_tool_batch is not None
+    unresolved = agent.turn_state.pending_tool_batch.unresolved()
     assert len(unresolved) == 1
     assert unresolved[0].tool_call_id == "2"
 
@@ -325,7 +325,7 @@ def test_agent_records_independent_decisions_before_executing_batch(tmp_path):
     agent.runtime.policy = agent.policy
 
     assert "waiting for approval" in agent.chat("run both")
-    batch = agent.task_state.pending_tool_batch
+    batch = agent.turn_state.pending_tool_batch
     first, second = batch.approvals
 
     first_result = agent.decide_approval(
@@ -362,7 +362,7 @@ def test_agent_records_independent_decisions_before_executing_batch(tmp_path):
     assert "approval denied by user" in tool_messages[1]["content"]
 
 
-def test_agent_todo_tool_updates_task_state(tmp_path):
+def test_agent_todo_tool_updates_turn_state(tmp_path):
     responses = [
         LLMResponse(content="", tool_calls=[ToolCall(id="1", name="todo_write", arguments={"todos": [{"content": "Read file", "status": "pending"}]})]),
         LLMResponse(content="planned"),
@@ -374,8 +374,8 @@ def test_agent_todo_tool_updates_task_state(tmp_path):
     )
     reply = agent.chat("plan the work")
     assert reply == "planned"
-    assert agent.task_state is not None
-    assert agent.task_state.todos[0]["content"] == "Read file"
+    assert agent.turn_state is not None
+    assert agent.turn_state.todos[0]["content"] == "Read file"
 
 
 def test_agent_summarizes_when_max_rounds_reached(tmp_path):
@@ -395,9 +395,9 @@ def test_agent_summarizes_when_max_rounds_reached(tmp_path):
 
     assert "已完成" in reply
     assert "如需继续，请回复“继续”" in reply
-    assert agent.task_state is not None
-    assert agent.task_state.status == "failed"
-    assert agent.task_state.last_error == "reached maximum tool-call rounds"
+    assert agent.turn_state is not None
+    assert agent.turn_state.status == "failed"
+    assert agent.turn_state.last_error == "reached maximum tool-call rounds"
 
 
 def test_agent_defaults_to_200_max_rounds(tmp_path):
@@ -415,16 +415,16 @@ def test_todo_write_rejects_completed_after_blocked_or_failed_tool(tmp_path):
         workspace_root=str(tmp_path),
         permission_mode="full_access",
     )
-    agent._ensure_task("plan the work")
-    assert agent.task_state is not None
-    agent.task_state.set_todos([{"content": "Move config to .env", "status": "pending"}])
-    agent.task_state.note_tool_result("write_file", "Blocked by policy for write_file: .env is protected")
+    agent._ensure_turn("plan the work")
+    assert agent.turn_state is not None
+    agent.turn_state.set_todos([{"content": "Move config to .env", "status": "pending"}])
+    agent.turn_state.note_tool_result("write_file", "Blocked by policy for write_file: .env is protected")
 
     todo_tool = next(tool for tool in agent.tools if tool.name == "todo_write")
     result = todo_tool.execute([{"content": "Move config to .env", "status": "completed"}])
 
     assert result.startswith("Error:")
-    assert agent.task_state.todos[0]["status"] == "pending"
+    assert agent.turn_state.todos[0]["status"] == "pending"
 
 
 def test_agent_backfills_placeholder_tool_result_after_interrupt(tmp_path):
@@ -442,8 +442,8 @@ def test_agent_backfills_placeholder_tool_result_after_interrupt(tmp_path):
     reply = agent.chat("run echo")
 
     assert reply == "tool interrupt handled"
-    assert agent.task_state is not None
-    assert "interrupted by user" in agent.task_state.last_error
+    assert agent.turn_state is not None
+    assert "interrupted by user" in agent.turn_state.last_error
     tool_messages = [m for m in agent.messages if m.get("role") == "tool"]
     assert len(tool_messages) == 1
     assert "Placeholder tool result" in tool_messages[0]["content"]
@@ -468,7 +468,7 @@ def test_agent_backfills_placeholder_after_approved_interrupt(tmp_path):
     reply = agent.approve_pending(True, approval_handler=None)
 
     assert reply == "approval path handled"
-    assert agent.task_state is not None
+    assert agent.turn_state is not None
     tool_messages = [m for m in agent.messages if m.get("role") == "tool"]
     assert len(tool_messages) == 1
     assert "Placeholder tool result" in tool_messages[0]["content"]
@@ -489,7 +489,7 @@ def test_agent_writes_trace_and_audit(tmp_path, monkeypatch):
     )
     reply = agent.chat("run echo")
     assert reply == "done"
-    assert agent.task_state is not None
+    assert agent.turn_state is not None
 
     trace = load_trace(agent.session_state.session_id)
     events = load_events(agent.session_state.session_id)
@@ -500,7 +500,7 @@ def test_agent_writes_trace_and_audit(tmp_path, monkeypatch):
     assert any(e["event"] == "after_tool" for e in events)
 
 
-def test_agent_reuses_same_session_id_and_rotates_current_task_after_completion(tmp_path, monkeypatch):
+def test_agent_reuses_same_session_id_and_rotates_current_turn_after_completion(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
 
     responses = [
@@ -515,15 +515,15 @@ def test_agent_reuses_same_session_id_and_rotates_current_task_after_completion(
 
     first = agent.chat("first prompt")
     assert first == "first done"
-    assert agent.task_state is not None
+    assert agent.turn_state is not None
     assert agent.session_state is not None
     first_session_id = agent.session_state.session_id
-    first_task_id = agent.task_state.task_id
+    first_turn_id = agent.turn_state.turn_id
 
     second = agent.chat("second prompt")
     assert second == "second done"
     assert agent.session_state.session_id == first_session_id
-    assert agent.task_state.task_id != first_task_id
+    assert agent.turn_state.turn_id != first_turn_id
 
     checkpoint = checkpoint_module.session_dir(first_session_id).joinpath(
         "checkpoint.json"
@@ -549,9 +549,9 @@ def test_agent_schedules_project_memory_refresh_in_background(tmp_path):
     agent.memory.schedule_project_memory_refresh = _schedule
 
     first_reply = agent.chat("first prompt")
-    first_turn_id = agent.task_state.task_id
+    first_turn_id = agent.turn_state.turn_id
     second_reply = agent.chat("second prompt")
-    second_turn_id = agent.task_state.task_id
+    second_turn_id = agent.turn_state.turn_id
 
     assert first_reply == "first done"
     assert second_reply == "second done"
@@ -561,23 +561,23 @@ def test_agent_schedules_project_memory_refresh_in_background(tmp_path):
     assert [force for _, force in calls] == [True, True]
 
 
-def test_agent_cleans_temporary_processes_when_task_completes(tmp_path):
+def test_agent_cleans_temporary_processes_when_turn_completes(tmp_path):
     agent = Agent(
         llm=_FakeLLM([LLMResponse(content="done")]),
         workspace_root=str(tmp_path),
         permission_mode="full_access",
     )
     cleaned = []
-    agent.processes.cleanup_task_processes = lambda task_id: cleaned.append(task_id) or []
+    agent.processes.cleanup_turn_processes = lambda turn_id: cleaned.append(turn_id) or []
 
     reply = agent.chat("finish work")
 
     assert reply == "done"
-    assert agent.task_state is not None
-    assert cleaned == [agent.task_state.task_id]
+    assert agent.turn_state is not None
+    assert cleaned == [agent.turn_state.turn_id]
 
 
-def test_agent_cleans_temporary_processes_when_task_fails(tmp_path):
+def test_agent_cleans_temporary_processes_when_turn_fails(tmp_path):
     agent = Agent(
         llm=_FakeLLM([
             LLMResponse(content="", tool_calls=[ToolCall(id="1", name="echo", arguments={"text": "hi"})]),
@@ -589,14 +589,14 @@ def test_agent_cleans_temporary_processes_when_task_fails(tmp_path):
         max_rounds=1,
     )
     cleaned = []
-    agent.processes.cleanup_task_processes = lambda task_id: cleaned.append(task_id) or []
+    agent.processes.cleanup_turn_processes = lambda turn_id: cleaned.append(turn_id) or []
 
     reply = agent.chat("run echo")
 
     assert "已完成" in reply
-    assert agent.task_state is not None
-    assert agent.task_state.status == "failed"
-    assert cleaned == [agent.task_state.task_id]
+    assert agent.turn_state is not None
+    assert agent.turn_state.status == "failed"
+    assert cleaned == [agent.turn_state.turn_id]
 
 
 def test_agent_reset_cleans_all_managed_processes(tmp_path):

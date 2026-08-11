@@ -9,10 +9,10 @@ _TELEGRAM_MAX_LENGTH = 4096
 
 def render_turn_result(result: RemoteTurnResult) -> str:
     parts = [result.text.strip() or "(no response)"]
-    if result.session_id or result.task_id:
+    if result.session_id or result.turn_id:
         parts.append(
             f"\nSession: {result.session_id or 'unknown'}\n"
-            f"Task: {result.task_id or '(none)'}\n"
+            f"Turn: {result.turn_id or '(none)'}\n"
             f"Status: {result.status or 'unknown'}\n"
             f"Permissions: {result.permission_mode}"
         )
@@ -32,11 +32,11 @@ def render_turn_result(result: RemoteTurnResult) -> str:
     return "\n".join(part for part in parts if part).strip()
 
 
-def render_task_list(tasks: list[dict]) -> str:
-    if not tasks:
+def render_session_list(sessions: list[dict]) -> str:
+    if not sessions:
         return "No saved sessions."
     lines = []
-    for item in tasks:
+    for item in sessions:
         lines.append(
             f"- {item['session_id']} | {item['status']} | step {item['step_index']} | "
             f"{item['model']} | {item['saved_at']}"

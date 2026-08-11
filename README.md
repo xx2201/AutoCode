@@ -139,7 +139,7 @@ autocode --resume SESSION_ID
 ```
 
 Important interactive commands include `/help`, `/reset`, `/model`, `/tokens`,
-`/compact`, `/diff`, `/resume`, `/task`, `/todo`, `/trace`, `/mcp`,
+`/compact`, `/diff`, `/resume`, `/turn`, `/todo`, `/trace`, `/mcp`,
 `/approve`, `/approve_scope`, `/permissions ask|full_access`, and `/reject`.
 
 ## Web access from a phone
@@ -280,7 +280,7 @@ under `~/.autocode`:
     │           └── <session_id>/
     │               ├── checkpoint.json
     │               ├── session.json
-    │               ├── current_task.json
+    │               ├── current_turn.json
     │               ├── transcript.jsonl
     │               ├── audit.jsonl
     │               └── trace.json
@@ -306,7 +306,7 @@ the workspace-local `.autocode/.gitignore`.
 
 The policy layer exposes Ask for approval and Full access modes. Ask mode
 confirms deletion, external web access, and MCP calls, and can grant a
-task-scoped permission for matching hosts or tools. Full access skips those
+turn-scoped permission for matching hosts or tools. Full access skips those
 confirmations. Both modes still keep paths inside the workspace, protect
 `.env` and `.git`, and hard-deny destructive shell commands such as `rm -rf`
 and `git reset --hard`.

@@ -180,7 +180,7 @@ def test_agent_worker_steers_active_turn_with_expected_id(monkeypatch):
         def __init__(self):
             self.turn_controller = TurnController()
             self.session_state = SimpleNamespace(session_id="session-cli")
-            self.task_state = SimpleNamespace(pending_approval=None)
+            self.turn_state = SimpleNamespace(pending_approval=None)
 
         def chat(self, prompt, **kwargs):
             self.turn_controller.start_turn("turn-active")
@@ -212,7 +212,7 @@ def test_agent_worker_runs_queued_followup_after_current_turn(monkeypatch):
         def __init__(self):
             self.turn_controller = TurnController()
             self.session_state = SimpleNamespace(session_id="session-cli")
-            self.task_state = SimpleNamespace(pending_approval=None)
+            self.turn_state = SimpleNamespace(pending_approval=None)
             self.prompts = []
 
         def chat(self, prompt, **kwargs):
@@ -246,7 +246,7 @@ def test_agent_worker_runs_queued_followup_after_current_turn(monkeypatch):
 
 def test_last_editable_prompt_returns_raw_prompt():
     agent = SimpleNamespace(
-        task_state=SimpleNamespace(task_id="turn-1", status="completed"),
+        turn_state=SimpleNamespace(turn_id="turn-1", status="completed"),
         messages=[
             {
                 "role": "user",
@@ -278,7 +278,7 @@ def test_changeset_command_uses_current_turn_by_default(monkeypatch, tmp_path):
     agent = SimpleNamespace(
         workspace_root=str(tmp_path),
         session_state=SimpleNamespace(session_id="session-cli"),
-        task_state=SimpleNamespace(task_id="turn-current"),
+        turn_state=SimpleNamespace(turn_id="turn-current"),
     )
 
     assert _apply_changeset_action(agent, "undo") is manifest

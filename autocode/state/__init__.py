@@ -1,4 +1,4 @@
-"""Session and current-task persistence package."""
+"""Session and current-turn persistence package."""
 
 from .checkpoint import (
     delete_session,
@@ -7,14 +7,14 @@ from .checkpoint import (
     load_turn_queue,
     migrate_session_storage,
     new_session_id,
-    new_task_id,
+    new_turn_id,
     restore_flat_session_layout,
     save_checkpoint,
     save_turn_queue,
     session_dir,
 )
 from .journal import AuditLogger, load_events
-from .model import PendingApproval, PendingToolBatch, PolicyDecision, SessionState, TaskState
+from .model import PendingApproval, PendingToolBatch, PolicyDecision, SessionState, TurnState
 from .store import SessionStore
 from .trace import TraceRecorder, format_trace, load_trace
 from .transcript import TranscriptLogger, load_transcript_entries, load_transcript_messages
@@ -26,7 +26,7 @@ __all__ = [
     "PendingToolBatch",
     "PolicyDecision",
     "SessionState",
-    "TaskState",
+    "TurnState",
     "SessionStore",
     "TranscriptLogger",
     "TraceRecorder",
@@ -45,7 +45,7 @@ __all__ = [
     "new_session_id",
     "new_message_id",
     "new_revision_id",
-    "new_task_id",
+    "new_turn_id",
     "restore_flat_session_layout",
     "save_checkpoint",
     "save_turn_queue",

@@ -57,7 +57,7 @@ def presentation_tool_arguments(arguments: object) -> dict:
 class RemoteTurnResult:
     text: str
     session_id: str = ""
-    task_id: str = ""
+    turn_id: str = ""
     status: str = ""
     pending_tool: str = ""
     pending_reason: str = ""
@@ -92,8 +92,8 @@ class RemoteManager:
         "before_tool",
         "after_tool",
         "approval_resolved",
-        "task_status",
-        "task_error",
+        "turn_status",
+        "turn_error",
         "todo_updated",
         "model_step_started",
         "model_step_committed",
@@ -321,8 +321,8 @@ class RemoteManager:
         """Resolve the next batch item for command-based remote channels."""
         runtime = self._require_runtime(chat_id)
         with runtime.approval_lock:
-            task = runtime.agent.task_state
-            batch = task.pending_tool_batch if task else None
+            turn = runtime.agent.turn_state
+            batch = turn.pending_tool_batch if turn else None
             unresolved = batch.unresolved() if batch else []
             if batch is None or not unresolved:
                 raise ValueError("No pending approval.")
@@ -524,8 +524,8 @@ class RemoteManager:
                     if message.get("role") == "user"
                     and message.get("message_kind", "prompt") == "prompt"
                     and (
-                        runtime.agent.task_state is None
-                        or message.get("turn_id") == runtime.agent.task_state.task_id
+                        runtime.agent.turn_state is None
+                        or message.get("turn_id") == runtime.agent.turn_state.turn_id
                     )
                 ),
                 None,
@@ -588,20 +588,20 @@ class RemoteManager:
         messages = agent.messages
         if not messages:
             return
-        task_id = agent.task_state.task_id if agent.task_state is not None else ""
+        turn_id = agent.turn_state.turn_id if agent.turn_state is not None else ""
         user_index = next(
             (
                 index for index in range(len(messages) - 1, -1, -1)
                 if messages[index].get("role") == "user"
                 and messages[index].get("message_kind", "prompt") == "prompt"
-                and (not task_id or messages[index].get("turn_id") == task_id)
+                and (not turn_id or messages[index].get("turn_id") == turn_id)
             ),
             None,
         )
         if user_index is None:
             return
         for message in messages[user_index:]:
-            message.setdefault("turn_id", task_id)
+            message.setdefault("turn_id", turn_id)
         user_message = messages[user_index]
         user_message["turn_elapsed_ms"] = round(
             float(user_message.get("turn_elapsed_ms", 0) or 0) + elapsed_ms,
@@ -629,20 +629,20 @@ class RemoteManager:
             "status": "unavailable",
         }
 
-    def current_task_summary(self, chat_id: Hashable) -> str:
+    def current_turn_summary(self, chat_id: Hashable) -> str:
         runtime = self._require_runtime(chat_id)
         if not runtime.lock.acquire(blocking=False):
-            return "Current task is still running; detailed status is temporarily unavailable."
+            return "Current turn is still running; detailed status is temporarily unavailable."
         try:
             agent = runtime.agent
             if agent.session_state is None:
                 return "No active session."
-            task = agent.task_state
-            if task is None:
-                return f"Session: {agent.session_state.session_id}\nCurrent Task: (none)"
+            turn = agent.turn_state
+            if turn is None:
+                return f"Session: {agent.session_state.session_id}\nCurrent Turn: (none)"
 
             suffix = ""
-            batch = task.pending_tool_batch
+            batch = turn.pending_tool_batch
             if batch and batch.unresolved():
                 suffix = (
                     f"\nPending approvals: {len(batch.unresolved())} "
@@ -650,10 +650,10 @@ class RemoteManager:
                 )
             return (
                 f"Session: {agent.session_state.session_id}\n"
-                f"Task: {task.task_id}\n"
-                f"Title: {task.title or '(untitled)'}\n"
-                f"Status: {task.status}\n"
-                f"Steps: {task.step_index}\n"
+                f"Turn: {turn.turn_id}\n"
+                f"Title: {turn.title or '(untitled)'}\n"
+                f"Status: {turn.status}\n"
+                f"Steps: {turn.step_index}\n"
                 f"Permission mode: {agent.policy.permission_mode}{suffix}"
             )
         finally:
@@ -671,7 +671,7 @@ class RemoteManager:
                 return "No trace recorded yet."
             return format_trace(trace)
 
-    def list_recent_tasks(self) -> list[dict]:
+    def list_recent_sessions(self) -> list[dict]:
         return list_sessions()
 
     def list_resume_candidates(self, limit: int = 10) -> list[dict]:
@@ -702,8 +702,8 @@ class RemoteManager:
             runtime.agent.restore_session(session_state, messages)
             # 首次恢复旧 checkpoint 时立即固化补齐的 message/turn/revision ID。
             runtime.agent.persist_session()
-            current_task = session_state.current_task
-            status = current_task.status if current_task else "idle"
+            current_turn = session_state.current_turn
+            status = current_turn.status if current_turn else "idle"
             return self._result_from_agent(
                 runtime.agent,
                 f"Resumed session {session_state.session_id} ({status}).",
@@ -771,7 +771,7 @@ class RemoteManager:
         with self._state_lock:
             runtime = self._chats.get(chat_id)
         if runtime is None:
-            raise ValueError("No chat session yet. Send a task first or resume a session.")
+            raise ValueError("No chat session yet. Send a prompt first or resume a session.")
         return runtime
 
     def _build_agent(self) -> Agent:
@@ -835,8 +835,8 @@ class RemoteManager:
                 context_used_tokens=context["used_tokens"],
                 context_window_tokens=context["window_tokens"],
             )
-        task = agent.task_state
-        if task is None:
+        turn = agent.turn_state
+        if turn is None:
             return RemoteTurnResult(
                 text=text,
                 session_id=agent.session_state.session_id,
@@ -851,7 +851,7 @@ class RemoteManager:
         pending_approval_label = ""
         approval_batch_id = ""
         pending_approvals: list[dict] = []
-        batch = task.pending_tool_batch
+        batch = turn.pending_tool_batch
         if batch:
             approval_batch_id = batch.batch_id
             pending_approvals = [
@@ -875,8 +875,8 @@ class RemoteManager:
         return RemoteTurnResult(
             text=text,
             session_id=agent.session_state.session_id,
-            task_id=task.task_id,
-            status=task.status,
+            turn_id=turn.turn_id,
+            status=turn.status,
             pending_tool=pending_tool,
             pending_reason=pending_reason,
             pending_arguments=pending_arguments,

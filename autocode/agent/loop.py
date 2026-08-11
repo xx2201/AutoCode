@@ -19,14 +19,14 @@ from ..state import (
     PolicyDecision,
     SessionState,
     SessionStore,
-    TaskState,
+    TurnState,
     TranscriptLogger,
     TraceRecorder,
     TurnController,
     new_message_id,
     new_revision_id,
     new_session_id,
-    new_task_id,
+    new_turn_id,
     save_checkpoint,
     save_turn_queue,
 )
@@ -48,7 +48,7 @@ class Agent:
         "If this tool is still needed, call it again."
     )
     _ROUND_LIMIT_SUMMARY_PROMPT = (
-        "You have reached the maximum tool-call rounds for this task. "
+        "You have reached the maximum tool-call rounds for this turn. "
         "Do not call any tools. Reply in Chinese. "
         "Give a concise wrap-up with these headings exactly: 已完成, 当前卡点, 建议下一步. "
         "In 建议下一步, tell the user they can reply “继续” if they want another pass."
@@ -114,8 +114,8 @@ class Agent:
             "before_tool",
             "after_tool",
             "approval_resolved",
-            "task_status",
-            "task_error",
+            "turn_status",
+            "turn_error",
             "todo_updated",
             "model_step_started",
             "model_step_committed",
@@ -124,8 +124,8 @@ class Agent:
         ):
             self.hooks.on(event, self.audit.handle)
             self.hooks.on(event, self.trace.handle)
-        self.hooks.on("task_status", self._handle_lifecycle_event)
-        self.hooks.on("task_error", self._handle_lifecycle_event)
+        self.hooks.on("turn_status", self._handle_lifecycle_event)
+        self.hooks.on("turn_error", self._handle_lifecycle_event)
         self.policy = Policy(
             workspace_root=self.workspace_root,
             permission_mode=permission_mode,
@@ -141,10 +141,10 @@ class Agent:
         self.session_state: SessionState | None = None
 
     @property
-    def task_state(self) -> TaskState | None:
+    def turn_state(self) -> TurnState | None:
         if self.session_state is None:
             return None
-        return self.session_state.current_task
+        return self.session_state.current_turn
 
     def context_usage(self) -> dict:
         """Return the current conversation-window occupancy, not cumulative billing tokens."""
@@ -315,11 +315,10 @@ class Agent:
         payload = {}
         if self.session_state is not None:
             payload["session_id"] = self.session_state.session_id
-        if self.task_state is not None:
-            payload["task_id"] = self.task_state.task_id
-            payload["turn_id"] = self.task_state.task_id
-            payload["revision_id"] = self.task_state.revision_id
-            payload["task_title"] = self.task_state.title
+        if self.turn_state is not None:
+            payload["turn_id"] = self.turn_state.turn_id
+            payload["revision_id"] = self.turn_state.revision_id
+            payload["turn_title"] = self.turn_state.title
         payload.update(extra)
         return payload
 
@@ -332,20 +331,20 @@ class Agent:
         )
 
     def _build_runtime_tail(self) -> str:
-        todo_block = render_todos(self.task_state.todos) if self.task_state else ""
-        task_block = self.sessions.render_task(self.task_state) if self.task_state else ""
+        todo_block = render_todos(self.turn_state.todos) if self.turn_state else ""
+        turn_block = self.sessions.render_turn(self.turn_state) if self.turn_state else ""
         recovery_block = ""
-        if self.task_state and self.task_state.recent_failures:
-            recovery_block = "\n".join(f"- {item}" for item in self.task_state.recent_failures[-3:])
+        if self.turn_state and self.turn_state.recent_failures:
+            recovery_block = "\n".join(f"- {item}" for item in self.turn_state.recent_failures[-3:])
         return runtime_state_block(
             todo_block=todo_block,
-            task_block=task_block,
+            turn_block=turn_block,
             recovery_block=recovery_block,
         )
 
     def _create_prompt_snapshot(self, query: str = "") -> PromptSnapshot:
-        if self.task_state is None:
-            raise RuntimeError("Cannot create PromptSnapshot without an active task.")
+        if self.turn_state is None:
+            raise RuntimeError("Cannot create PromptSnapshot without an active turn.")
         self._sync_mcp_tools()
         memory_block = self.memory.build_project_memory_block(query=query)
         system_prompt = self._build_static_system_prompt()
@@ -357,7 +356,7 @@ class Agent:
                 "with a fact, trust current evidence and do not repeat the stale fact."
             )
         snapshot = PromptSnapshot.create(
-            turn_id=self.task_state.task_id,
+            turn_id=self.turn_state.turn_id,
             system_prompt=system_prompt,
             tool_schemas=[tool.schema() for tool in self.tools],
             tool_names=[tool.name for tool in self.tools],
@@ -369,24 +368,24 @@ class Agent:
             if name in self.tool_registry
         }
         self.runtime.tool_registry = self._prompt_tool_registry
-        self.task_state.prompt_snapshot = snapshot.to_dict()
+        self.turn_state.prompt_snapshot = snapshot.to_dict()
         return snapshot
 
     def _ensure_prompt_snapshot(self, query: str = "") -> PromptSnapshot:
-        task = self.task_state
-        if task is None:
-            self._ensure_task(query)
-            task = self.task_state
-        if task is None:
-            raise RuntimeError("Cannot load PromptSnapshot without an active task.")
+        turn = self.turn_state
+        if turn is None:
+            self._ensure_turn(query)
+            turn = self.turn_state
+        if turn is None:
+            raise RuntimeError("Cannot load PromptSnapshot without an active turn.")
         if (
             self._prompt_snapshot is not None
-            and self._prompt_snapshot.turn_id == task.task_id
+            and self._prompt_snapshot.turn_id == turn.turn_id
         ):
             return self._prompt_snapshot
-        if task.prompt_snapshot:
-            snapshot = PromptSnapshot.from_dict(task.prompt_snapshot)
-            if snapshot.turn_id != task.task_id:
+        if turn.prompt_snapshot:
+            snapshot = PromptSnapshot.from_dict(turn.prompt_snapshot)
+            if snapshot.turn_id != turn.turn_id:
                 raise ValueError("Persisted PromptSnapshot belongs to another turn.")
             self._sync_mcp_tools()
             self._prompt_snapshot = snapshot
@@ -400,22 +399,22 @@ class Agent:
         return self._create_prompt_snapshot(query=query)
 
     def _handle_lifecycle_event(self, event: str, payload: dict):
-        task_id = payload.get("task_id", "")
+        turn_id = payload.get("turn_id", "")
         try:
-            if event == "task_status" and payload.get("status") == "completed":
-                self.processes.cleanup_task_processes(task_id)
-            elif event == "task_error":
-                self.processes.cleanup_task_processes(task_id)
+            if event == "turn_status" and payload.get("status") == "completed":
+                self.processes.cleanup_turn_processes(turn_id)
+            elif event == "turn_error":
+                self.processes.cleanup_turn_processes(turn_id)
         except Exception:
             return
 
-    def _ensure_task(self, title: str | None = None):
+    def _ensure_turn(self, title: str | None = None):
         session = self._ensure_session()
-        if session.current_task is None or session.current_task.status in {"completed", "failed"}:
+        if session.current_turn is None or session.current_turn.status in {"completed", "failed"}:
             title_lines = (title or "").splitlines()
-            session.set_current_task(
-                TaskState(
-                    task_id=new_task_id(),
+            session.set_current_turn(
+                TurnState(
+                    turn_id=new_turn_id(),
                     revision_id=new_revision_id(),
                     title=(title_lines[0] if title_lines else "")[:120],
                     status="running",
@@ -424,7 +423,7 @@ class Agent:
             self._prompt_snapshot = None
             self._prompt_tool_registry = {}
             return
-        session.current_task.touch("running")
+        session.current_turn.touch("running")
         session.touch()
 
     def set_permission_mode(self, permission_mode: str) -> None:
@@ -442,15 +441,15 @@ class Agent:
         save_checkpoint(self.session_state, self.messages, self.llm.model, workspace_root=self.workspace_root)
         self.sessions.sync(self.session_state, self.llm.model)
 
-    def persist_task(self):
+    def persist_turn(self):
         self.persist_session()
 
     def _append_message(self, message: dict):
         stored = dict(message)
         stored.setdefault("message_id", new_message_id())
-        if self.task_state is not None:
-            stored.setdefault("turn_id", self.task_state.task_id)
-            stored.setdefault("revision_id", self.task_state.revision_id)
+        if self.turn_state is not None:
+            stored.setdefault("turn_id", self.turn_state.turn_id)
+            stored.setdefault("revision_id", self.turn_state.revision_id)
         stored.setdefault("message_kind", stored.get("role", "message"))
         self.messages.append(stored)
         if self.session_state is not None:
@@ -476,12 +475,12 @@ class Agent:
     def _maybe_compress_messages(self):
         effective_used = self._estimated_context_tokens()
         if (
-            self.task_state is not None
+            self.turn_state is not None
             and hasattr(self.llm, "_call_with_retry")
             and effective_used > int(self.context.input_budget_tokens * 0.50)
         ):
             self.memory.schedule_project_memory_refresh(
-                self._turn_messages(self.task_state.task_id),
+                self._turn_messages(self.turn_state.turn_id),
                 self.llm,
             )
         result = self.context.maybe_compress(
@@ -539,16 +538,16 @@ class Agent:
             workspace_root=str(self.fs.workspace_root),
             llm_backend=type(self.llm).__name__,
             permission_mode=self.policy.permission_mode,
-            task_status=self.task_state.status if self.task_state else None,
-            step_index=self.task_state.step_index if self.task_state else None,
+            turn_status=self.turn_state.status if self.turn_state else None,
+            step_index=self.turn_state.step_index if self.turn_state else None,
         )
-        task = self.task_state
+        turn = self.turn_state
         trace_context = None
         # 审批来自后续请求；复用已持久化的根观测，避免同一 turn 被拆成多条 trace。
-        if continue_turn and task is not None and task.langfuse_trace_id:
-            trace_context = {"trace_id": task.langfuse_trace_id}
-            if task.langfuse_root_observation_id:
-                trace_context["parent_span_id"] = task.langfuse_root_observation_id
+        if continue_turn and turn is not None and turn.langfuse_trace_id:
+            trace_context = {"trace_id": turn.langfuse_trace_id}
+            if turn.langfuse_root_observation_id:
+                trace_context["parent_span_id"] = turn.langfuse_root_observation_id
 
         with tracer.start_agent_turn(
             name=name,
@@ -559,20 +558,20 @@ class Agent:
             tags=tags,
             trace_context=trace_context,
         ) as observation:
-            if task is not None and not task.langfuse_trace_id:
-                task.langfuse_trace_id = str(getattr(observation, "trace_id", "") or "")
-                task.langfuse_root_observation_id = str(getattr(observation, "id", "") or "")
+            if turn is not None and not turn.langfuse_trace_id:
+                turn.langfuse_trace_id = str(getattr(observation, "trace_id", "") or "")
+                turn.langfuse_root_observation_id = str(getattr(observation, "id", "") or "")
             yield observation
 
     def _finalize_turn_trace(self, observation, response_text: str):
         if observation is None:
             return
-        batch = self.task_state.pending_tool_batch if self.task_state else None
+        batch = self.turn_state.pending_tool_batch if self.turn_state else None
         pending = batch.unresolved()[0] if batch and batch.unresolved() else None
         observation.update(
             output={
                 "text": response_text,
-                "status": self.task_state.status if self.task_state else None,
+                "status": self.turn_state.status if self.turn_state else None,
                 "pending_tool": pending.tool_name if pending else None,
                 "pending_reason": pending.reason if pending else None,
             },
@@ -580,8 +579,8 @@ class Agent:
                 workspace_root=str(self.fs.workspace_root),
                 llm_backend=type(self.llm).__name__,
                 permission_mode=self.policy.permission_mode,
-                task_status=self.task_state.status if self.task_state else None,
-                step_index=self.task_state.step_index if self.task_state else None,
+                turn_status=self.turn_state.status if self.turn_state else None,
+                step_index=self.turn_state.step_index if self.turn_state else None,
             ),
         )
 
@@ -594,7 +593,7 @@ class Agent:
                 workspace_root=str(self.fs.workspace_root),
                 llm_backend=type(self.llm).__name__,
                 error_type=type(exc).__name__,
-                task_status=self.task_state.status if self.task_state else None,
+                turn_status=self.turn_state.status if self.turn_state else None,
             ),
             level="ERROR",
             status_message=str(exc),
@@ -610,7 +609,7 @@ class Agent:
         metadata = self._event_payload(
             step_index=step_index,
             phase=phase,
-            task_status=self.task_state.status if self.task_state else None,
+            turn_status=self.turn_state.status if self.turn_state else None,
         )
         with tracer.start_agent_step(
             name=f"agent.step.{step_index}",
@@ -636,8 +635,8 @@ class Agent:
         observation.update(
             output={"status": status, **output},
             metadata=self._event_payload(
-                step_index=self.task_state.step_index if self.task_state else None,
-                task_status=self.task_state.status if self.task_state else None,
+                step_index=self.turn_state.step_index if self.turn_state else None,
+                turn_status=self.turn_state.status if self.turn_state else None,
             ),
         )
 
@@ -647,8 +646,8 @@ class Agent:
         observation.update(
             output={"status": "failed", "error": str(exc)},
             metadata=self._event_payload(
-                step_index=self.task_state.step_index if self.task_state else None,
-                task_status=self.task_state.status if self.task_state else None,
+                step_index=self.turn_state.step_index if self.turn_state else None,
+                turn_status=self.turn_state.status if self.turn_state else None,
                 error_type=type(exc).__name__,
             ),
             level="ERROR",
@@ -665,11 +664,11 @@ class Agent:
         attachments: list[dict] | None = None,
         raw_user_prompt: str | None = None,
     ) -> str:
-        if self.task_state and self.task_state.pending_tool_batch:
-            pending_items = self.task_state.pending_tool_batch.unresolved()
+        if self.turn_state and self.turn_state.pending_tool_batch:
+            pending_items = self.turn_state.pending_tool_batch.unresolved()
             pending = pending_items[0] if pending_items else None
             return (
-                f"(task {self.task_state.task_id} is waiting for approval: "
+                f"(turn {self.turn_state.turn_id} is waiting for approval: "
                 f"{pending.tool_name if pending else 'tool batch'} - "
                 "resolve the pending approvals first)"
             )
@@ -678,7 +677,7 @@ class Agent:
         session = self._ensure_session()
         if not session.title:
             session.title = (user_input.strip().splitlines() or ["上传文件会话"])[0][:120]
-        self._ensure_task(original_prompt)
+        self._ensure_turn(original_prompt)
         try:
             explicit_skill = self.skills.explicit_invocation(user_input)
         except SkillError as exc:
@@ -692,7 +691,7 @@ class Agent:
             )
         message_content = effective_input
         trace_content = user_content(effective_input, image_parts)
-        turn_id = self.task_state.task_id
+        turn_id = self.turn_state.turn_id
         self.turn_controller.start_turn(turn_id)
         self.hooks.emit("turn_started", self._event_payload(status="running"))
         with self._turn_trace(
@@ -719,13 +718,13 @@ class Agent:
                 response = self._continue_loop(on_token=on_token, on_tool=on_tool, approval_handler=approval_handler)
             except Exception as exc:
                 self.turn_controller.finish_turn(turn_id)
-                if self.task_state is not None:
-                    self.task_state.mark_failed(str(exc))
+                if self.turn_state is not None:
+                    self.turn_state.mark_failed(str(exc))
                     self.hooks.emit(
-                        "task_error",
+                        "turn_error",
                         self._event_payload(
-                            status=self.task_state.status,
-                            error=self.task_state.last_error,
+                            status=self.turn_state.status,
+                            error=self.turn_state.last_error,
                         ),
                     )
                     self.persist_session()
@@ -750,10 +749,10 @@ class Agent:
         original_prompt = raw_user_prompt if raw_user_prompt is not None else normalized_prompt
         if not normalized_prompt:
             raise ValueError("Edited prompt is required.")
-        task = self.task_state
-        if task is None or task.status not in {"completed", "failed"}:
+        turn = self.turn_state
+        if turn is None or turn.status not in {"completed", "failed"}:
             raise ValueError("Only the last finished turn can be edited.")
-        if task.task_id != turn_id:
+        if turn.turn_id != turn_id:
             raise ValueError(f"Turn '{turn_id}' is not the last finished turn.")
 
         prompt_index = next(
@@ -770,9 +769,9 @@ class Agent:
             raise ValueError(f"Prompt for turn '{turn_id}' was not found.")
 
         old_message = self.messages[prompt_index]
-        old_revision_id = task.revision_id
-        new_task = TaskState(
-            task_id=new_task_id(),
+        old_revision_id = turn.revision_id
+        new_turn = TurnState(
+            turn_id=new_turn_id(),
             revision_id=new_revision_id(),
             parent_revision_id=old_revision_id,
             supersedes_turn_id=turn_id,
@@ -780,7 +779,7 @@ class Agent:
             status="running",
         )
         self.messages = self.messages[:prompt_index]
-        self.session_state.set_current_task(new_task)
+        self.session_state.set_current_turn(new_turn)
         self._prompt_snapshot = None
         self._prompt_tool_registry = {}
         self.transcript.append_turn_superseded(
@@ -789,8 +788,8 @@ class Agent:
                 "superseded_turn_id": turn_id,
                 "superseded_message_id": old_message.get("message_id", ""),
                 "superseded_revision_id": old_revision_id,
-                "replacement_turn_id": new_task.task_id,
-                "replacement_revision_id": new_task.revision_id,
+                "replacement_turn_id": new_turn.turn_id,
+                "replacement_revision_id": new_turn.revision_id,
             },
         )
         self.persist_session()
@@ -812,7 +811,7 @@ class Agent:
         approval_handler=None,
         grant_scope: bool = False,
     ) -> str:
-        batch = self.task_state.pending_tool_batch if self.task_state else None
+        batch = self.turn_state.pending_tool_batch if self.turn_state else None
         if batch is None or not batch.unresolved():
             return "No pending approval."
         pending = batch.unresolved()[0]
@@ -841,11 +840,11 @@ class Agent:
         expected_turn_id: str,
         expected_batch_id: str,
     ) -> dict:
-        task = self.task_state
-        batch = task.pending_tool_batch if task else None
-        if task is None or batch is None:
+        turn = self.turn_state
+        batch = turn.pending_tool_batch if turn else None
+        if turn is None or batch is None:
             raise ValueError("No pending approval batch.")
-        if task.task_id != expected_turn_id or batch.turn_id != expected_turn_id:
+        if turn.turn_id != expected_turn_id or batch.turn_id != expected_turn_id:
             raise ValueError("The active turn changed before this approval was applied.")
         if batch.batch_id != expected_batch_id:
             raise ValueError("The approval batch is stale.")
@@ -866,7 +865,7 @@ class Agent:
 
         targets = [pending]
         if action == "approve_scope" and pending.approval_scope:
-            task.grant_approval_scope(pending.approval_scope)
+            turn.grant_approval_scope(pending.approval_scope)
             targets = [
                 item
                 for item in batch.approvals
@@ -887,7 +886,7 @@ class Agent:
             )
         if batch.is_ready():
             batch.state = "ready"
-        task.touch("waiting_approval")
+        turn.touch("waiting_approval")
         self.persist_session()
         return self._approval_batch_snapshot(batch)
 
@@ -900,17 +899,17 @@ class Agent:
         on_token=None,
         approval_handler=None,
     ) -> str:
-        task = self.task_state
-        batch = task.pending_tool_batch if task else None
-        if task is None or batch is None:
+        turn = self.turn_state
+        batch = turn.pending_tool_batch if turn else None
+        if turn is None or batch is None:
             raise ValueError("No pending approval batch.")
-        if task.task_id != expected_turn_id or batch.turn_id != expected_turn_id:
+        if turn.turn_id != expected_turn_id or batch.turn_id != expected_turn_id:
             raise ValueError("The active turn changed before continuation.")
         if batch.batch_id != expected_batch_id:
             raise ValueError("The approval batch is stale.")
         if not batch.is_ready():
             raise ValueError("All approvals must be resolved before continuing.")
-        self._ensure_prompt_snapshot(task.title)
+        self._ensure_prompt_snapshot(turn.title)
 
         with self._turn_trace(
             name="agent.continue_pending_batch",
@@ -924,11 +923,11 @@ class Agent:
         ) as observation:
             try:
                 batch.state = "running"
-                task.touch("running")
+                turn.touch("running")
                 self.persist_session()
-                snapshot = self._ensure_prompt_snapshot(task.title)
+                snapshot = self._ensure_prompt_snapshot(turn.title)
                 with self._agent_step_trace(
-                    max(1, task.step_index),
+                    max(1, turn.step_index),
                     snapshot,
                     phase="approval_resume",
                 ) as (step_observation, trace_context):
@@ -967,8 +966,8 @@ class Agent:
             for message in messages
             if not is_internal_visual_context(message.get("content"))
         ]
-        if session_state.current_task and not session_state.current_task.revision_id:
-            session_state.current_task.revision_id = new_revision_id()
+        if session_state.current_turn and not session_state.current_turn.revision_id:
+            session_state.current_turn.revision_id = new_revision_id()
         prompt_indices = []
         for index, message in enumerate(messages):
             if message.get("role") != "user":
@@ -995,12 +994,12 @@ class Agent:
             if stored.get("role") == "user" and stored.get("message_kind") == "user":
                 stored["message_kind"] = "prompt"
             if stored.get("role") == "user" and stored.get("message_kind") == "prompt":
-                use_current_task = index == last_prompt_index and session_state.current_task is not None
+                use_current_turn = index == last_prompt_index and session_state.current_turn is not None
                 current_turn_id = str(stored.get("turn_id") or (
-                    session_state.current_task.task_id if use_current_task else new_task_id()
+                    session_state.current_turn.turn_id if use_current_turn else new_turn_id()
                 ))
                 current_revision_id = str(stored.get("revision_id") or (
-                    session_state.current_task.revision_id if use_current_task else new_revision_id()
+                    session_state.current_turn.revision_id if use_current_turn else new_revision_id()
                 ))
             stored["turn_id"] = str(stored.get("turn_id") or current_turn_id)
             stored["revision_id"] = str(stored.get("revision_id") or current_revision_id)
@@ -1009,15 +1008,15 @@ class Agent:
         self._last_prompt_message_count = max(0, session_state.context_anchor_messages)
         self._last_prompt_digest = session_state.context_anchor_digest
         self.turn_controller.restore_queued(session_state.queued_inputs)
-        task = session_state.current_task
-        if task is not None and task.status in {"running", "waiting_approval"}:
-            self.turn_controller.start_turn(task.task_id)
+        turn = session_state.current_turn
+        if turn is not None and turn.status in {"running", "waiting_approval"}:
+            self.turn_controller.start_turn(turn.turn_id)
         if model:
             self.llm.model = model
         self._prompt_snapshot = None
         self._prompt_tool_registry = {}
-        if task is not None and task.prompt_snapshot:
-            self._ensure_prompt_snapshot(task.title)
+        if turn is not None and turn.prompt_snapshot:
+            self._ensure_prompt_snapshot(turn.title)
 
     def _sample_model_step(
         self,
@@ -1034,7 +1033,7 @@ class Agent:
             executor = (
                 StreamingToolExecutor(
                     runtime=self.runtime,
-                    task_state=self.task_state,
+                    turn_state=self.turn_state,
                     session_id=self.session_state.session_id,
                     on_tool=on_tool,
                     trace_context=tool_trace_context,
@@ -1070,7 +1069,7 @@ class Agent:
                     llm=self.llm,
                     messages=self._request_messages(snapshot),
                     tools=self._tool_schemas(snapshot),
-                    task_state=self.task_state,
+                    turn_state=self.turn_state,
                     session_id=self.session_state.session_id,
                     on_token=provisional_token,
                     on_tool_call=streamed_tool_call,
@@ -1125,9 +1124,9 @@ class Agent:
         raise RuntimeError("Model step exhausted all transaction attempts.")
 
     def _continue_loop(self, on_token=None, on_tool=None, approval_handler=None) -> str:
-        if self.task_state is None:
-            self._ensure_task()
-        snapshot = self._ensure_prompt_snapshot(self.task_state.title)
+        if self.turn_state is None:
+            self._ensure_turn()
+        snapshot = self._ensure_prompt_snapshot(self.turn_state.title)
 
         for _ in range(self.max_rounds):
             action, response = self._run_agent_step(
@@ -1140,7 +1139,7 @@ class Agent:
                 continue
             return response
 
-        step_index = self.task_state.step_index + 1
+        step_index = self.turn_state.step_index + 1
         with self._agent_step_trace(step_index, snapshot, phase="round_limit_summary") as (
             observation,
             _,
@@ -1156,18 +1155,18 @@ class Agent:
                 tool_calls=0,
             )
         self._append_message({"role": "assistant", "content": summary})
-        self.task_state.mark_failed("reached maximum tool-call rounds")
+        self.turn_state.mark_failed("reached maximum tool-call rounds")
         self.hooks.emit(
-            "task_error",
-            self._event_payload(status=self.task_state.status, error=self.task_state.last_error),
+            "turn_error",
+            self._event_payload(status=self.turn_state.status, error=self.turn_state.last_error),
         )
         self.persist_session()
-        self.turn_controller.finish_turn(self.task_state.task_id)
+        self.turn_controller.finish_turn(self.turn_state.turn_id)
         return summary
 
     def _run_agent_step(self, *, snapshot, on_token=None, on_tool=None, approval_handler=None):
         self._append_pending_steer()
-        step_index = self.task_state.step_index + 1
+        step_index = self.turn_state.step_index + 1
         with self._agent_step_trace(step_index, snapshot) as (observation, trace_context):
             try:
                 resp, streaming_executor, transaction = self._sample_model_step(
@@ -1190,7 +1189,7 @@ class Agent:
                     self.hooks.emit(
                         "assistant_step",
                         self._event_payload(
-                            step_index=self.task_state.step_index,
+                            step_index=self.turn_state.step_index,
                             content=resp.content,
                             tool_calls=[
                                 {
@@ -1208,7 +1207,7 @@ class Agent:
                         streaming_executor.commit([])
                     self._append_message(resp.message)
                     steer_items, finished = self.turn_controller.drain_steer_or_finish(
-                        self.task_state.task_id
+                        self.turn_state.turn_id
                     )
                     if steer_items:
                         self._append_steer_items(steer_items)
@@ -1224,12 +1223,12 @@ class Agent:
                         raise RuntimeError("Turn controller did not finish an idle turn.")
                     if hasattr(self.llm, "_call_with_retry"):
                         self.memory.schedule_project_memory_refresh(
-                            self._turn_messages(self.task_state.task_id),
+                            self._turn_messages(self.turn_state.turn_id),
                             self.llm,
                             force=True,
                         )
-                    self.task_state.mark_completed()
-                    self.hooks.emit("task_status", self._event_payload(status=self.task_state.status))
+                    self.turn_state.mark_completed()
+                    self.hooks.emit("turn_status", self._event_payload(status=self.turn_state.status))
                     self.persist_session()
                     self._finalize_step_trace(
                         observation,
@@ -1268,9 +1267,9 @@ class Agent:
                 raise
 
     def _append_pending_steer(self) -> bool:
-        if self.task_state is None:
+        if self.turn_state is None:
             return False
-        items = self.turn_controller.drain_steer(self.task_state.task_id)
+        items = self.turn_controller.drain_steer(self.turn_state.turn_id)
         self._append_steer_items(items)
         return bool(items)
 
@@ -1311,7 +1310,7 @@ class Agent:
             decisions.append(
                 streamed_decision
                 or self.runtime.evaluate_tool_call(
-                    self.task_state,
+                    self.turn_state,
                     tool_call,
                     self.session_state.session_id,
                 )
@@ -1342,7 +1341,7 @@ class Agent:
         ]
         batch = PendingToolBatch(
             batch_id=uuid.uuid4().hex,
-            turn_id=self.task_state.task_id,
+            turn_id=self.turn_state.turn_id,
             tool_calls=[self._serialize_tool_call(item) for item in tool_calls],
             policy_decisions=[
                 decision.to_dict() if decision is not None else None
@@ -1353,7 +1352,7 @@ class Agent:
         )
 
         if approvals:
-            self.task_state.mark_waiting(batch)
+            self.turn_state.mark_waiting(batch)
             self.persist_session()
             if approval_handler is None:
                 if streaming_executor is not None:
@@ -1418,14 +1417,14 @@ class Agent:
         for index, (tool_call, decision) in enumerate(zip(tool_calls, decisions)):
             if tool_call.parse_error:
                 results_by_call[tool_call.id] = self.runtime.invalid_tool_call_result(
-                    self.task_state,
+                    self.turn_state,
                     tool_call,
                     self.session_state.session_id,
                 )
                 continue
             if decision is None:
                 decision = self.runtime.evaluate_tool_call(
-                    self.task_state,
+                    self.turn_state,
                     tool_call,
                     self.session_state.session_id,
                 )
@@ -1438,7 +1437,7 @@ class Agent:
                 if approval is None:
                     legacy_batch = PendingToolBatch(
                         batch_id=uuid.uuid4().hex,
-                        turn_id=self.task_state.task_id,
+                        turn_id=self.turn_state.turn_id,
                         tool_calls=[
                             self._serialize_tool_call(item)
                             for item in tool_calls[index:]
@@ -1460,7 +1459,7 @@ class Agent:
                             )
                         ],
                     )
-                    self.task_state.mark_waiting(legacy_batch)
+                    self.turn_state.mark_waiting(legacy_batch)
                     self.persist_session()
                     return f"(waiting for approval: {tool_call.name})"
                 if approval.decision == "pending":
@@ -1479,7 +1478,7 @@ class Agent:
         if executable_calls:
             try:
                 executed = self.runtime.execute_tool_calls_parallel(
-                    self.task_state,
+                    self.turn_state,
                     executable_calls,
                     self.session_state.session_id,
                     on_tool=on_tool,
@@ -1499,10 +1498,10 @@ class Agent:
         for tool_call in tool_calls:
             result = results_by_call[tool_call.id]
             result_text = result.text if isinstance(result, ToolResult) else result
-            self.task_state.note_tool_result(tool_call.name, result_text)
+            self.turn_state.note_tool_result(tool_call.name, result_text)
             self._append_tool_result(tool_call, result)
 
-        self.task_state.clear_pending()
+        self.turn_state.clear_pending()
         self._maybe_compress_messages()
         self.persist_session()
         return None
@@ -1526,7 +1525,7 @@ class Agent:
     ) -> str | ToolResult:
         try:
             return self.runtime.execute_tool_call(
-                self.task_state,
+                self.turn_state,
                 tool_call,
                 self.session_state.session_id,
                 on_tool=on_tool,
@@ -1536,15 +1535,15 @@ class Agent:
             return self._interrupted_tool_result(tool_call)
 
     def _interrupted_tool_result(self, tool_call: ToolCall) -> str:
-        if self.task_state is not None:
-            self.task_state.note_failure(f"{tool_call.name} interrupted by user")
+        if self.turn_state is not None:
+            self.turn_state.note_failure(f"{tool_call.name} interrupted by user")
         return self._INTERRUPTED_TOOL_RESULT
 
     def _is_scope_approved(self, decision: PolicyDecision) -> bool:
         return bool(
-            self.task_state
+            self.turn_state
             and decision.action == "confirm"
-            and self.task_state.has_approval_scope(decision.approval_scope)
+            and self.turn_state.has_approval_scope(decision.approval_scope)
         )
 
     def _summarize_round_limit(self, on_token=None) -> str:
@@ -1555,7 +1554,7 @@ class Agent:
                 llm=self.llm,
                 messages=messages,
                 tools=[],
-                task_state=self.task_state,
+                turn_state=self.turn_state,
                 session_id=self.session_state.session_id,
                 on_token=on_token,
             )

@@ -7,7 +7,7 @@ from autocode.llm import LLMResponse, ToolCall
 from autocode.remote.formatting import render_turn_result, split_message
 from autocode.remote.manager import RemoteManager
 from autocode.runtime import Policy
-from autocode.state import SessionState, TaskState
+from autocode.state import SessionState, TurnState
 from autocode.state import PolicyDecision
 from autocode.tools.base import Tool
 from autocode.state.transcript import TranscriptLogger
@@ -149,7 +149,7 @@ def test_remote_manager_refuses_checkpoint_from_other_workspace(tmp_path, monkey
     checkpoint_module.save_checkpoint(
         SessionState(
             session_id="session_other",
-            current_task=TaskState(task_id="task_other", status="completed"),
+            current_turn=TurnState(turn_id="turn_other", status="completed"),
         ),
         [],
         "fake-model",
@@ -179,7 +179,7 @@ def test_remote_manager_exposes_bounded_conversation_snapshot(tmp_path):
     assert [message["role"] for message in messages] == ["user", "assistant"]
     assert messages[0]["content"] == "hello"
     assert messages[1]["content"] == "finished"
-    assert messages[0]["turn_id"].startswith("task_")
+    assert messages[0]["turn_id"].startswith("turn_")
     assert messages[0]["turn_elapsed_ms"] >= 0
 
 
@@ -331,13 +331,13 @@ def test_remote_manager_exposes_tool_metadata_for_collapsible_work(tmp_path):
 def test_remote_manager_lists_resume_candidates_for_current_workspace(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path / "sessions")
     checkpoint_module.save_checkpoint(
-        SessionState(session_id="session_a", current_task=TaskState(task_id="task_a", title="current", status="completed")),
+        SessionState(session_id="session_a", current_turn=TurnState(turn_id="turn_a", title="current", status="completed")),
         [],
         "m1",
         workspace_root=str(tmp_path),
     )
     checkpoint_module.save_checkpoint(
-        SessionState(session_id="session_b", current_task=TaskState(task_id="task_b", title="other", status="completed")),
+        SessionState(session_id="session_b", current_turn=TurnState(turn_id="turn_b", title="other", status="completed")),
         [],
         "m2",
         workspace_root="G:/other",
@@ -348,7 +348,7 @@ def test_remote_manager_lists_resume_candidates_for_current_workspace(tmp_path, 
 
     assert len(items) == 1
     assert items[0]["session_id"] == "session_a"
-    assert items[0]["task_id"] == "task_a"
+    assert items[0]["turn_id"] == "turn_a"
 
 
 def test_remote_manager_reset_drops_chat_runtime(tmp_path):
@@ -363,7 +363,7 @@ def test_remote_manager_reset_drops_chat_runtime(tmp_path):
     manager.reset_chat(303)
     assert closed == [True]
     try:
-        manager.current_task_summary(303)
+        manager.current_turn_summary(303)
     except ValueError as exc:
         assert "No chat session yet" in str(exc)
     else:
@@ -400,7 +400,7 @@ def test_render_turn_result_includes_approval_hint():
         type("Result", (), {
             "text": "waiting",
             "session_id": "session_123",
-            "task_id": "task_123",
+            "turn_id": "turn_123",
             "status": "waiting_approval",
             "pending_tool": "shell_command",
             "pending_reason": "confirmation required",
@@ -414,7 +414,7 @@ def test_render_turn_result_includes_approval_hint():
     assert "/approve" in text
     assert "/approve_scope" in text
     assert "session_123" in text
-    assert "task_123" in text
+    assert "turn_123" in text
     assert "python app.py" in text
 
 
@@ -424,7 +424,7 @@ def test_split_message_respects_limit():
     assert all(len(chunk) <= 1000 for chunk in chunks)
 
 
-def test_remote_manager_scope_approval_marks_task_grant(tmp_path):
+def test_remote_manager_scope_approval_marks_turn_grant(tmp_path):
     llm = _FakeLLM([
         LLMResponse(content="", tool_calls=[ToolCall(id="1", name="agent", arguments={"task": "inspect"})]),
         LLMResponse(content="done"),
@@ -434,7 +434,7 @@ def test_remote_manager_scope_approval_marks_task_grant(tmp_path):
 
     result = manager.resolve_next_approval(404, approved=True, grant_scope=True)
     assert result.permission_mode == "ask"
-    summary = manager.current_task_summary(404)
+    summary = manager.current_turn_summary(404)
     assert "Permission mode: ask" in summary
 
 
@@ -469,7 +469,7 @@ def test_replacing_busy_runtime_fails_fast_instead_of_blocking(tmp_path):
         manager.close()
 
 
-def test_current_task_summary_does_not_wait_for_busy_runtime(tmp_path):
+def test_current_turn_summary_does_not_wait_for_busy_runtime(tmp_path):
     manager = RemoteManager(
         _config(tmp_path),
         llm_factory=lambda: _FakeLLM([]),
@@ -488,8 +488,8 @@ def test_current_task_summary_does_not_wait_for_busy_runtime(tmp_path):
     holder.start()
     assert locked.wait(timeout=2)
     try:
-        summary = manager.current_task_summary(506)
-        assert summary == "Current task is still running; detailed status is temporarily unavailable."
+        summary = manager.current_turn_summary(506)
+        assert summary == "Current turn is still running; detailed status is temporarily unavailable."
     finally:
         release.set()
         holder.join(timeout=2)
@@ -530,7 +530,7 @@ def test_remote_manager_reuses_same_session_id_within_same_chat(tmp_path, monkey
     assert first.status == "completed"
     assert second.status == "completed"
     assert second.session_id == first.session_id
-    assert second.task_id != first.task_id
+    assert second.turn_id != first.turn_id
 
 
 def test_remote_manager_edit_last_turn_preserves_session_and_exposes_revision_metadata(tmp_path, monkeypatch):
@@ -539,14 +539,14 @@ def test_remote_manager_edit_last_turn_preserves_session_and_exposes_revision_me
     manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
     first = manager.submit(707, "original")
 
-    revised = manager.edit_last_turn(707, first.task_id, "edited")
+    revised = manager.edit_last_turn(707, first.turn_id, "edited")
     messages = manager.conversation_messages(707)
 
     assert revised.session_id == first.session_id
-    assert revised.task_id != first.task_id
+    assert revised.turn_id != first.turn_id
     assert [message["content"] for message in messages] == ["edited", "revised"]
     assert all(message["message_id"] for message in messages)
-    assert all(message["turn_id"] == revised.task_id for message in messages)
+    assert all(message["turn_id"] == revised.turn_id for message in messages)
     assert all(message["revision_id"] for message in messages)
     assert messages[0]["message_kind"] == "prompt"
 
@@ -562,7 +562,7 @@ def test_remote_manager_edit_last_turn_keeps_earlier_turn_and_annotates_replacem
     first = manager.submit(708, "first prompt")
     second = manager.submit(708, "second prompt")
 
-    replacement = manager.edit_last_turn(708, second.task_id, "replacement prompt")
+    replacement = manager.edit_last_turn(708, second.turn_id, "replacement prompt")
     messages = manager.conversation_messages(708)
 
     assert [message["content"] for message in messages] == [
@@ -571,8 +571,8 @@ def test_remote_manager_edit_last_turn_keeps_earlier_turn_and_annotates_replacem
         "replacement prompt",
         "replacement answer",
     ]
-    assert [message["turn_id"] for message in messages[:2]] == [first.task_id, first.task_id]
-    assert [message["turn_id"] for message in messages[2:]] == [replacement.task_id, replacement.task_id]
+    assert [message["turn_id"] for message in messages[:2]] == [first.turn_id, first.turn_id]
+    assert [message["turn_id"] for message in messages[2:]] == [replacement.turn_id, replacement.turn_id]
     assert messages[2]["turn_elapsed_ms"] >= 0
 
 
@@ -607,7 +607,7 @@ def test_remote_manager_accepts_steer_and_queue_while_submit_holds_agent_lock(tm
     worker = threading.Thread(target=lambda: result_holder.append(manager.submit(818, "start")))
     worker.start()
     assert entered.wait(timeout=5)
-    active_turn_id = manager._require_runtime(818).agent.task_state.task_id
+    active_turn_id = manager._require_runtime(818).agent.turn_state.turn_id
 
     steer = manager.steer(818, active_turn_id, "guide the active answer")
     queued = manager.enqueue_followup(818, active_turn_id, "answer this next")
@@ -638,7 +638,7 @@ def test_remote_manager_rejects_stale_expected_turn_id(tmp_path):
     result = manager.submit(919, "complete immediately")
 
     try:
-        manager.steer(919, result.task_id, "too late")
+        manager.steer(919, result.turn_id, "too late")
     except ValueError as exc:
         assert "no active turn" in str(exc).lower()
     else:
@@ -656,8 +656,8 @@ def test_remote_manager_emits_turn_started_before_model_response(tmp_path):
     result = manager.submit(929, "start", hook_handler=lambda event, payload: events.append((event, payload)))
     started = next(payload for event, payload in events if event == "turn_started")
 
-    assert started["turn_id"] == result.task_id
-    assert started["task_id"] == result.task_id
+    assert started["turn_id"] == result.turn_id
+    assert started["turn_id"] == result.turn_id
     assert started["revision_id"]
 
 
@@ -681,7 +681,7 @@ def test_queued_followup_survives_checkpoint_resume(tmp_path, monkeypatch):
     worker = threading.Thread(target=lambda: results.append(manager.submit(939, "start")))
     worker.start()
     assert entered.wait(timeout=5)
-    active_turn = manager._require_runtime(939).agent.task_state.task_id
+    active_turn = manager._require_runtime(939).agent.turn_state.turn_id
     queued = manager.enqueue_followup(939, active_turn, "persist me")
     release.set()
     worker.join(timeout=5)
@@ -713,7 +713,7 @@ def test_legacy_checkpoint_message_ids_are_persisted_on_first_resume(tmp_path, m
     checkpoint_module.save_checkpoint(
         SessionState(
             session_id="session_legacy_ids",
-            current_task=TaskState(task_id="task_latest", status="completed"),
+            current_turn=TurnState(turn_id="turn_latest", status="completed"),
         ),
         [
             {"role": "user", "content": "legacy prompt"},
@@ -741,6 +741,6 @@ def test_legacy_checkpoint_message_ids_are_persisted_on_first_resume(tmp_path, m
     assert [message["message_id"] for message in second_messages] == [
         message["message_id"] for message in first_messages
     ]
-    assert all(message["turn_id"] == "task_latest" for message in second_messages)
+    assert all(message["turn_id"] == "turn_latest" for message in second_messages)
     assert all(message["revision_id"] for message in second_messages)
 

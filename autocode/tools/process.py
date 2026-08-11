@@ -24,7 +24,7 @@ class StartProcessTool(Tool):
         self.description = (
             "Start a long-running background process with an explicit shell and return a "
             "managed process id. Use this instead of shell_command for servers, workers, "
-            "consumers, or watchers. Temporary processes are cleaned when the task ends."
+            "consumers, or watchers. Temporary processes are cleaned when the turn ends."
         )
         self.parameters = {
             "type": "object",
@@ -41,7 +41,7 @@ class StartProcessTool(Tool):
                     "type": "boolean",
                     "description": (
                         "Set true only when the user explicitly wants the process to stay running "
-                        "after the current task completes. Managed processes are still cleaned when "
+                        "after the current turn completes. Managed processes are still cleaned when "
                         "the agent resets or exits."
                     ),
                 },
@@ -62,7 +62,7 @@ class StartProcessTool(Tool):
         log_file: str | None = None,
         keep_alive: bool = False,
         shell: str | None = None,
-        _task_id: str | None = None,
+        _turn_id: str | None = None,
     ) -> str:
         try:
             return _manager(self).start_process(
@@ -70,7 +70,7 @@ class StartProcessTool(Tool):
                 cwd=cwd,
                 log_file=log_file,
                 keep_alive=keep_alive,
-                task_id=_task_id,
+                turn_id=_turn_id,
                 shell=shell,
             )
         except Exception as e:

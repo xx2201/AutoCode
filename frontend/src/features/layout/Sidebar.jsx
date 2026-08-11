@@ -55,7 +55,7 @@ export default function Sidebar({
         <button className="active" type="button" onClick={onCloseMobile}>
           <MessageSquareText size={18} /> 对话
         </button>
-        <button type="button" onClick={() => onOpenInfo("task")}>
+        <button type="button" onClick={() => onOpenInfo("turn")}>
           <ListTodo size={18} /> 当前任务
         </button>
         <button type="button" onClick={() => onOpenInfo("trace")}>

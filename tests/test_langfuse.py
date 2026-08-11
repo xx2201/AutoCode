@@ -7,7 +7,7 @@ from autocode.agent import Agent
 from autocode.llm import LLM, LLMResponse, ToolCall
 from autocode.observability import LangfuseTracer
 from autocode.runtime import Policy, Runtime, StreamingToolExecutor
-from autocode.state import PolicyDecision, TaskState, load_checkpoint
+from autocode.state import PolicyDecision, TurnState, load_checkpoint
 from autocode.state import checkpoint as checkpoint_module
 from autocode.tools.base import ConcurrencySpec, Tool
 
@@ -431,9 +431,9 @@ def test_approval_continues_original_turn_trace_after_checkpoint_restore(monkeyp
     waiting = first_agent.chat("run echo")
 
     assert "waiting for approval" in waiting
-    assert first_agent.task_state is not None
-    root_trace_id = first_agent.task_state.langfuse_trace_id
-    root_observation_id = first_agent.task_state.langfuse_root_observation_id
+    assert first_agent.turn_state is not None
+    root_trace_id = first_agent.turn_state.langfuse_trace_id
+    root_observation_id = first_agent.turn_state.langfuse_root_observation_id
     assert len(root_trace_id) == 32
     assert len(root_observation_id) == 16
     session_id = first_agent.session_state.session_id
@@ -493,10 +493,10 @@ def test_multiple_approvals_remain_children_of_the_original_turn_trace(monkeypat
     assert "waiting for approval" in agent.approve_pending(True)
     assert agent.approve_pending(True) == "done"
 
-    assert agent.task_state is not None
+    assert agent.turn_state is not None
     expected_context = {
-        "trace_id": agent.task_state.langfuse_trace_id,
-        "parent_span_id": agent.task_state.langfuse_root_observation_id,
+        "trace_id": agent.turn_state.langfuse_trace_id,
+        "parent_span_id": agent.turn_state.langfuse_root_observation_id,
     }
     approval_enters = [
         item
@@ -536,7 +536,7 @@ def test_runtime_emits_nested_tool_observations_for_parallel_calls(monkeypatch):
         langfuse_secret_key="sk-lf-test",
     )
     runtime = Runtime({"echo": _ParallelEchoTool()}, tracer=llm.tracer)
-    state = TaskState(task_id="task-observation", status="running")
+    state = TurnState(turn_id="turn-observation", status="running")
     tool_calls = [
         ToolCall(id="call-1", name="echo", arguments={"text": "one"}),
         ToolCall(id="call-2", name="echo", arguments={"text": "two"}),
@@ -589,7 +589,7 @@ def test_streaming_speculative_tool_observation_stays_in_agent_trace(monkeypatch
     events = _install_fake_langfuse(monkeypatch)
     tracer = LangfuseTracer(public_key="pk-test", secret_key="sk-lf-test")
     runtime = Runtime({"read": _StreamingReadTool()}, tracer=tracer)
-    state = TaskState(task_id="task-streaming-observation", status="running")
+    state = TurnState(turn_id="turn-streaming-observation", status="running")
     tool_call = ToolCall(
         id="call-read",
         name="read",
@@ -604,7 +604,7 @@ def test_streaming_speculative_tool_observation_stays_in_agent_trace(monkeypatch
     ):
         executor = StreamingToolExecutor(
             runtime=runtime,
-            task_state=state,
+            turn_state=state,
             session_id="session-streaming-observation",
         )
         assert executor.add_tool(tool_call) is True

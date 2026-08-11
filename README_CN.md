@@ -132,7 +132,7 @@ autocode --resume SESSION_ID
 ```
 
 主要交互命令包括 `/help`、`/reset`、`/model`、`/tokens`、`/compact`、
-`/diff`、`/resume`、`/task`、`/todo`、`/trace`、`/mcp`、`/approve`、
+`/diff`、`/resume`、`/turn`、`/todo`、`/trace`、`/mcp`、`/approve`、
 `/approve_scope`、`/permissions ask|full_access` 和 `/reject`。
 
 ## 从手机访问 Web
@@ -260,7 +260,7 @@ AutoCoder 当前不依赖数据库，本地状态保存在 `~/.autocode`：
     │           └── <session_id>/
     │               ├── checkpoint.json
     │               ├── session.json
-    │               ├── current_task.json
+    │               ├── current_turn.json
     │               ├── transcript.jsonl
     │               ├── audit.jsonl
     │               └── trace.json

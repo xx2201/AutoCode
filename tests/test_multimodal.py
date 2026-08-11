@@ -348,7 +348,7 @@ def test_runtime_state_stays_inside_the_final_multimodal_message(tmp_path):
         tools=[],
         workspace_root=str(tmp_path),
     )
-    agent._ensure_task("inspect image")
+    agent._ensure_turn("inspect image")
     agent.messages = [
         {"role": "user", "content": "inspect the image"},
         {

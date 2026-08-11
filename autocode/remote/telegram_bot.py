@@ -8,7 +8,7 @@ import sys
 from typing import Any
 
 from ..config import Config
-from .formatting import render_task_list, render_turn_result, split_message
+from .formatting import render_session_list, render_turn_result, split_message
 from .manager import RemoteManager
 
 logger = logging.getLogger(__name__)
@@ -33,8 +33,8 @@ def _build_application(config: Config):
     app.add_handler(telegram["CommandHandler"]("start", _start))
     app.add_handler(telegram["CommandHandler"]("help", _start))
     app.add_handler(telegram["CommandHandler"]("reset", _reset))
-    app.add_handler(telegram["CommandHandler"]("task", _task))
-    app.add_handler(telegram["CommandHandler"]("tasks", _tasks))
+    app.add_handler(telegram["CommandHandler"]("turn", _turn))
+    app.add_handler(telegram["CommandHandler"]("sessions", _sessions))
     app.add_handler(telegram["CommandHandler"]("trace", _trace))
     app.add_handler(telegram["CommandHandler"]("approve", _approve))
     app.add_handler(telegram["CommandHandler"]("approve_scope", _approve_scope))
@@ -93,11 +93,11 @@ async def _start(update, context):
     text = (
         "AutoCode Telegram control is ready.\n\n"
         "Commands:\n"
-        "/task - show current task\n"
-        "/tasks - list recent sessions\n"
+        "/turn - show current turn\n"
+        "/sessions - list recent sessions\n"
         "/trace - show trace for the current session\n"
         "/approve - approve the pending tool call\n"
-        "/approve_scope - approve and allow this scope for the current task\n"
+        "/approve_scope - approve and allow this scope for the current turn\n"
         "/reject - reject the pending tool call\n"
         "/resume <session_id> - restore a session into this chat\n"
         "/reset - clear the in-memory chat session\n\n"
@@ -114,23 +114,23 @@ async def _reset(update, context):
     await _reply_text(update.message, "Chat session cleared.")
 
 
-async def _task(update, context):
+async def _turn(update, context):
     if not _is_allowed_chat(update, context):
         return
     manager: RemoteManager = context.application.bot_data["manager"]
     try:
-        text = await asyncio.to_thread(manager.current_task_summary, update.effective_chat.id)
+        text = await asyncio.to_thread(manager.current_turn_summary, update.effective_chat.id)
     except ValueError as exc:
         text = str(exc)
     await _reply_text(update.message, text)
 
 
-async def _tasks(update, context):
+async def _sessions(update, context):
     if not _is_allowed_chat(update, context):
         return
     manager: RemoteManager = context.application.bot_data["manager"]
-    tasks = await asyncio.to_thread(manager.list_recent_tasks)
-    await _reply_text(update.message, render_task_list(tasks))
+    sessions = await asyncio.to_thread(manager.list_recent_sessions)
+    await _reply_text(update.message, render_session_list(sessions))
 
 
 async def _trace(update, context):

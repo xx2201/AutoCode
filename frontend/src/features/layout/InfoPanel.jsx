@@ -1,7 +1,7 @@
 import { X } from "lucide-react";
 
 const PANEL_COPY = {
-  task: { overline: "RUNTIME DETAILS", title: "当前任务" },
+  turn: { overline: "RUNTIME DETAILS", title: "当前 Turn" },
   trace: { overline: "RUNTIME DETAILS", title: "运行 Trace" },
   diagnostics: { overline: "LOCAL DIAGNOSTICS", title: "本地诊断" },
 };

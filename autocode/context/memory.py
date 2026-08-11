@@ -51,7 +51,7 @@ class MemoryManager:
         return self.workspace_root / ".autocode" / "PROJECT_MEMORY.md"
 
     def refresh_project_memory(self, messages: list[dict], llm, force: bool = False) -> bool:
-        """Incrementally rewrite PROJECT_MEMORY.md from the current task trajectory."""
+        """Incrementally rewrite PROJECT_MEMORY.md from the current turn trajectory."""
         trajectory = self._flatten_messages(messages)
         if not trajectory:
             return False
@@ -74,7 +74,7 @@ class MemoryManager:
                         "role": "system",
                         "content": (
                             "You maintain one small PROJECT_MEMORY.md for a coding project. "
-                            "Update the existing memory using only the current task trajectory below. "
+                            "Update the existing memory using only the current turn trajectory below. "
                             "Keep only: (1) stable preferences explicitly stated or repeatedly corrected by the user; "
                             "(2) project knowledge confirmed by tool output, code inspection, or successful tests; "
                             "and (3) recurring problems with a verified solution. Merge duplicates. When new verified "
@@ -91,7 +91,7 @@ class MemoryManager:
                         "content": (
                             "Existing PROJECT_MEMORY.md:\n"
                             f"{existing or '(none)'}\n\n"
-                            "Current task trajectory:\n"
+                            "Current turn trajectory:\n"
                             f"{trajectory}"
                         ),
                     },

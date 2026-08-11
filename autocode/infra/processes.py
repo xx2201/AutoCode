@@ -27,7 +27,7 @@ class BackgroundProcess:
     pid: int
     started_at: str
     shell: str
-    task_id: str = ""
+    turn_id: str = ""
     keep_alive: bool = False
 
 
@@ -43,7 +43,7 @@ class BackgroundProcessManager:
         cwd: str = ".",
         log_file: str | None = None,
         keep_alive: bool = False,
-        task_id: str | None = None,
+        turn_id: str | None = None,
         shell: str | None = None,
     ) -> str:
         run_cwd = self.fs.resolve_path(cwd)
@@ -75,7 +75,7 @@ class BackgroundProcessManager:
             pid=proc.pid,
             started_at=time.strftime("%Y-%m-%d %H:%M:%S"),
             shell=invocation.name,
-            task_id=task_id or "",
+            turn_id=turn_id or "",
             keep_alive=bool(keep_alive),
         )
         with self._lock:
@@ -116,11 +116,11 @@ class BackgroundProcessManager:
             self._processes.pop(process_id, None)
         return f"Stopped background process {process_id} (pid {meta.pid})"
 
-    def cleanup_task_processes(self, task_id: str) -> list[str]:
-        if not task_id:
+    def cleanup_turn_processes(self, turn_id: str) -> list[str]:
+        if not turn_id:
             return []
         return self._cleanup_matching_processes(
-            lambda meta: meta.task_id == task_id and not meta.keep_alive
+            lambda meta: meta.turn_id == turn_id and not meta.keep_alive
         )
 
     def cleanup_all(self, include_persistent: bool = True) -> list[str]:

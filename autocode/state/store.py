@@ -7,31 +7,31 @@ import time
 
 from ..context.todo import render_todos
 from .checkpoint import list_sessions, session_dir
-from .model import SessionState, TaskState
+from .model import SessionState, TurnState
 
 
 class SessionStore:
     def sync(self, session_state: SessionState, model: str):
         directory = session_dir(session_state.session_id)
         directory.mkdir(parents=True, exist_ok=True)
-        current_task = session_state.current_task
+        current_turn = session_state.current_turn
         session_payload = {
             "session_id": session_state.session_id,
-            "title": session_state.title or (current_task.title if current_task else ""),
-            "task_id": current_task.task_id if current_task else "",
-            "task_title": current_task.title if current_task else "",
-            "status": current_task.status if current_task else "idle",
-            "step_index": current_task.step_index if current_task else 0,
+            "title": session_state.title or (current_turn.title if current_turn else ""),
+            "turn_id": current_turn.turn_id if current_turn else "",
+            "turn_title": current_turn.title if current_turn else "",
+            "status": current_turn.status if current_turn else "idle",
+            "step_index": current_turn.step_index if current_turn else 0,
             "transcript_file": "transcript.jsonl",
-            "current_task_file": "current_task.json",
+            "current_turn_file": "current_turn.json",
             "updated_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "model": model,
         }
         (directory / "session.json").write_text(json.dumps(session_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
-        current_task_payload = current_task.to_dict() if current_task else None
-        (directory / "current_task.json").write_text(
-            json.dumps(current_task_payload, ensure_ascii=False, indent=2),
+        current_turn_payload = current_turn.to_dict() if current_turn else None
+        (directory / "current_turn.json").write_text(
+            json.dumps(current_turn_payload, ensure_ascii=False, indent=2),
             encoding="utf-8",
         )
 
@@ -43,16 +43,16 @@ class SessionStore:
         return json.loads(path.read_text(encoding="utf-8"))
 
     @staticmethod
-    def render_task(task_state: TaskState | None) -> str:
-        if task_state is None:
-            return "Task: (none)\nStatus: idle\nStep: 0\nTodos:\n(no todos)"
-        title = task_state.title or "(untitled task)"
+    def render_turn(turn_state: TurnState | None) -> str:
+        if turn_state is None:
+            return "Turn: (none)\nStatus: idle\nStep: 0\nTodos:\n(no todos)"
+        title = turn_state.title or "(untitled turn)"
         return (
-            f"Task Id: {task_state.task_id}\n"
-            f"Task: {title}\n"
-            f"Status: {task_state.status}\n"
-            f"Step: {task_state.step_index}\n"
-            f"Todos:\n{render_todos(task_state.todos)}"
+            f"Turn Id: {turn_state.turn_id}\n"
+            f"Turn: {title}\n"
+            f"Status: {turn_state.status}\n"
+            f"Step: {turn_state.step_index}\n"
+            f"Todos:\n{render_todos(turn_state.todos)}"
         )
 
     @staticmethod

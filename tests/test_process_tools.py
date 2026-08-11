@@ -192,7 +192,7 @@ def test_stop_process_kills_child_process_tree_on_windows(tmp_path):
             pass
 
 
-def test_cleanup_task_processes_stops_only_temporary_processes_for_task(tmp_path):
+def test_cleanup_turn_processes_stops_only_temporary_processes_for_turn(tmp_path):
     manager = BackgroundProcessManager(str(tmp_path))
 
     class _Proc:
@@ -218,7 +218,7 @@ def test_cleanup_task_processes_stops_only_temporary_processes_for_task(tmp_path
                 pid=101,
                 started_at="2026-06-13 00:00:00",
                 shell="powershell",
-                task_id="task_1",
+                turn_id="turn_1",
                 keep_alive=False,
             ),
             _Log(),
@@ -233,7 +233,7 @@ def test_cleanup_task_processes_stops_only_temporary_processes_for_task(tmp_path
                 pid=102,
                 started_at="2026-06-13 00:00:00",
                 shell="powershell",
-                task_id="task_1",
+                turn_id="turn_1",
                 keep_alive=True,
             ),
             _Log(),
@@ -248,14 +248,14 @@ def test_cleanup_task_processes_stops_only_temporary_processes_for_task(tmp_path
                 pid=103,
                 started_at="2026-06-13 00:00:00",
                 shell="powershell",
-                task_id="task_2",
+                turn_id="turn_2",
                 keep_alive=False,
             ),
             _Log(),
         ),
     }
 
-    stopped = manager.cleanup_task_processes("task_1")
+    stopped = manager.cleanup_turn_processes("turn_1")
 
     assert stopped == ["proc_temp"]
     assert "proc_temp" not in manager._processes
@@ -289,7 +289,7 @@ def test_cleanup_all_stops_persistent_processes_on_manager_close(tmp_path):
                 pid=201,
                 started_at="2026-06-13 00:00:00",
                 shell="powershell",
-                task_id="task_1",
+                turn_id="turn_1",
                 keep_alive=False,
             ),
             _Log(),
@@ -304,7 +304,7 @@ def test_cleanup_all_stops_persistent_processes_on_manager_close(tmp_path):
                 pid=202,
                 started_at="2026-06-13 00:00:00",
                 shell="powershell",
-                task_id="task_1",
+                turn_id="turn_1",
                 keep_alive=True,
             ),
             _Log(),

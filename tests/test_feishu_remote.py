@@ -45,7 +45,7 @@ def test_build_approval_card_embeds_actions():
     result = RemoteTurnResult(
         text="waiting for approval",
         session_id="session_123",
-        task_id="task_123",
+        turn_id="turn_123",
         status="waiting_approval",
         pending_tool="shell_command",
         pending_reason="command is not in allowlist",
@@ -70,7 +70,7 @@ def test_build_live_status_card_shows_runtime_progress():
         phase="Running Tool",
         status="running",
         session_id="session_123",
-        task_id="task_123",
+        turn_id="turn_123",
         step_index=2,
         llm_calls=1,
         tool_calls=1,
@@ -92,7 +92,7 @@ def test_build_live_status_card_shows_runtime_progress():
     assert "Running Tool" in content
     assert "read_file" in content
     assert "session_123" in content
-    assert "task_123" in content
+    assert "turn_123" in content
     assert "Prompt Tokens Total: `120`" in content
     assert "Prompt Cache Read Total: `90`" in content
     assert "Cache Segments: `2`" in content
@@ -101,9 +101,9 @@ def test_build_live_status_card_shows_runtime_progress():
 
 def test_build_resume_card_embeds_resume_buttons():
     card = build_resume_card(
-        tasks=[
-            {"session_id": "session_1", "task_id": "task_1", "title": "Fix import", "status": "completed", "saved_at": "2026-06-08 23:00:00"},
-            {"session_id": "session_2", "task_id": "task_2", "title": "Add tests", "status": "failed", "saved_at": "2026-06-08 23:10:00"},
+        sessions=[
+            {"session_id": "session_1", "turn_id": "turn_1", "title": "Fix import", "status": "completed", "saved_at": "2026-06-08 23:00:00"},
+            {"session_id": "session_2", "turn_id": "turn_2", "title": "Add tests", "status": "failed", "saved_at": "2026-06-08 23:10:00"},
         ],
         session_key="user:ou_xxx",
         owner_open_id="ou_owner",

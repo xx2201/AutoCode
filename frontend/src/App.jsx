@@ -631,7 +631,7 @@ export default function App() {
       await streamRequest(token, "/api/turn/continue/stream", {
           client_id: clientId,
           workspace_id: selectedWorkspace.workspace_id,
-          expected_turn_id: batch.turn_id || pending.task_id,
+          expected_turn_id: batch.turn_id || pending.turn_id,
           batch_id: batch.batch_id || pending.approval_batch_id,
         }, (event) => {
           handleRunEvent(event, {
@@ -678,7 +678,7 @@ export default function App() {
           client_id: clientId,
           workspace_id: selectedWorkspace.workspace_id,
           approval_id: approval.approval_id,
-          expected_turn_id: pending.task_id,
+          expected_turn_id: pending.turn_id,
           batch_id: pending.approval_batch_id,
           action,
         }),

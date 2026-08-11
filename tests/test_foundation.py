@@ -5,7 +5,7 @@ from autocode.context import MemoryManager, normalize_todos, render_todos
 from autocode.infra import WorkspaceFS, Sandbox
 from autocode.infra import sandbox as sandbox_module
 from autocode.state import SessionState
-from autocode.state import TaskState
+from autocode.state import TurnState
 from autocode.state import SessionStore
 from autocode.state import checkpoint as checkpoint_module
 
@@ -113,13 +113,13 @@ def test_session_store_sync(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
     state = SessionState(
         session_id="session_foundation",
-        current_task=TaskState(task_id="task_foundation", title="demo", todos=[{"content": "x", "status": "pending"}]),
+        current_turn=TurnState(turn_id="turn_foundation", title="demo", todos=[{"content": "x", "status": "pending"}]),
     )
     store = SessionStore()
     store.sync(state, "demo-model")
     data = store.load("session_foundation")
     assert data is not None
     assert data["session_id"] == "session_foundation"
-    assert data["task_id"] == "task_foundation"
+    assert data["turn_id"] == "turn_foundation"
     assert data["title"] == "demo"
 

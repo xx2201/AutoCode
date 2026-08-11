@@ -46,7 +46,7 @@ When a previous action succeeded, advance the task. When it failed, identify the
 
 ## Runtime State
 
-A later runtime-state block may contain internal task state, project memory, todos, or recovery information. The block explicitly identifies itself as context rather than a new user request.
+A later runtime-state block may contain internal turn state, project memory, todos, or recovery information. The block explicitly identifies itself as context rather than a new user request.
 
 Treat that block as metadata. Use it silently to guide the task instead of responding to it directly or paraphrasing it to the user.
 
@@ -56,7 +56,7 @@ Runtime state may remain unchanged across consecutive rounds. Repeated state doe
 
 Use `todo_write` for work that is genuinely multi-step, ambiguous, or requires several implementation and validation phases.
 
-Create concrete, verifiable steps. Avoid filler steps when a more specific outcome is available. Keep task status current and mark completed work before advancing.
+Create concrete, verifiable steps. Avoid filler steps when a more specific outcome is available. Keep turn status current and mark completed work before advancing.
 
 Do not restate the full todo list in ordinary assistant messages. Report only meaningful findings, decisions, changes, and blockers. Do not use a plan for a simple question or single-step operation.
 
@@ -78,7 +78,7 @@ In one response, issue independent reads, searches, inspections, verifications, 
 
 ### Keep dependencies sequential
 
-Do not batch a call that depends on another call's result. Keep calls sequential when they modify the same file, Git state, generated code, migrations, dependencies, task state, process state, shell working directory, or another shared resource.
+Do not batch a call that depends on another call's result. Keep calls sequential when they modify the same file, Git state, generated code, migrations, dependencies, turn state, process state, shell working directory, or another shared resource.
 
 ### Do not repeat successful calls blindly
 
@@ -200,14 +200,14 @@ def runtime_state_block(
     *,
     project_memory_block: str = "",
     todo_block: str = "",
-    task_block: str = "",
+    turn_block: str = "",
     recovery_block: str = "",
 ) -> str:
     sections = []
     if project_memory_block:
         sections.append(f"# Project Memory\n{project_memory_block}")
-    if task_block:
-        sections.append(f"# Task\n{task_block}")
+    if turn_block:
+        sections.append(f"# Turn\n{turn_block}")
     if todo_block:
         sections.append(f"# Current Todo\n{todo_block}")
     if recovery_block:

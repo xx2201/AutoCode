@@ -5,7 +5,7 @@ from autocode.context.prompt import static_system_prompt
 from autocode.llm import ToolCall
 from autocode.runtime import HookBus, Runtime
 from autocode.runtime.scheduler import plan_execution_groups
-from autocode.state import TaskState
+from autocode.state import TurnState
 from autocode.tools.base import ConcurrencySpec, Tool
 from autocode.tools.shell_command import ShellCommandTool
 from autocode.tools.process import ReadProcessOutputTool, StopProcessTool
@@ -46,7 +46,7 @@ class _RecordingRecovery:
     def __init__(self):
         self.thread_ids = []
 
-    def note_tool_result(self, task_state, tool_name, result):
+    def note_tool_result(self, turn_state, tool_name, result):
         self.thread_ids.append(threading.get_ident())
         return result
 
@@ -59,8 +59,8 @@ def _call(call_id: str, resource: str, **extra) -> ToolCall:
     )
 
 
-def _state() -> TaskState:
-    return TaskState(task_id="task_concurrency", status="running")
+def _state() -> TurnState:
+    return TurnState(turn_id="turn_concurrency", status="running")
 
 
 def test_scheduler_groups_independent_resources_and_separates_conflicts():

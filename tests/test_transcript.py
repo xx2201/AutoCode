@@ -62,7 +62,7 @@ def test_agent_writes_raw_transcript_messages(tmp_path, monkeypatch):
     reply = agent.chat("message-0-" + ("x" * 200))
     assert reply == "done"
 
-    assert agent.task_state is not None
+    assert agent.turn_state is not None
     entries = load_transcript_entries(agent.session_state.session_id)
     messages = load_transcript_messages(agent.session_state.session_id)
 
@@ -73,7 +73,7 @@ def test_agent_writes_raw_transcript_messages(tmp_path, monkeypatch):
     assert any(entry.get("kind") == "compact" for entry in entries)
 
 
-def test_checkpoint_and_task_record_publish_transcript_file(tmp_path, monkeypatch):
+def test_checkpoint_and_turn_record_publish_transcript_file(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
 
     agent = Agent(
@@ -83,7 +83,7 @@ def test_checkpoint_and_task_record_publish_transcript_file(tmp_path, monkeypatc
     )
     reply = agent.chat("hello")
     assert reply == "done"
-    assert agent.task_state is not None
+    assert agent.turn_state is not None
 
     session_dir = checkpoint_module.session_dir(agent.session_state.session_id)
     checkpoint = session_dir.joinpath("checkpoint.json").read_text(encoding="utf-8")
@@ -94,7 +94,7 @@ def test_checkpoint_and_task_record_publish_transcript_file(tmp_path, monkeypatc
     assert {path.name for path in session_dir.iterdir()} == {
         "audit.jsonl",
         "checkpoint.json",
-        "current_task.json",
+        "current_turn.json",
         "session.json",
         "trace.json",
         "transcript.jsonl",
@@ -119,7 +119,7 @@ def test_edit_last_completed_turn_supersedes_context_but_not_workspace(tmp_path,
     agent = Agent(llm=llm, workspace_root=str(tmp_path), permission_mode="full_access")
 
     assert agent.chat("original prompt") == "original answer"
-    original_turn_id = agent.task_state.task_id
+    original_turn_id = agent.turn_state.turn_id
     original_message_id = agent.messages[0]["message_id"]
     untouched = tmp_path / "already-changed.txt"
     untouched.write_text("keep this workspace state", encoding="utf-8")
@@ -134,15 +134,15 @@ def test_edit_last_completed_turn_supersedes_context_but_not_workspace(tmp_path,
     assert agent.messages[0]["raw_prompt"] == "edited prompt"
     assert agent.messages[0]["message_kind"] == "prompt"
     assert agent.messages[0]["message_id"] != original_message_id
-    assert agent.task_state.supersedes_turn_id == original_turn_id
-    assert agent.task_state.parent_revision_id
+    assert agent.turn_state.supersedes_turn_id == original_turn_id
+    assert agent.turn_state.parent_revision_id
     marker = next(
         entry
         for entry in load_transcript_entries(agent.session_state.session_id)
         if entry.get("kind") == "turn_superseded"
     )
     assert marker["payload"]["superseded_message_id"] == original_message_id
-    assert marker["payload"]["replacement_turn_id"] == agent.task_state.task_id
+    assert marker["payload"]["replacement_turn_id"] == agent.turn_state.turn_id
 
 
 def test_edit_last_failed_turn_retries_from_the_original_prompt(tmp_path, monkeypatch):
@@ -170,16 +170,16 @@ def test_edit_last_failed_turn_retries_from_the_original_prompt(tmp_path, monkey
 
     with pytest.raises(RuntimeError, match="token 上限"):
         agent.chat("original prompt")
-    failed_turn_id = agent.task_state.task_id
-    assert agent.task_state.status == "failed"
+    failed_turn_id = agent.turn_state.turn_id
+    assert agent.turn_state.status == "failed"
 
     assert agent.edit_last_turn(failed_turn_id, "edited prompt") == "recovered answer"
     assert [message["content"] for message in agent.messages] == [
         "edited prompt",
         "recovered answer",
     ]
-    assert agent.task_state.status == "completed"
-    assert agent.task_state.supersedes_turn_id == failed_turn_id
+    assert agent.turn_state.status == "completed"
+    assert agent.turn_state.supersedes_turn_id == failed_turn_id
 
 
 def test_edit_rejects_non_latest_or_incomplete_turn(tmp_path, monkeypatch):
@@ -194,9 +194,9 @@ def test_edit_rejects_non_latest_or_incomplete_turn(tmp_path, monkeypatch):
     else:
         raise AssertionError("expected stale turn edit to fail")
 
-    agent.task_state.touch("running")
+    agent.turn_state.touch("running")
     try:
-        agent.edit_last_turn(agent.task_state.task_id, "edited")
+        agent.edit_last_turn(agent.turn_state.turn_id, "edited")
     except ValueError as exc:
         assert "last finished turn" in str(exc)
     else:

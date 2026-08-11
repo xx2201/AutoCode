@@ -1,4 +1,4 @@
-"""Runtime state models for sessions and current tasks."""
+"""Runtime state models for sessions and current turns."""
 
 from __future__ import annotations
 
@@ -126,8 +126,8 @@ class PendingToolBatch:
 
 
 @dataclass
-class TaskState:
-    task_id: str
+class TurnState:
+    turn_id: str
     revision_id: str = ""
     parent_revision_id: str = ""
     supersedes_turn_id: str = ""
@@ -207,7 +207,7 @@ class TaskState:
 
     def to_dict(self) -> dict:
         return {
-            "task_id": self.task_id,
+            "turn_id": self.turn_id,
             "revision_id": self.revision_id,
             "parent_revision_id": self.parent_revision_id,
             "supersedes_turn_id": self.supersedes_turn_id,
@@ -229,7 +229,7 @@ class TaskState:
         }
 
     @classmethod
-    def from_dict(cls, data: dict) -> "TaskState":
+    def from_dict(cls, data: dict) -> "TurnState":
         pending_batch = data.get("pending_tool_batch")
         legacy_pending = data.get("pending_approval")
         if pending_batch is None and legacy_pending:
@@ -242,7 +242,7 @@ class TaskState:
             approval = PendingApproval.from_dict(legacy_pending)
             pending_batch = {
                 "batch_id": uuid.uuid4().hex,
-                "turn_id": data.get("task_id", ""),
+                "turn_id": data.get("turn_id", ""),
                 "tool_calls": [first_call, *remaining],
                 "policy_decisions": [
                     {
@@ -258,7 +258,7 @@ class TaskState:
                 "state": "waiting",
             }
         return cls(
-            task_id=data.get("task_id", ""),
+            turn_id=data.get("turn_id", ""),
             revision_id=data.get("revision_id", ""),
             parent_revision_id=data.get("parent_revision_id", ""),
             supersedes_turn_id=data.get("supersedes_turn_id", ""),
@@ -289,18 +289,18 @@ class SessionState:
     context_anchor_digest: str = ""
     started_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
-    current_task: TaskState | None = None
+    current_turn: TurnState | None = None
     queued_inputs: list[dict] = field(default_factory=list)
 
     def touch(self):
         self.updated_at = _now()
 
-    def set_current_task(self, task: TaskState):
-        self.current_task = task
+    def set_current_turn(self, turn: TurnState):
+        self.current_turn = turn
         self.touch()
 
-    def clear_current_task(self):
-        self.current_task = None
+    def clear_current_turn(self):
+        self.current_turn = None
         self.touch()
 
     def to_dict(self) -> dict:
@@ -312,13 +312,13 @@ class SessionState:
             "context_anchor_digest": self.context_anchor_digest,
             "started_at": self.started_at,
             "updated_at": self.updated_at,
-            "current_task": self.current_task.to_dict() if self.current_task else None,
+            "current_turn": self.current_turn.to_dict() if self.current_turn else None,
             "queued_inputs": self.queued_inputs,
         }
 
     @classmethod
     def from_dict(cls, data: dict) -> "SessionState":
-        task = data.get("current_task")
+        turn = data.get("current_turn")
         return cls(
             session_id=data.get("session_id", ""),
             title=data.get("title", ""),
@@ -327,6 +327,6 @@ class SessionState:
             context_anchor_digest=str(data.get("context_anchor_digest", "")),
             started_at=data.get("started_at", _now()),
             updated_at=data.get("updated_at", _now()),
-            current_task=TaskState.from_dict(task) if task else None,
+            current_turn=TurnState.from_dict(turn) if turn else None,
             queued_inputs=list(data.get("queued_inputs", [])),
         )

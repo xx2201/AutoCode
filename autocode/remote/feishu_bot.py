@@ -47,7 +47,7 @@ _FILE_TYPE_MAP = {
 
 @dataclass
 class _ResumeSelection:
-    tasks: list[dict]
+    sessions: list[dict]
     session_key: str
     owner_open_id: str
 
@@ -138,7 +138,7 @@ class FeishuBot:
             return response
         if owner_open_id and sender_open_id != owner_open_id:
             response.toast = self.lark["CallBackToast"](
-                {"type": "warning", "content": "Only the task owner can approve."}
+                {"type": "warning", "content": "Only the turn owner can approve."}
             )
             return response
 
@@ -175,7 +175,7 @@ class FeishuBot:
                 if text.startswith("/"):
                     result = self._handle_text(session_key, text, sender_open_id)
                 else:
-                    result = self._run_live_task(message_id, session_key, sender_open_id, text)
+                    result = self._run_live_turn(message_id, session_key, sender_open_id, text)
             self._deliver_result(message_id, result, session_key, sender_open_id)
         except Exception as exc:
             logger.exception("Feishu message handling failed")
@@ -222,15 +222,15 @@ class FeishuBot:
             if command == "/reset":
                 self.manager.reset_chat(session_key)
                 return "Chat session cleared."
-            if command == "/task":
-                return self.manager.current_task_summary(session_key)
+            if command == "/turn":
+                return self.manager.current_turn_summary(session_key)
             if command == "/trace":
                 return self.manager.current_trace(session_key)
             if command == "/resume":
-                tasks = self.manager.list_resume_candidates(limit=10)
-                if not tasks:
+                sessions = self.manager.list_resume_candidates(limit=10)
+                if not sessions:
                     return "No resumable sessions for the current project."
-                return _ResumeSelection(tasks=tasks, session_key=session_key, owner_open_id=sender_open_id)
+                return _ResumeSelection(sessions=sessions, session_key=session_key, owner_open_id=sender_open_id)
             if command in {"/approve", "/approve_scope", "/reject"}:
                 live = self._live_states.get(session_key)
                 hook_handler = self._make_live_hook(live) if live else None
@@ -268,7 +268,7 @@ class FeishuBot:
             self._reply_card(
                 message_id,
                 build_resume_card(
-                    result.tasks,
+                    result.sessions,
                     session_key=result.session_key,
                     owner_open_id=result.owner_open_id,
                     workspace_root=self.config.workspace_root,
@@ -283,7 +283,7 @@ class FeishuBot:
         if result.pending_tool:
             if live:
                 live.session_id = result.session_id or live.session_id
-                live.task_id = result.task_id or live.task_id
+                live.turn_id = result.turn_id or live.turn_id
                 live.status = result.status or live.status
                 live.permission_mode = result.permission_mode
                 live.phase = "Waiting Approval"
@@ -297,7 +297,7 @@ class FeishuBot:
             return
         if live:
             live.session_id = result.session_id or live.session_id
-            live.task_id = result.task_id or live.task_id
+            live.turn_id = result.turn_id or live.turn_id
             live.status = result.status or live.status or "completed"
             live.permission_mode = result.permission_mode
             live.phase = "Completed"
@@ -306,7 +306,7 @@ class FeishuBot:
         for chunk in render_text_result(result):
             self._reply_text(message_id, chunk)
 
-    def _run_live_task(self, message_id: str, session_key: str, sender_open_id: str, text: str) -> RemoteTurnResult:
+    def _run_live_turn(self, message_id: str, session_key: str, sender_open_id: str, text: str) -> RemoteTurnResult:
         live = _LiveStatus(
             title=text.splitlines()[0][:120],
             owner_open_id=sender_open_id,
@@ -434,10 +434,10 @@ def _help_text() -> str:
     return (
         "AutoCode Feishu control is ready.\n\n"
         "Commands:\n"
-        "/task - show current session and task\n"
+        "/turn - show current session and turn\n"
         "/trace - show the current session trace\n"
         "/approve - approve the pending tool call\n"
-        "/approve_scope - approve and allow this scope for the current task\n"
+        "/approve_scope - approve and allow this scope for the current turn\n"
         "/reject - reject the pending tool call\n"
         "/resume - show resumable sessions for the current project\n"
         "/reset - clear the in-memory chat session\n\n"
@@ -582,10 +582,10 @@ class _LiveStatus:
     session_key: str
     message_id: str = ""
     session_id: str = ""
-    task_id: str = ""
+    turn_id: str = ""
     status: str = "running"
     phase: str = "Starting"
-    detail: str = "Task received. Preparing the agent runtime..."
+    detail: str = "Turn received. Preparing the agent runtime..."
     step_index: int = 0
     llm_calls: int = 0
     tool_calls: int = 0
@@ -605,11 +605,11 @@ class _LiveStatus:
 
     @classmethod
     def from_pending(cls, *, session_key: str, owner_open_id: str, message_id: str, title: str):
-        return cls(title=title or "(untitled task)", owner_open_id=owner_open_id, session_key=session_key, message_id=message_id)
+        return cls(title=title or "(untitled turn)", owner_open_id=owner_open_id, session_key=session_key, message_id=message_id)
 
     def handle(self, event: str, payload: dict):
         self.session_id = payload.get("session_id", self.session_id)
-        self.task_id = payload.get("task_id", self.task_id)
+        self.turn_id = payload.get("turn_id", self.turn_id)
         if event == "before_llm":
             self.phase = "Thinking"
             self.step_index = int(payload.get("step_index", self.step_index))
@@ -657,17 +657,17 @@ class _LiveStatus:
                 self.detail = decision.get("reason", "Blocked by policy.")
         elif event == "approval_resolved":
             self.phase = "Continuing"
-            self.detail = "Approval resolved. Continuing the task."
-        elif event == "task_status":
+            self.detail = "Approval resolved. Continuing the turn."
+        elif event == "turn_status":
             self.status = payload.get("status", self.status)
             if self.status == "completed":
                 self.phase = "Completed"
             elif self.status == "waiting_approval":
                 self.phase = "Waiting Approval"
-        elif event == "task_error":
+        elif event == "turn_error":
             self.status = payload.get("status", "failed")
             self.phase = "Failed"
-            self.detail = payload.get("error", "Task failed.")
+            self.detail = payload.get("error", "Turn failed.")
 
     def as_card_kwargs(self) -> dict:
         return {
@@ -675,7 +675,7 @@ class _LiveStatus:
             "phase": self.phase,
             "status": self.status,
             "session_id": self.session_id,
-            "task_id": self.task_id,
+            "turn_id": self.turn_id,
             "step_index": self.step_index,
             "llm_calls": self.llm_calls,
             "tool_calls": self.tool_calls,

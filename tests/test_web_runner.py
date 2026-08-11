@@ -23,7 +23,7 @@ class _FakeManager:
         self.result = RemoteTurnResult(
             text="done",
             session_id="session_1",
-            task_id="task_1",
+            turn_id="turn_1",
             status="completed",
         )
         self.calls = []
@@ -78,7 +78,7 @@ class _FakeManager:
     def conversation_messages(self, client_id):
         return [{"role": "user", "content": "hello", "tool_call_id": ""}]
 
-    def current_task_summary(self, client_id):
+    def current_turn_summary(self, client_id):
         return "Status: completed"
 
     def current_trace(self, client_id):
@@ -325,7 +325,7 @@ def test_runner_captures_undo_and_reapply_for_one_turn(tmp_path, monkeypatch):
             "turn_started",
             {
                 "session_id": "session_1",
-                "task_id": "task_1",
+                "turn_id": "turn_1",
                 "revision_id": "revision_1",
             },
         )
@@ -339,17 +339,17 @@ def test_runner_captures_undo_and_reapply_for_one_turn(tmp_path, monkeypatch):
     }
     chat = runner.execute("chat", {**payload, "prompt": "create it"})
 
-    assert chat["changed_files"][0]["turn_id"] == "task_1"
+    assert chat["changed_files"][0]["turn_id"] == "turn_1"
     assert chat["changed_files"][0]["can_undo"] is True
     undone = runner.execute(
         "change_action",
-        {**payload, "turn_id": "task_1", "change_action": "undo"},
+        {**payload, "turn_id": "turn_1", "change_action": "undo"},
     )
     assert undone["state"] == "undone"
     assert not (project / "created.txt").exists()
     reapplied = runner.execute(
         "change_action",
-        {**payload, "turn_id": "task_1", "change_action": "reapply"},
+        {**payload, "turn_id": "turn_1", "change_action": "reapply"},
     )
     assert reapplied["state"] == "applied"
     assert (project / "created.txt").read_text(encoding="utf-8") == "created\n"

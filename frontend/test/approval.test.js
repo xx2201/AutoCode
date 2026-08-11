@@ -55,7 +55,7 @@ test("shell command approval presents the command executed by the Runner", () =>
   assert.equal(view.tone, "command");
 });
 
-test("ordinary MCP confirmation explains the task-scoped approval option", () => {
+test("ordinary MCP confirmation explains the turn-scoped approval option", () => {
   const view = approvalPresentation({
     pending_tool: "mcp_issue_tracker_create",
     pending_reason: "external MCP tool call",

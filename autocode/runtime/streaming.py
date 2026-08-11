@@ -6,7 +6,7 @@ import concurrent.futures
 import threading
 from dataclasses import dataclass
 
-from ..state import PolicyDecision, TaskState
+from ..state import PolicyDecision, TurnState
 from ..tools.base import ConcurrencyMode, ToolResult
 from .engine import PreparedToolExecution, Runtime
 
@@ -25,14 +25,14 @@ class StreamingToolExecutor:
         self,
         *,
         runtime: Runtime,
-        task_state: TaskState,
+        turn_state: TurnState,
         session_id: str,
         on_tool=None,
         max_workers: int = 8,
         trace_context: dict[str, str] | None = None,
     ):
         self.runtime = runtime
-        self.task_state = task_state
+        self.turn_state = turn_state
         self.session_id = session_id
         self.on_tool = on_tool
         self.trace_context = trace_context
@@ -47,7 +47,7 @@ class StreamingToolExecutor:
             if self._discarded or tool_call.id in self._entries:
                 return False
         decision = self.runtime.evaluate_tool_call(
-            self.task_state,
+            self.turn_state,
             tool_call,
             self.session_id,
         )
@@ -63,7 +63,7 @@ class StreamingToolExecutor:
         if safe_to_start:
             entry.future = self._pool.submit(
                 self.runtime.prepare_tool_call,
-                self.task_state,
+                self.turn_state,
                 tool_call,
                 self.session_id,
                 self.on_tool,
@@ -102,7 +102,7 @@ class StreamingToolExecutor:
                 )
                 continue
             committed[tool_call.id] = self.runtime.finalize_prepared_tool_call(
-                self.task_state,
+                self.turn_state,
                 tool_call,
                 self.session_id,
                 prepared,

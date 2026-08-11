@@ -437,9 +437,9 @@ class LocalRunner:
         if action == "delete_session":
             manager.delete_session(payload["session_id"])
             return {"deleted": True, "session_id": payload["session_id"]}
-        if action == "task":
+        if action == "turn":
             try:
-                summary = manager.current_task_summary(payload["client_id"])
+                summary = manager.current_turn_summary(payload["client_id"])
             except ValueError:
                 summary = "No active web session."
             return {"summary": summary}
@@ -506,7 +506,7 @@ class LocalRunner:
             def on_hook(event: str, data: dict) -> None:
                 nonlocal change_store, change_before, started_turn_id
                 if event == "turn_started" and git_before.get("available"):
-                    started_turn_id = str(data.get("task_id", ""))
+                    started_turn_id = str(data.get("turn_id", ""))
                     change_store = ChangeSetStore(
                         workspace,
                         str(data.get("session_id", "")),
@@ -519,7 +519,7 @@ class LocalRunner:
                         {
                             "type": "turn",
                             "phase": "started",
-                            "turn_id": str(data.get("task_id", "")),
+                            "turn_id": str(data.get("turn_id", "")),
                             "revision_id": str(data.get("revision_id", "")),
                             "queued": queued_turn,
                         }
@@ -693,7 +693,6 @@ class LocalRunner:
                     "tool_name",
                     "prompt_tokens",
                     "completion_tokens",
-                    "task_id",
                     "turn_id",
                     "revision_id",
                 )

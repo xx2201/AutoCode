@@ -59,7 +59,7 @@ def test_agent_rejects_output_truncated_response_instead_of_completing(tmp_path)
     with pytest.raises(RuntimeError, match="AUTOCODE_MAX_TOKENS=32000"):
         agent.chat("continue")
 
-    assert agent.task_state.status == "failed"
+    assert agent.turn_state.status == "failed"
     assert not any(message["role"] == "assistant" for message in agent.messages)
 
 

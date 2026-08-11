@@ -3,7 +3,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from autocode.state import (
     SessionState,
-    TaskState,
+    TurnState,
     delete_session,
     list_sessions,
     load_checkpoint,
@@ -23,15 +23,15 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
         context_used_tokens=12_345,
         context_anchor_messages=7,
         context_anchor_digest="digest-demo",
-        current_task=TaskState(
-            task_id="task_demo",
+        current_turn=TurnState(
+            turn_id="turn_demo",
             status="running",
             step_index=3,
             langfuse_trace_id="a" * 32,
             langfuse_root_observation_id="b" * 16,
             pending_tool_batch=PendingToolBatch(
                 batch_id="batch_1",
-                turn_id="task_demo",
+                turn_id="turn_demo",
                 tool_calls=[
                     {"id": "call_1", "name": "shell_command", "arguments": {"command": "python --version"}},
                     {"id": "call_2", "name": "shell_command", "arguments": {"command": "python -c \"import pika\""}},
@@ -69,14 +69,14 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
     assert loaded_state.context_used_tokens == 12_345
     assert loaded_state.context_anchor_messages == 7
     assert loaded_state.context_anchor_digest == "digest-demo"
-    assert loaded_state.current_task is not None
-    assert loaded_state.current_task.task_id == "task_demo"
-    assert loaded_state.current_task.step_index == 3
-    assert loaded_state.current_task.langfuse_trace_id == "a" * 32
-    assert loaded_state.current_task.langfuse_root_observation_id == "b" * 16
-    assert loaded_state.current_task.pending_tool_batch is not None
-    assert loaded_state.current_task.pending_tool_batch.tool_calls[1]["id"] == "call_2"
-    assert loaded_state.current_task.pending_tool_batch.approvals[1].approval_id == "approval_2"
+    assert loaded_state.current_turn is not None
+    assert loaded_state.current_turn.turn_id == "turn_demo"
+    assert loaded_state.current_turn.step_index == 3
+    assert loaded_state.current_turn.langfuse_trace_id == "a" * 32
+    assert loaded_state.current_turn.langfuse_root_observation_id == "b" * 16
+    assert loaded_state.current_turn.pending_tool_batch is not None
+    assert loaded_state.current_turn.pending_tool_batch.tool_calls[1]["id"] == "call_2"
+    assert loaded_state.current_turn.pending_tool_batch.approvals[1].approval_id == "approval_2"
     assert loaded_messages == messages
     assert loaded_model == "demo-model"
     assert not tmp_path.joinpath("session_demo").exists()
@@ -91,7 +91,7 @@ def test_list_sessions(tmp_path, monkeypatch):
     save_checkpoint(
         SessionState(
             session_id="session_one",
-            current_task=TaskState(task_id="task_one", title="fix import", status="waiting_approval", step_index=1),
+            current_turn=TurnState(turn_id="turn_one", title="fix import", status="waiting_approval", step_index=1),
         ),
         [],
         "m1",
@@ -100,7 +100,7 @@ def test_list_sessions(tmp_path, monkeypatch):
     save_checkpoint(
         SessionState(
             session_id="session_two",
-            current_task=TaskState(task_id="task_two", title="other project", status="completed", step_index=2),
+            current_turn=TurnState(turn_id="turn_two", title="other project", status="completed", step_index=2),
         ),
         [],
         "m2",
@@ -109,7 +109,7 @@ def test_list_sessions(tmp_path, monkeypatch):
     entries = list_sessions(workspace_root="G:/repo/a")
     assert len(entries) == 1
     assert entries[0]["session_id"] == "session_one"
-    assert entries[0]["task_id"] == "task_one"
+    assert entries[0]["turn_id"] == "turn_one"
     assert entries[0]["title"] == "fix import"
     assert entries[0]["status"] == "waiting_approval"
 
@@ -155,12 +155,12 @@ def test_colliding_readable_project_names_remain_isolated(tmp_path, monkeypatch)
     ]
 
 
-def test_session_title_comes_from_first_user_message_not_latest_task(tmp_path, monkeypatch):
+def test_session_title_comes_from_first_user_message_not_latest_turn(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
     save_checkpoint(
         SessionState(
             session_id="session_named",
-            current_task=TaskState(task_id="task_latest", title="latest task"),
+            current_turn=TurnState(turn_id="turn_latest", title="latest task"),
         ),
         [
             {"role": "user", "content": "首次问题\n更多内容"},
@@ -207,7 +207,7 @@ def test_list_sessions_reuses_unchanged_checkpoint_metadata(tmp_path, monkeypatc
     save_checkpoint(
         SessionState(
             session_id="session_cached",
-            current_task=TaskState(task_id="task_cached", title="cached"),
+            current_turn=TurnState(turn_id="turn_cached", title="cached"),
         ),
         [],
         "m1",
@@ -289,7 +289,7 @@ def test_checkpoint_is_written_as_utf8(tmp_path, monkeypatch):
     save_checkpoint(
         SessionState(
             session_id="session_utf8",
-            current_task=TaskState(task_id="task_utf8", title="帮我执行代码"),
+            current_turn=TurnState(turn_id="turn_utf8", title="帮我执行代码"),
         ),
         [],
         "m1",

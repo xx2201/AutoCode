@@ -106,7 +106,7 @@ def test_model_step_rolls_back_partial_stream_and_reuses_prompt_snapshot(
     assert events[0][1]["discarded_tool_call_ids"] == ["call-1"]
     assert llm.requests[0][0][0] == llm.requests[1][0][0]
     assert llm.requests[0][1] == llm.requests[1][1]
-    assert agent.task_state.prompt_snapshot["digest"]
+    assert agent.turn_state.prompt_snapshot["digest"]
     tool_messages = [message for message in agent.messages if message["role"] == "tool"]
     assert len(tool_messages) == 1
     assert tool_messages[0]["tool_call_id"] == "call-2"
@@ -149,4 +149,4 @@ def test_prompt_snapshot_does_not_refresh_tools_mid_turn(tmp_path):
 
     assert agent.chat("run") == "done"
     assert llm.schemas[0] == llm.schemas[1]
-    assert agent.task_state.prompt_snapshot["tool_names"] == ["stream_read"]
+    assert agent.turn_state.prompt_snapshot["tool_names"] == ["stream_read"]

@@ -44,7 +44,7 @@ class TraceRecorder:
         now = time.time()
         return {
             "session_id": session_id,
-            "current_task_id": "",
+            "current_turn_id": "",
             "status": "running",
             "started_at": time.strftime("%Y-%m-%d %H:%M:%S"),
             "started_at_ts": now,
@@ -69,9 +69,9 @@ class TraceRecorder:
 
     @staticmethod
     def _apply_event(stats: dict, event: str, payload: dict):
-        if payload.get("task_id"):
-            stats["current_task_id"] = payload["task_id"]
-        if event == "task_status":
+        if payload.get("turn_id"):
+            stats["current_turn_id"] = payload["turn_id"]
+        if event == "turn_status":
             stats["status"] = payload.get("status", stats["status"])
         elif event == "user_message":
             stats["status"] = "running"
@@ -106,7 +106,7 @@ class TraceRecorder:
         elif event == "approval_resolved":
             if not payload.get("approved", False):
                 stats["blocked_tool_calls"] += 1
-        elif event == "task_error":
+        elif event == "turn_error":
             stats["status"] = "failed"
             stats["errors"] += 1
 
@@ -138,7 +138,7 @@ def format_trace(trace: dict) -> str:
     cache_hit_rate = f"{(cache_read / cache_total * 100):.1f}%" if cache_total else "n/a"
     return (
         f"Session: {trace.get('session_id', '?')}\n"
-        f"Current Task: {trace.get('current_task_id', '?')}\n"
+        f"Current Turn: {trace.get('current_turn_id', '?')}\n"
         f"Status: {trace.get('status', '?')}\n"
         f"Steps: {trace.get('steps', 0)}\n"
         f"LLM calls: {trace.get('llm_calls', 0)}\n"

@@ -2,28 +2,28 @@
 
 from __future__ import annotations
 
-from ..state import TaskState
+from ..state import TurnState
 from ..tools.base import ToolResult
 
 
 class RecoveryManager:
     def note_tool_result(
         self,
-        task_state: TaskState,
+        turn_state: TurnState,
         tool_name: str,
         result: str | ToolResult,
     ) -> str | ToolResult:
         text = result.text if isinstance(result, ToolResult) else result
         failed = result.is_error if isinstance(result, ToolResult) else self._is_failure(text)
         if failed:
-            task_state.note_failure(f"{tool_name}: {text.splitlines()[0][:200]}")
+            turn_state.note_failure(f"{tool_name}: {text.splitlines()[0][:200]}")
             if isinstance(result, ToolResult):
                 return result
             hint = self._hint_for_result(text)
             recovered = text + f"\n\n[recovery]\n{hint}"
             return recovered
 
-        task_state.clear_failures()
+        turn_state.clear_failures()
         return result
 
     @staticmethod
