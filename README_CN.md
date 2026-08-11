@@ -324,11 +324,6 @@ eval/            # 评测框架与任务
 tests/           # 自动化测试
 ```
 
-## 开发机部署
-
-开发机 Relay 使用版本化 wheel 发布目录，不是 Git 工作树。更新服务器前请先
-阅读[开发机部署手册](docs/development-deployment.md)，不要在
-`/home/dev/corecoder-web` 中执行 `git pull`。
 
 ## 开源协议
 
