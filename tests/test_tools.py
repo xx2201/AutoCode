@@ -17,7 +17,7 @@ from autocode.tools import ALL_TOOLS, get_tool
 
 
 def test_tool_count():
-    assert len(ALL_TOOLS) == 15
+    assert len(ALL_TOOLS) == 16
 
 
 def test_all_tools_have_valid_schema():

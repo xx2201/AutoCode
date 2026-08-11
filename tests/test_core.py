@@ -3,6 +3,8 @@
 import os
 import pathlib
 
+import pytest
+
 from autocode import Agent, LLM, Config, ALL_TOOLS, __version__
 from autocode import cli as cli_module
 from autocode.context import CompressionResult, ContextManager, MemoryManager, estimate_tokens
@@ -38,7 +40,7 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    assert len(ALL_TOOLS) == 15
+    assert len(ALL_TOOLS) == 16
 
 
 def test_config_from_env(monkeypatch):
@@ -291,6 +293,52 @@ def test_agent_passes_real_usage_plus_trailing_estimate_into_compression(tmp_pat
     assert captured["last_prompt_tokens"] == 4321 + estimate_tokens(trailing)
 
 
+def test_agent_refreshes_memory_only_after_actual_compression(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+        _call_with_retry = object()
+
+    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
+    original_messages = [
+        {"role": "user", "content": "old context"},
+        {"role": "assistant", "content": "old answer"},
+    ]
+    agent.messages = [dict(message) for message in original_messages]
+    scheduled = []
+    agent.memory.schedule_project_memory_refresh = (
+        lambda messages, llm, force=False: scheduled.append(list(messages)) or True
+    )
+
+    def _compress(messages, llm=None, last_prompt_tokens=0):
+        messages[0]["content"] = "compressed context"
+        return CompressionResult(
+            compressed=True,
+            layers=("tool_snip",),
+            before_tokens=100,
+            after_tokens=50,
+            before_messages=2,
+            after_messages=2,
+        )
+
+    agent.context.maybe_compress = _compress
+    agent._maybe_compress_messages()
+
+    assert scheduled == [original_messages]
+
+    scheduled.clear()
+    agent.context.maybe_compress = lambda *args, **kwargs: CompressionResult(
+        compressed=False,
+        layers=(),
+        before_tokens=50,
+        after_tokens=50,
+        before_messages=2,
+        after_messages=2,
+    )
+    agent._maybe_compress_messages()
+
+    assert scheduled == []
+
+
 def test_agent_context_usage_prefers_real_prompt_and_caps_at_window(tmp_path):
     class _NoopLLM:
         model = "fake"
@@ -520,6 +568,70 @@ def test_memory_refresh_no_change_preserves_existing_file(tmp_path):
     assert memory_path.read_text(encoding="utf-8") == original
 
 
+def test_memory_manager_applies_explicit_remember_update_and_forget(tmp_path):
+    manager = MemoryManager(str(tmp_path))
+
+    remembered = manager.apply_project_memory(
+        action="remember",
+        section="user_preference",
+        content="项目使用 pnpm 管理前端依赖。",
+    )
+    assert remembered.startswith("Remembered")
+    assert "项目使用 pnpm" in manager.build_project_memory_block()
+
+    updated = manager.apply_project_memory(
+        action="update",
+        section="user_preference",
+        content="项目使用 pnpm 管理前端依赖。",
+        replacement="项目使用 bun 管理前端依赖。",
+    )
+    assert updated.startswith("Updated")
+    saved = manager.build_project_memory_block()
+    assert "项目使用 bun" in saved
+    assert "项目使用 pnpm" not in saved
+
+    forgotten = manager.apply_project_memory(
+        action="forget",
+        section="user_preference",
+        content="项目使用 bun 管理前端依赖。",
+    )
+    assert forgotten.startswith("Forgot")
+    assert not manager.memory_file_path().exists()
+
+
+def test_memory_manager_enforces_exact_updates_secrets_and_twelve_item_limit(tmp_path):
+    manager = MemoryManager(str(tmp_path))
+
+    with pytest.raises(ValueError, match="not found"):
+        manager.apply_project_memory(
+            action="update",
+            section="project_knowledge",
+            content="不存在的旧记忆",
+            replacement="新记忆",
+        )
+
+    with pytest.raises(ValueError, match="must not store secrets"):
+        manager.apply_project_memory(
+            action="remember",
+            section="user_preference",
+            content="API key = sk-1234567890abcdef",
+        )
+
+    for index in range(12):
+        manager.apply_project_memory(
+            action="remember",
+            section="project_knowledge",
+            content=f"项目记忆 {index}",
+        )
+
+    with pytest.raises(ValueError, match="maximum of 12 items"):
+        manager.apply_project_memory(
+            action="remember",
+            section="known_issue",
+            content="第十三条记忆",
+        )
+
+
 def test_memory_manager_can_schedule_async_refresh(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()
@@ -598,6 +710,8 @@ def test_agent_prompt_snapshot_keeps_rules_and_memory_in_stable_system_prompt(tm
     agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
     agent._ensure_turn("处理任务")
     agent.messages = [{"role": "user", "content": "开始"}]
+    waited = []
+    agent.memory.wait_for_pending_refresh = lambda timeout=None: waited.append(timeout)
 
     snapshot = agent._create_prompt_snapshot(query="开始")
     request_messages = agent._request_messages(snapshot)
@@ -611,6 +725,7 @@ def test_agent_prompt_snapshot_keeps_rules_and_memory_in_stable_system_prompt(tm
     assert "# Retrieved Project Memory" in request_messages[0]["content"]
     assert "项目记忆一" in request_messages[0]["content"]
     assert request_messages[0]["content"] == second_request[0]["content"]
+    assert waited == [None]
     assert snapshot.digest == agent.turn_state.prompt_snapshot["digest"]
     assert request_messages == [
         request_messages[0],

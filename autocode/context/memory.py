@@ -5,6 +5,7 @@ from __future__ import annotations
 import concurrent.futures
 import hashlib
 import json
+import re
 import threading
 from pathlib import Path
 
@@ -12,9 +13,20 @@ from ..message_content import content_text
 
 
 class MemoryManager:
-    """Maintain one small, model-written PROJECT_MEMORY.md per workspace."""
+    """Maintain one small PROJECT_MEMORY.md per workspace."""
 
     _SECTIONS = ("用户偏好", "项目经验", "已知问题")
+    _SECTION_NAMES = {
+        "user_preference": "用户偏好",
+        "project_knowledge": "项目经验",
+        "known_issue": "已知问题",
+    }
+    _MAX_ITEMS = 12
+    _MAX_ITEM_CHARS = 240
+    _SECRET_PATTERN = re.compile(
+        r"(?i)(?:\b(?:api[_ -]?key|password|secret|access[_ -]?token)\b|密码|密钥)"
+        r"\s*[:：=]\s*\S+|\bsk-[A-Za-z0-9_-]{12,}"
+    )
 
     def __init__(self, workspace_root: str):
         self.workspace_root = Path(workspace_root).expanduser().resolve()
@@ -49,6 +61,23 @@ class MemoryManager:
 
     def memory_file_path(self) -> Path:
         return self.workspace_root / ".autocode" / "PROJECT_MEMORY.md"
+
+    def apply_project_memory(
+        self,
+        action: str,
+        section: str,
+        content: str,
+        replacement: str = "",
+    ) -> str:
+        """Apply one explicit memory operation in the shared memory write queue."""
+        future = self._executor.submit(
+            self._apply_project_memory,
+            action,
+            section,
+            content,
+            replacement,
+        )
+        return future.result()
 
     def refresh_project_memory(self, messages: list[dict], llm, force: bool = False) -> bool:
         """Incrementally rewrite PROJECT_MEMORY.md from the current turn trajectory."""
@@ -160,6 +189,88 @@ class MemoryManager:
         temporary.write_text(content.rstrip() + "\n", encoding="utf-8")
         temporary.replace(path)
 
+    def _apply_project_memory(
+        self,
+        action: str,
+        section: str,
+        content: str,
+        replacement: str,
+    ) -> str:
+        if action not in {"remember", "update", "forget"}:
+            raise ValueError("action must be remember, update, or forget")
+        section_name = self._SECTION_NAMES.get(section)
+        if section_name is None:
+            raise ValueError(
+                "section must be user_preference, project_knowledge, or known_issue"
+            )
+
+        item = self._validate_explicit_item(content, field_name="content")
+        new_item = ""
+        if action == "update":
+            new_item = self._validate_explicit_item(
+                replacement,
+                field_name="replacement",
+            )
+        elif replacement.strip():
+            raise ValueError("replacement is only valid when action is update")
+
+        sections = self._parse_project_memory(
+            self._read_if_exists(self.memory_file_path())
+        )
+        items = sections[section_name]
+
+        if action == "remember":
+            if item in items:
+                return f"Memory unchanged: item already exists in {section_name}: {item}"
+            if sum(len(values) for values in sections.values()) >= self._MAX_ITEMS:
+                raise ValueError(
+                    f"project memory already contains the maximum of {self._MAX_ITEMS} items"
+                )
+            items.append(item)
+            result = f"Remembered in {section_name}: {item}"
+        else:
+            if item not in items:
+                available = "\n".join(f"- {value}" for value in items) or "(none)"
+                raise ValueError(
+                    f"memory item was not found in {section_name}: {item}\n"
+                    f"Current items:\n{available}"
+                )
+            index = items.index(item)
+            if action == "forget":
+                items.pop(index)
+                result = f"Forgot from {section_name}: {item}"
+            elif new_item == item:
+                return f"Memory unchanged: replacement matches the existing item: {item}"
+            elif new_item in items:
+                items.pop(index)
+                result = (
+                    f"Updated {section_name}: removed duplicate source item '{item}'; "
+                    f"'{new_item}' already exists"
+                )
+            else:
+                items[index] = new_item
+                result = f"Updated {section_name}: {item} -> {new_item}"
+
+        rendered = self._render_project_memory(sections)
+        if rendered:
+            self._write_memory(rendered)
+        else:
+            self.memory_file_path().unlink(missing_ok=True)
+        return result
+
+    @classmethod
+    def _validate_explicit_item(cls, value: str, *, field_name: str) -> str:
+        item = " ".join(str(value or "").split()).removeprefix("- ").strip()
+        if not item:
+            raise ValueError(f"{field_name} must not be empty")
+        if len(item) > cls._MAX_ITEM_CHARS:
+            raise ValueError(
+                f"{field_name} must not exceed {cls._MAX_ITEM_CHARS} characters"
+            )
+        if cls._SECRET_PATTERN.search(item):
+            raise ValueError("project memory must not store secrets or credentials")
+        return item
+
     def _mark_refresh_complete(self, key: str, trajectory_key: str) -> None:
         with self._lock:
             self._last_project_memory_key = key
@@ -169,7 +280,10 @@ class MemoryManager:
     def _normalize_project_memory(cls, text: str) -> str:
         if text.strip() == "NO_CHANGE":
             return ""
+        return cls._render_project_memory(cls._parse_project_memory(text))
 
+    @classmethod
+    def _parse_project_memory(cls, text: str) -> dict[str, list[str]]:
         sections: dict[str, list[str]] = {name: [] for name in cls._SECTIONS}
         current_section = ""
         bullet_count = 0
@@ -184,12 +298,15 @@ class MemoryManager:
             item = line[2:].strip()
             if not item or item in sections[current_section]:
                 continue
-            sections[current_section].append(item[:240])
+            sections[current_section].append(item[:cls._MAX_ITEM_CHARS])
             bullet_count += 1
-            if bullet_count >= 12:
+            if bullet_count >= cls._MAX_ITEMS:
                 break
+        return sections
 
-        if bullet_count == 0:
+    @classmethod
+    def _render_project_memory(cls, sections: dict[str, list[str]]) -> str:
+        if not any(sections.values()):
             return ""
 
         output = ["# Project Memory"]

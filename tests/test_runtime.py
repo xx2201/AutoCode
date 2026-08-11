@@ -378,6 +378,36 @@ def test_agent_todo_tool_updates_turn_state(tmp_path):
     assert agent.turn_state.todos[0]["content"] == "Read file"
 
 
+def test_agent_memory_tool_persists_explicit_memory(tmp_path):
+    responses = [
+        LLMResponse(
+            content="",
+            tool_calls=[
+                ToolCall(
+                    id="1",
+                    name="memory",
+                    arguments={
+                        "action": "remember",
+                        "section": "user_preference",
+                        "content": "修改代码前先说明方案。",
+                    },
+                )
+            ],
+        ),
+        LLMResponse(content="已经记住。"),
+    ]
+    agent = Agent(
+        llm=_FakeLLM(responses),
+        workspace_root=str(tmp_path),
+        permission_mode="full_access",
+    )
+
+    reply = agent.chat("记住：修改代码前先说明方案。")
+
+    assert reply == "已经记住。"
+    assert "修改代码前先说明方案" in agent.memory.build_project_memory_block()
+
+
 def test_agent_summarizes_when_max_rounds_reached(tmp_path):
     responses = [
         LLMResponse(content="", tool_calls=[ToolCall(id="1", name="echo", arguments={"text": "hi"})]),
@@ -532,8 +562,8 @@ def test_agent_reuses_same_session_id_and_rotates_current_turn_after_completion(
     assert '"content": "second prompt"' in checkpoint
 
 
-def test_agent_schedules_project_memory_refresh_in_background(tmp_path):
-    responses = [LLMResponse(content="first done"), LLMResponse(content="second done")]
+def test_agent_does_not_refresh_project_memory_at_normal_turn_completion(tmp_path):
+    responses = [LLMResponse(content="done")]
     agent = Agent(
         llm=_FakeLLM(responses),
         workspace_root=str(tmp_path),
@@ -548,17 +578,10 @@ def test_agent_schedules_project_memory_refresh_in_background(tmp_path):
 
     agent.memory.schedule_project_memory_refresh = _schedule
 
-    first_reply = agent.chat("first prompt")
-    first_turn_id = agent.turn_state.turn_id
-    second_reply = agent.chat("second prompt")
-    second_turn_id = agent.turn_state.turn_id
+    reply = agent.chat("ordinary prompt")
 
-    assert first_reply == "first done"
-    assert second_reply == "second done"
-    assert len(calls) == 2
-    assert {message["turn_id"] for message in calls[0][0]} == {first_turn_id}
-    assert {message["turn_id"] for message in calls[1][0]} == {second_turn_id}
-    assert [force for _, force in calls] == [True, True]
+    assert reply == "done"
+    assert calls == []
 
 
 def test_agent_cleans_temporary_processes_when_turn_completes(tmp_path):

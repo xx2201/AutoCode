@@ -35,6 +35,7 @@ from ..tools.agent import AgentTool
 from ..tools.base import Tool, ToolResult
 from ..tools.edit import EditFileTool
 from ..tools.file_state import FileReadTracker
+from ..tools.memory import MemoryTool
 from ..tools.read import ReadTool
 from ..tools.write import WriteFileTool
 from ..tools.skill import SkillTool
@@ -237,6 +238,8 @@ class Agent:
             tool._file_read_tracker = self.file_reads
         if isinstance(tool, SkillTool):
             tool._skill_manager = self.skills
+        if isinstance(tool, MemoryTool):
+            tool._memory_manager = self.memory
         if isinstance(tool, (AgentTool, TodoWriteTool)):
             tool._parent_agent = self
 
@@ -331,6 +334,7 @@ class Agent:
         if self.turn_state is None:
             raise RuntimeError("Cannot create PromptSnapshot without an active turn.")
         self._sync_mcp_tools()
+        self.memory.wait_for_pending_refresh()
         memory_block = self.memory.build_project_memory_block(query=query)
         system_prompt = self._build_static_system_prompt()
         if memory_block:
@@ -459,20 +463,17 @@ class Agent:
 
     def _maybe_compress_messages(self):
         effective_used = self._estimated_context_tokens()
-        if (
-            self.turn_state is not None
-            and hasattr(self.llm, "_call_with_retry")
-            and effective_used > int(self.context.input_budget_tokens * 0.50)
-        ):
-            self.memory.schedule_project_memory_refresh(
-                self._turn_messages(self.turn_state.turn_id),
-                self.llm,
-            )
+        messages_before_compression = [dict(message) for message in self.messages]
         result = self.context.maybe_compress(
             self.messages,
             self.llm,
             last_prompt_tokens=effective_used,
         )
+        if result.compressed and hasattr(self.llm, "_call_with_retry"):
+            self.memory.schedule_project_memory_refresh(
+                messages_before_compression,
+                self.llm,
+            )
         if result.compressed and self.session_state is not None:
             saved_tokens = max(0, result.before_tokens - result.after_tokens)
             self.transcript.append_compaction(
@@ -1206,12 +1207,6 @@ class Agent:
                         return "continue", ""
                     if not finished:
                         raise RuntimeError("Turn controller did not finish an idle turn.")
-                    if hasattr(self.llm, "_call_with_retry"):
-                        self.memory.schedule_project_memory_refresh(
-                            self._turn_messages(self.turn_state.turn_id),
-                            self.llm,
-                            force=True,
-                        )
                     self.turn_state.mark_completed()
                     self.hooks.emit("turn_status", self._event_payload(status=self.turn_state.status))
                     self.persist_session()
