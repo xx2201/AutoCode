@@ -345,6 +345,101 @@ def test_context_summary_fails_instead_of_persisting_truncated_output():
         )
 
 
+def test_context_summary_drops_oldest_item_only_after_context_overflow():
+    class _OverflowOnceLLM:
+        api_format = "chat_completions"
+
+        def __init__(self):
+            self.requests = []
+
+        def chat(self, messages, **kwargs):
+            self.requests.append(messages)
+            if len(self.requests) == 1:
+                raise RuntimeError("maximum context length exceeded")
+            return LLMResponse(content="summary after one removal")
+
+    history = [
+        {"role": "user", "content": "oldest"},
+        {"role": "assistant", "content": "middle"},
+        {"role": "user", "content": "newest"},
+    ]
+    llm = _OverflowOnceLLM()
+
+    summary = ContextManager(max_tokens=1_000_000)._get_summary(history, llm)
+
+    assert summary == "summary after one removal"
+    assert [message["content"] for message in llm.requests[0][1:-1]] == [
+        "oldest",
+        "middle",
+        "newest",
+    ]
+    assert [message["content"] for message in llm.requests[1][1:-1]] == [
+        "middle",
+        "newest",
+    ]
+    assert history[0]["content"] == "oldest"
+
+
+def test_context_summary_context_overflow_removes_paired_tool_result():
+    class _OverflowOnceLLM:
+        api_format = "chat_completions"
+
+        def __init__(self):
+            self.requests = []
+
+        def chat(self, messages, **kwargs):
+            self.requests.append(messages)
+            if len(self.requests) == 1:
+                error = RuntimeError("provider rejected request")
+                error.body = {"error": {"code": "context_length_exceeded"}}
+                raise error
+            return LLMResponse(content="valid summary")
+
+    history = [
+        {
+            "role": "assistant",
+            "content": "old tool call",
+            "tool_calls": [
+                {
+                    "id": "call_old",
+                    "type": "function",
+                    "function": {"name": "read", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call_old", "content": "old result"},
+        {"role": "user", "content": "keep me"},
+    ]
+    llm = _OverflowOnceLLM()
+
+    ContextManager(max_tokens=1_000_000)._get_summary(history, llm)
+
+    retried_history = llm.requests[1][1:-1]
+    assert retried_history == [{"role": "user", "content": "keep me"}]
+
+
+def test_context_summary_does_not_remove_history_for_unrelated_error():
+    class _FailingLLM:
+        api_format = "chat_completions"
+
+        def __init__(self):
+            self.calls = 0
+
+        def chat(self, messages, **kwargs):
+            self.calls += 1
+            raise RuntimeError("authentication failed")
+
+    llm = _FailingLLM()
+
+    with pytest.raises(RuntimeError, match="authentication failed"):
+        ContextManager(max_tokens=1_000_000)._get_summary(
+            [{"role": "user", "content": "must remain"}],
+            llm,
+        )
+
+    assert llm.calls == 1
+
+
 def test_context_reserves_output_budget_before_compression_thresholds():
     ctx = ContextManager(max_tokens=100_000, output_reserve_tokens=20_000)
 

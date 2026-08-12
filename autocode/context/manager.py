@@ -24,18 +24,21 @@ if TYPE_CHECKING:
 
 
 _SUMMARIZATION_PROMPT = """You are performing a CONTEXT CHECKPOINT COMPACTION.
-Create a concise, structured handoff summary for another LLM that will resume the task.
+Create a structured handoff summary for another LLM that will resume the task without access to
+the prior conversation.
 
-Preserve:
-- current progress and turn state
-- key decisions and their rationale
+Include:
+- the current objective, progress, and exact turn state
+- key decisions and their rationale, including rejected approaches that constrain future work
 - user requirements, constraints, and preferences
-- files read, edited, or created
-- tool results, errors, and validation evidence needed to continue
-- remaining work and clear next steps
+- files, symbols, commands, tool results, errors, and validation evidence needed to continue
+- remaining work, blockers, uncertainties, and clear next steps
+- relevant facts already preserved by an earlier context-compaction summary
 
-Drop redundant back-and-forth and verbose output only after preserving its actionable meaning.
-Output only the handoff summary."""
+Preserve exact paths, identifiers, commands, error text, and delicate values when their literal form
+matters. Do not invent progress or claim validation without evidence. Drop redundant back-and-forth
+and verbose output only after preserving its actionable meaning. Write in the user's primary language
+unless exact source text must remain unchanged. Output only the handoff summary."""
 
 
 def _approx_tokens(text: str) -> int:
@@ -217,15 +220,49 @@ class ContextManager:
         messages.extend(tail)
 
     def _get_summary(self, messages: list[dict], llm: LLM | None) -> str:
-        """Generate a summary from the complete old history."""
+        """Summarize all old history, dropping oldest valid items only on context overflow."""
         if llm:
-            resp = llm.chat(messages=self._summary_request_messages(messages, llm))
-            if resp.stop_reason in {"max_tokens", "length"}:
-                raise RuntimeError("Context compaction summary reached the model output limit.")
-            return resp.content
+            history = [dict(message) for message in messages]
+            while True:
+                try:
+                    resp = llm.chat(messages=self._summary_request_messages(history, llm))
+                except Exception as exc:
+                    # Keep context management import-light; provider SDKs are loaded only here.
+                    from ..llm import is_context_window_error
+
+                    if not is_context_window_error(exc) or not history:
+                        raise
+                    self._remove_oldest_summary_item(history)
+                    continue
+                if resp.stop_reason in {"max_tokens", "length"}:
+                    raise RuntimeError("Context compaction summary reached the model output limit.")
+                return resp.content
 
         # Deterministic extraction is reserved for tests or callers without an LLM.
         return self._extract_key_info(messages)
+
+    @staticmethod
+    def _remove_oldest_summary_item(messages: list[dict]) -> None:
+        """Remove one oldest item and any paired tool results required for valid projection."""
+        removed = messages.pop(0)
+        tool_call_ids = {
+            str(call.get("id"))
+            for call in removed.get("tool_calls", [])
+            if isinstance(call, dict) and call.get("id")
+        }
+        if tool_call_ids:
+            messages[:] = [
+                message
+                for message in messages
+                if not (
+                    message.get("role") == "tool"
+                    and str(message.get("tool_call_id")) in tool_call_ids
+                )
+            ]
+
+        # A leading tool result has no corresponding assistant tool call after removal.
+        while messages and messages[0].get("role") == "tool":
+            messages.pop(0)
 
     @staticmethod
     def _summary_request_messages(messages: list[dict], llm: LLM) -> list[dict]:

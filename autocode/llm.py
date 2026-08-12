@@ -695,6 +695,38 @@ def is_retryable_llm_error(exc: Exception) -> bool:
     return False
 
 
+def is_context_window_error(exc: Exception) -> bool:
+    """Return whether the provider explicitly rejected an oversized context."""
+    values = [str(exc)]
+    for attribute in ("body", "code", "message", "type"):
+        value = getattr(exc, attribute, None)
+        if value is not None:
+            try:
+                values.append(json.dumps(value, ensure_ascii=False, default=str))
+            except (TypeError, ValueError):
+                values.append(str(value))
+
+    response = getattr(exc, "response", None)
+    if response is not None:
+        response_text = getattr(response, "text", None)
+        if response_text:
+            values.append(str(response_text))
+
+    detail = " ".join(values).lower()
+    markers = (
+        "context_length_exceeded",
+        "contextwindowexceeded",
+        "context window exceeded",
+        "maximum context length",
+        "prompt is too long",
+        "input is too long",
+        "conversation too long",
+        "exceeds the context window",
+        "exceeded the context window",
+    )
+    return any(marker in detail for marker in markers)
+
+
 class LiteLLM(LLM):
     """LLM backend via LiteLLM, supporting 100+ providers.
 
