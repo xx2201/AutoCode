@@ -5,9 +5,6 @@ from __future__ import annotations
 import shutil
 from pathlib import Path
 
-_SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", ".tox", "dist", "build"}
-
-
 class WorkspaceFS:
     def __init__(self, workspace_root: str):
         self.workspace_root = Path(workspace_root).expanduser().resolve()
@@ -82,22 +79,4 @@ class WorkspaceFS:
             except ValueError:
                 continue
             results.append(item.resolve())
-        return results
-
-    def walk_files(self, path: str = ".", include: str | None = None, limit: int = 5000) -> list[Path]:
-        base = self.resolve_path(path)
-        self.ensure_within_workspace(base)
-        if not base.exists():
-            raise ValueError(f"{path} not found")
-        if base.is_file():
-            return [base]
-
-        results = []
-        for item in base.rglob(include or "*"):
-            if any(part in _SKIP_DIRS for part in item.parts):
-                continue
-            if item.is_file():
-                results.append(item.resolve())
-            if len(results) >= limit:
-                break
         return results

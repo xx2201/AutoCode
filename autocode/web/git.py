@@ -9,7 +9,6 @@ from pathlib import Path
 from typing import Any
 
 MAX_DIFF_BYTES = 2 * 1024 * 1024
-MAX_CHANGED_FILES = 1000
 MAX_ACTION_PATHS = 200
 
 
@@ -219,7 +218,6 @@ class GitWorkspace:
     def _changes(self) -> list[dict[str, Any]]:
         raw = self._run_bytes(
             ["status", "--porcelain=v1", "-z", "--untracked-files=all"],
-            max_bytes=4 * 1024 * 1024,
         )
         records = raw.split(b"\0")
         parsed: list[dict[str, Any]] = []
@@ -252,8 +250,6 @@ class GitWorkspace:
                     "deletions": 0,
                 }
             )
-            if len(parsed) >= MAX_CHANGED_FILES:
-                break
         tracked_stats = self._tracked_stats()
         for item in parsed:
             if item["status"] == "untracked":
@@ -485,7 +481,7 @@ class GitWorkspace:
             raise GitCommandError(stderr.strip() or "Git command failed.")
         return stdout
 
-    def _run_bytes(self, args: list[str], *, max_bytes: int) -> bytes:
+    def _run_bytes(self, args: list[str]) -> bytes:
         env = os.environ.copy()
         env["GIT_TERMINAL_PROMPT"] = "0"
         try:
@@ -504,7 +500,7 @@ class GitWorkspace:
         if completed.returncode != 0:
             message = completed.stderr.decode("utf-8", errors="replace").strip()
             raise GitCommandError(message or "Git command failed.")
-        return completed.stdout[:max_bytes]
+        return completed.stdout
 
     @staticmethod
     def _run_external(

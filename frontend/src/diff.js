@@ -3,7 +3,7 @@ export function parseDiffHunks(raw) {
   let current = null;
   let oldLine = 0;
   let newLine = 0;
-  for (const source of (raw || "").split("\n").slice(0, 5000)) {
+  for (const source of (raw || "").split("\n")) {
     if (source.startsWith("@@")) {
       const match = source.match(
         /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/,

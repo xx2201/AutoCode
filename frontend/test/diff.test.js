@@ -38,3 +38,16 @@ test("diff parser groups hunks with responsive-view statistics", () => {
   assert.equal(hunks[0].deletions, 1);
   assert.equal(hunks[0].lines[0].text, "keep");
 });
+
+test("diff parser preserves hunks longer than 5000 source lines", () => {
+  const source = [
+    "@@ -1,6000 +1,6000 @@",
+    ...Array.from({ length: 6000 }, (_, index) => ` line-${index + 1}`),
+  ].join("\n");
+
+  const hunks = parseDiffHunks(source);
+
+  assert.equal(hunks.length, 1);
+  assert.equal(hunks[0].lines.length, 6000);
+  assert.equal(hunks[0].lines.at(-1).text, "line-6000");
+});

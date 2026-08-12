@@ -539,7 +539,7 @@ class RemoteManager:
                 )
             }
             merged.update({item["path"]: item for item in safe_changes})
-            user_message["changed_files"] = list(merged.values())[:200]
+            user_message["changed_files"] = list(merged.values())
             runtime.agent.persist_session()
 
     def current_session_id(self, chat_id: Hashable) -> str:
@@ -555,7 +555,7 @@ class RemoteManager:
         if not isinstance(value, list):
             return []
         files = []
-        for item in value[:200]:
+        for item in value:
             if not isinstance(item, dict):
                 continue
             path = str(item.get("path", "")).strip().replace("\\", "/")[:1000]

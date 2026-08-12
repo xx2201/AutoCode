@@ -47,6 +47,21 @@ def test_git_snapshot_and_diff_include_tracked_and_untracked_changes(tmp_path):
     assert "+beta" in diff["diff"]
 
 
+def test_git_changes_preserve_more_than_1000_files():
+    workspace = object.__new__(GitWorkspace)
+    workspace._run_bytes = lambda args: b"".join(
+        f"?? generated/file-{index:04}.txt\0".encode()
+        for index in range(1001)
+    )
+    workspace._tracked_stats = lambda: {}
+    workspace._untracked_stats = lambda path: (1, 0)
+
+    changes = workspace._changes()
+
+    assert len(changes) == 1001
+    assert changes[-1]["path"] == "generated/file-1000.txt"
+
+
 def test_git_stage_unstage_commit_and_branch_compare(tmp_path):
     repo = _repo(tmp_path)
     workspace = GitWorkspace(repo)

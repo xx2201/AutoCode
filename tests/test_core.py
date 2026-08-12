@@ -690,6 +690,20 @@ def test_memory_manager_separates_rules_and_project_memory(tmp_path):
     assert memory_path == workspace / ".autocode" / "PROJECT_MEMORY.md"
 
 
+def test_memory_manager_preserves_complete_authoritative_rules(tmp_path):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    agents_rules = "agents-start\n" + "a" * 2_001 + "\nagents-end\n"
+    claude_rules = "claude-start\n" + "c" * 1_201 + "\nclaude-end\n"
+    (workspace / "AGENTS.md").write_text(agents_rules, encoding="utf-8")
+    (workspace / "CLAUDE.md").write_text(claude_rules, encoding="utf-8")
+
+    block = MemoryManager(str(workspace)).build_rules_block()
+
+    assert agents_rules.rstrip() in block
+    assert claude_rules.rstrip() in block
+
+
 def test_memory_refresh_rewrites_one_markdown_file_from_task_trajectory(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

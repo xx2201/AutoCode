@@ -11,8 +11,6 @@ import yaml
 
 _SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9-]{0,63}$")
 _MAX_DESCRIPTION_CHARS = 1536
-_MAX_SKILL_CHARS = 50_000
-_MAX_RESOURCE_CHARS = 100_000
 
 
 class SkillError(ValueError):
@@ -77,8 +75,6 @@ class SkillManager:
         skill = self._require_skill(name)
         _, body = self._parse_skill_file(skill.path)
         rendered = self._substitute_arguments(body, arguments, skill.directory)
-        if len(rendered) > _MAX_SKILL_CHARS:
-            rendered = rendered[:_MAX_SKILL_CHARS] + "\n\n... (skill content truncated)"
         return (
             f"[Loaded skill: {skill.name}]\n"
             f"Source: {skill.source}\n"
@@ -99,8 +95,6 @@ class SkillManager:
         if not target.is_file():
             raise SkillError(f"skill resource not found: {resource}")
         text = target.read_text(encoding="utf-8", errors="replace")
-        if len(text) > _MAX_RESOURCE_CHARS:
-            text = text[:_MAX_RESOURCE_CHARS] + "\n\n... (skill resource truncated)"
         return f"[Skill resource: {skill.name}/{relative.as_posix()}]\n\n{text}"
 
     def explicit_invocation(self, user_input: str) -> str | None:

@@ -45,10 +45,10 @@ class MemoryManager:
         parts = []
         project_rules = self._read_if_exists(self.workspace_root / "AGENTS.md")
         if project_rules:
-            parts.append("## Project Rules\n" + self._clip(project_rules, 2000))
+            parts.append("## Project Rules\n" + project_rules)
         claude_rules = self._read_if_exists(self.workspace_root / "CLAUDE.md")
         if claude_rules:
-            parts.append("## Project Notes\n" + self._clip(claude_rules, 1200))
+            parts.append("## Project Notes\n" + claude_rules)
         return "\n\n".join(parts)
 
     def build_project_memory_block(self, query: str = "") -> str:

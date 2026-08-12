@@ -8,12 +8,14 @@ import sys
 import tempfile
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from pypdf import PdfWriter
 
 from autocode.infra import WorkspaceFS
 from autocode.tools import ALL_TOOLS, get_tool
+from autocode.tools.agent import AgentTool
 
 
 def test_tool_count():
@@ -30,6 +32,36 @@ def test_all_tools_have_valid_schema():
         assert params["type"] == "object"
         assert "properties" in params
         assert "required" in params
+
+
+def test_agent_tool_preserves_complete_long_result(monkeypatch, tmp_path):
+    long_result = "sub-agent-start\n" + "x" * 5_001 + "\nsub-agent-end"
+
+    class FakeSubAgent:
+        def __init__(self, **kwargs):
+            pass
+
+        def chat(self, task):
+            assert task == "inspect everything"
+            return long_result
+
+    import autocode.agent
+
+    monkeypatch.setattr(autocode.agent, "Agent", FakeSubAgent)
+    tool = AgentTool()
+    tool._parent_agent = SimpleNamespace(
+        _fresh_tools=lambda: [],
+        llm=object(),
+        _tool_factory=None,
+        mcp_manager=None,
+        context=SimpleNamespace(max_tokens=1_000_000, output_reserve_tokens=32_000),
+        fs=SimpleNamespace(workspace_root=tmp_path),
+        policy=SimpleNamespace(permission_mode="ask"),
+    )
+
+    result = tool.execute("inspect everything")
+
+    assert result == f"[Sub-agent completed]\n{long_result}"
 
 
 # --- shell_command ---

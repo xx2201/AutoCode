@@ -107,6 +107,27 @@ def test_skill_resource_stays_inside_skill_directory(tmp_path):
         raise AssertionError("path traversal should be rejected")
 
 
+def test_skill_load_and_resource_preserve_complete_long_content(tmp_path):
+    skill_path = _write_skill(
+        tmp_path / "home" / ".agents" / "skills",
+        "long-docs",
+        (
+            "---\ndescription: Read long instructions\n---\n"
+            "skill-start\n" + "s" * 50_001 + "\nskill-end\n"
+        ),
+    )
+    resource = "resource-start\n" + "r" * 100_001 + "\nresource-end\n"
+    (skill_path.parent / "reference.md").write_text(resource, encoding="utf-8")
+    manager = SkillManager(str(tmp_path), home=tmp_path / "home")
+
+    loaded = manager.load("long-docs")
+    loaded_resource = manager.read_resource("long-docs", "reference.md")
+
+    assert "skill-start" in loaded
+    assert loaded.endswith("skill-end")
+    assert loaded_resource.endswith("resource-end\n")
+
+
 class _CaptureLLM:
     def __init__(self):
         self.model = "fake"
