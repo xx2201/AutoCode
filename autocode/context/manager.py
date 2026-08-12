@@ -17,9 +17,25 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 from ..message_content import content_text, is_internal_visual_context
+from ..message_projection import serialize_anthropic_messages, serialize_chat_completions
 
 if TYPE_CHECKING:
     from ..llm import LLM
+
+
+_SUMMARIZATION_PROMPT = """You are performing a CONTEXT CHECKPOINT COMPACTION.
+Create a concise, structured handoff summary for another LLM that will resume the task.
+
+Preserve:
+- current progress and turn state
+- key decisions and their rationale
+- user requirements, constraints, and preferences
+- files read, edited, or created
+- tool results, errors, and validation evidence needed to continue
+- remaining work and clear next steps
+
+Drop redundant back-and-forth and verbose output only after preserving its actionable meaning.
+Output only the handoff summary."""
 
 
 def _approx_tokens(text: str) -> int:
@@ -64,10 +80,6 @@ class ContextManager:
         self._collapse_at = int(self.input_budget_tokens * 0.90)
         self._summary_keep_recent = max(2, min(6, self.input_budget_tokens // 200_000))
         self._collapse_keep_recent = max(1, min(3, self.input_budget_tokens // 400_000))
-        self._summary_input_chars = max(
-            15_000,
-            min(120_000, self.input_budget_tokens // 6),
-        )
 
     @staticmethod
     def effective_used(messages: list[dict], last_prompt_tokens: int = 0) -> int:
@@ -205,42 +217,27 @@ class ContextManager:
         messages.extend(tail)
 
     def _get_summary(self, messages: list[dict], llm: LLM | None) -> str:
-        """Generate summary via LLM or fallback to extraction."""
-        flat = self._flatten(messages)
-
+        """Generate a summary from the complete old history."""
         if llm:
-            try:
-                resp = llm.chat(
-                    messages=[
-                        {
-                            "role": "system",
-                            "content": (
-                                "Compress this conversation into a brief summary. "
-                                "Preserve: file paths edited, key decisions made, "
-                                "errors encountered, current turn state. "
-                                "Drop: verbose command output, code listings, "
-                                "redundant back-and-forth."
-                            ),
-                        },
-                        {"role": "user", "content": flat[:self._summary_input_chars]},
-                    ],
-                )
-                return resp.content
-            except Exception:
-                pass
+            resp = llm.chat(messages=self._summary_request_messages(messages, llm))
+            if resp.stop_reason in {"max_tokens", "length"}:
+                raise RuntimeError("Context compaction summary reached the model output limit.")
+            return resp.content
 
-        # fallback: extract key lines
+        # Deterministic extraction is reserved for tests or callers without an LLM.
         return self._extract_key_info(messages)
 
     @staticmethod
-    def _flatten(messages: list[dict]) -> str:
-        parts = []
-        for m in messages:
-            role = m.get("role", "?")
-            text = content_text(m.get("content", ""))
-            if text:
-                parts.append(f"[{role}] {text[:400]}")
-        return "\n".join(parts)
+    def _summary_request_messages(messages: list[dict], llm: LLM) -> list[dict]:
+        """Project the complete compacted history exactly as a normal model request sees it."""
+        history = [
+            *messages,
+            {"role": "user", "content": "Create the context checkpoint summary now."},
+        ]
+        if getattr(llm, "api_format", "chat_completions") == "messages":
+            return serialize_anthropic_messages(_SUMMARIZATION_PROMPT, history)
+        else:
+            return serialize_chat_completions(_SUMMARIZATION_PROMPT, history)
 
     @staticmethod
     def _extract_key_info(messages: list[dict]) -> str:

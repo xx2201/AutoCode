@@ -225,11 +225,124 @@ def test_context_hard_collapse_prefers_last_complete_turn():
     assert msgs[2:] == original_tail
 
 
-def test_context_large_window_uses_larger_recent_tail_and_summary_budget():
+def test_context_large_window_uses_larger_recent_tail():
     ctx = ContextManager(max_tokens=1_000_000)
     assert ctx._summary_keep_recent == 5
     assert ctx._collapse_keep_recent == 2
-    assert ctx._summary_input_chars == 120_000
+
+
+def test_context_summary_sends_complete_history_without_pretruncation():
+    class _CaptureLLM:
+        api_format = "chat_completions"
+
+        def __init__(self):
+            self.messages = []
+
+        def chat(self, messages, **kwargs):
+            self.messages = messages
+            return LLMResponse(content="complete summary")
+
+    long_user = "user-start\n" + "u" * 20_000 + "\nuser-end"
+    long_tool_result = "tool-start\n" + "t" * 20_000 + "\ntool-end"
+    history = [
+        {"role": "user", "content": long_user},
+        {
+            "role": "assistant",
+            "content": "calling tool",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "arguments": '{"file_path":"large.txt"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": long_tool_result,
+        },
+    ]
+    llm = _CaptureLLM()
+
+    summary = ContextManager(max_tokens=1_000_000)._get_summary(history, llm)
+
+    assert summary == "complete summary"
+    assert "CONTEXT CHECKPOINT COMPACTION" in llm.messages[0]["content"]
+    assert llm.messages[1]["content"] == long_user
+    assert llm.messages[2]["tool_calls"] == history[1]["tool_calls"]
+    assert llm.messages[3]["content"] == long_tool_result
+    assert llm.messages[-1]["role"] == "user"
+    assert llm.messages[-1]["content"] == "Create the context checkpoint summary now."
+
+
+def test_context_summary_preserves_anthropic_tool_and_image_content():
+    class _CaptureLLM:
+        api_format = "messages"
+
+        def __init__(self):
+            self.messages = []
+
+        def chat(self, messages, **kwargs):
+            self.messages = messages
+            return LLMResponse(content="complete summary")
+
+    image_url = "data:image/png;base64,aGVsbG8="
+    history = [
+        {"role": "user", "content": "inspect the complete image"},
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {
+                        "name": "read",
+                        "arguments": '{"file_path":"image.png"}',
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "complete tool result",
+            "model_content": [
+                {"type": "image_url", "image_url": {"url": image_url}}
+            ],
+        },
+    ]
+    llm = _CaptureLLM()
+
+    ContextManager(max_tokens=1_000_000)._get_summary(history, llm)
+
+    assert "CONTEXT CHECKPOINT COMPACTION" in llm.messages[0]["content"]
+    assert llm.messages[2]["content"][0]["type"] == "tool_use"
+    tool_result = llm.messages[3]["content"][0]
+    assert tool_result["type"] == "tool_result"
+    assert tool_result["content"][0]["text"] == "complete tool result"
+    assert tool_result["content"][1]["source"]["data"] == "aGVsbG8="
+    assert llm.messages[-1]["content"][-1]["text"] == (
+        "Create the context checkpoint summary now."
+    )
+
+
+def test_context_summary_fails_instead_of_persisting_truncated_output():
+    class _TruncatedLLM:
+        api_format = "chat_completions"
+
+        def chat(self, messages, **kwargs):
+            return LLMResponse(content="partial", stop_reason="max_tokens")
+
+    with pytest.raises(RuntimeError, match="reached the model output limit"):
+        ContextManager(max_tokens=1_000_000)._get_summary(
+            [{"role": "user", "content": "complete history"}],
+            _TruncatedLLM(),
+        )
 
 
 def test_context_reserves_output_budget_before_compression_thresholds():
