@@ -183,6 +183,18 @@ def test_remote_manager_exposes_bounded_conversation_snapshot(tmp_path):
     assert messages[0]["turn_elapsed_ms"] >= 0
 
 
+def test_remote_manager_preserves_complete_long_assistant_message(tmp_path):
+    long_response = "response-start\n" + "x" * 20_000 + "\nresponse-end"
+    llm = _FakeLLM([LLMResponse(content=long_response)])
+    manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
+    manager.submit(808, "give me a detailed explanation")
+
+    messages = manager.conversation_messages(808)
+
+    assert messages[1]["content"] == long_response
+    assert messages[1]["content"].endswith("response-end")
+
+
 def test_remote_manager_exposes_complete_cli_transcript_and_hides_visual_carriers(
     tmp_path, monkeypatch
 ):

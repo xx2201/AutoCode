@@ -418,7 +418,7 @@ class RemoteManager:
                 messages.append(
                     {
                         "role": role,
-                        "content": content[:20_000],
+                        "content": content,
                         "message_id": str(message.get("message_id", "")),
                         "message_kind": str(message.get("message_kind", role)),
                         "revision_id": str(message.get("revision_id", "")),
