@@ -27,6 +27,7 @@ from ..mcp import get_shared_mcp_manager
 from ..remote.manager import RemoteManager, presentation_tool_arguments
 from ..state.changes import (
     ChangeSetConflictError,
+    ChangeSetError,
     ChangeSetStore,
     ChangeSetUnavailableError,
 )
@@ -410,8 +411,19 @@ class LocalRunner:
             pending_change = self._pending_changes.get(change_key)
             if pending_change is not None and not result.pending_tool:
                 store, before, turn_id = self._pending_changes.pop(change_key)
-                manifest = store.capture_after(turn_id, before)
-                changed_files = self._decorate_changeset_files(changed_files, manifest)
+                try:
+                    manifest = store.capture_after(turn_id, before)
+                except ChangeSetError as exc:
+                    log_event(
+                        self._logger,
+                        logging.WARNING,
+                        "Per-turn Undo unavailable",
+                        phase="capture_after",
+                        error_type=type(exc).__name__,
+                        error=str(exc),
+                    )
+                else:
+                    changed_files = self._decorate_changeset_files(changed_files, manifest)
             manager.annotate_turn_changes(payload["client_id"], changed_files)
             response = asdict(result)
             response["files"] = output_files
@@ -507,11 +519,23 @@ class LocalRunner:
                 nonlocal change_store, change_before, started_turn_id
                 if event == "turn_started" and git_before.get("available"):
                     started_turn_id = str(data.get("turn_id", ""))
-                    change_store = ChangeSetStore(
-                        workspace,
-                        str(data.get("session_id", "")),
-                    )
-                    change_before = change_store.capture_before(started_turn_id)
+                    try:
+                        change_store = ChangeSetStore(
+                            workspace,
+                            str(data.get("session_id", "")),
+                        )
+                        change_before = change_store.capture_before(started_turn_id)
+                    except ChangeSetError as exc:
+                        log_event(
+                            self._logger,
+                            logging.WARNING,
+                            "Per-turn Undo unavailable",
+                            phase="capture_before",
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                        )
+                        change_store = None
+                        change_before = None
                 if event_handler is None:
                     return
                 if event == "turn_started":
@@ -557,8 +581,19 @@ class LocalRunner:
                         started_turn_id,
                     )
                 else:
-                    manifest = change_store.capture_after(started_turn_id, change_before)
-                    changed_files = self._decorate_changeset_files(changed_files, manifest)
+                    try:
+                        manifest = change_store.capture_after(started_turn_id, change_before)
+                    except ChangeSetError as exc:
+                        log_event(
+                            self._logger,
+                            logging.WARNING,
+                            "Per-turn Undo unavailable",
+                            phase="capture_after",
+                            error_type=type(exc).__name__,
+                            error=str(exc),
+                        )
+                    else:
+                        changed_files = self._decorate_changeset_files(changed_files, manifest)
             manager.annotate_turn_changes(client_id, changed_files)
             all_files.extend(output_files)
             all_changed.extend(changed_files)

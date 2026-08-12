@@ -355,6 +355,129 @@ def test_runner_captures_undo_and_reapply_for_one_turn(tmp_path, monkeypatch):
     assert (project / "created.txt").read_text(encoding="utf-8") == "created\n"
 
 
+def test_runner_continues_when_undo_capture_before_exceeds_limit(tmp_path, monkeypatch):
+    from autocode.state.changes import ChangeSetLimitError
+
+    runner, workspace, _ = _runner(tmp_path)
+    project = tmp_path / "project-a"
+    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+    warnings = []
+
+    class _Store:
+        def __init__(self, root, session_id):
+            pass
+
+        def capture_before(self, turn_id):
+            raise ChangeSetLimitError("Workspace contains 11677 files; limit is 10000.")
+
+    monkeypatch.setattr("autocode.web.runner.ChangeSetStore", _Store)
+    monkeypatch.setattr(
+        runner_module,
+        "log_event",
+        lambda logger, level, message, **fields: warnings.append((message, fields)),
+    )
+    manager = runner._manager(workspace.workspace_id)
+
+    def submit(client_id, prompt, hook_handler=None, on_token=None, permission_mode=None):
+        hook_handler(
+            "turn_started",
+            {
+                "session_id": "session_1",
+                "turn_id": "turn_1",
+                "revision_id": "revision_1",
+            },
+        )
+        (project / "created.txt").write_text("created\n", encoding="utf-8")
+        return manager.result
+
+    manager.submit = submit
+    chat = runner.execute(
+        "chat",
+        {
+            "workspace_id": workspace.workspace_id,
+            "client_id": "web_12345678",
+            "prompt": "create it",
+        },
+    )
+
+    assert chat["status"] == "completed"
+    assert chat["changed_files"][0]["path"] == "created.txt"
+    assert "can_undo" not in chat["changed_files"][0]
+    assert warnings == [
+        (
+            "Per-turn Undo unavailable",
+            {
+                "phase": "capture_before",
+                "error_type": "ChangeSetLimitError",
+                "error": "Workspace contains 11677 files; limit is 10000.",
+            },
+        )
+    ]
+
+
+def test_runner_continues_when_undo_capture_after_exceeds_limit(tmp_path, monkeypatch):
+    from autocode.state.changes import ChangeSetLimitError
+
+    runner, workspace, _ = _runner(tmp_path)
+    project = tmp_path / "project-a"
+    subprocess.run(["git", "init"], cwd=project, check=True, capture_output=True)
+    warnings = []
+
+    class _Store:
+        def __init__(self, root, session_id):
+            pass
+
+        def capture_before(self, turn_id):
+            return object()
+
+        def capture_after(self, turn_id, before):
+            raise ChangeSetLimitError("Workspace contains 11677 files; limit is 10000.")
+
+    monkeypatch.setattr("autocode.web.runner.ChangeSetStore", _Store)
+    monkeypatch.setattr(
+        runner_module,
+        "log_event",
+        lambda logger, level, message, **fields: warnings.append((message, fields)),
+    )
+    manager = runner._manager(workspace.workspace_id)
+
+    def submit(client_id, prompt, hook_handler=None, on_token=None, permission_mode=None):
+        hook_handler(
+            "turn_started",
+            {
+                "session_id": "session_1",
+                "turn_id": "turn_1",
+                "revision_id": "revision_1",
+            },
+        )
+        (project / "created.txt").write_text("created\n", encoding="utf-8")
+        return manager.result
+
+    manager.submit = submit
+    chat = runner.execute(
+        "chat",
+        {
+            "workspace_id": workspace.workspace_id,
+            "client_id": "web_12345678",
+            "prompt": "create it",
+        },
+    )
+
+    assert chat["status"] == "completed"
+    assert chat["changed_files"][0]["path"] == "created.txt"
+    assert "can_undo" not in chat["changed_files"][0]
+    assert warnings == [
+        (
+            "Per-turn Undo unavailable",
+            {
+                "phase": "capture_after",
+                "error_type": "ChangeSetLimitError",
+                "error": "Workspace contains 11677 files; limit is 10000.",
+            },
+        )
+    ]
+
+
 def test_runner_converts_tool_hooks_to_work_events(tmp_path):
     runner, workspace, managers = _runner(tmp_path)
     manager = runner._manager(workspace.workspace_id)
