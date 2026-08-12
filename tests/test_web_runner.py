@@ -568,6 +568,100 @@ def test_runner_converts_tool_hooks_to_work_events(tmp_path):
     ]
 
 
+def test_runner_emits_consumed_steer_event(tmp_path):
+    runner, _, _ = _runner(tmp_path)
+    events = []
+
+    runner._emit_hook_event(
+        events.append,
+        "user_message",
+        {
+            "message_kind": "steer",
+            "message_id": "steer-1",
+            "turn_id": "turn-1",
+            "content": "focus on tests",
+        },
+    )
+
+    assert events == [
+        {
+            "type": "turn_message",
+            "phase": "consumed",
+            "mode": "steer",
+            "message_id": "steer-1",
+            "turn_id": "turn-1",
+            "content": "focus on tests",
+        }
+    ]
+
+
+def test_runner_emits_completed_snapshot_before_starting_queued_turn(tmp_path):
+    runner, workspace, _ = _runner(tmp_path)
+    manager = runner._manager(workspace.workspace_id)
+    followups = [
+        type(
+            "Followup",
+            (),
+            {"message_id": "queue-1", "content": "second question"},
+        )()
+    ]
+    completed_messages = [
+        {"role": "user", "content": "first question", "turn_id": "turn-1"},
+        {"role": "assistant", "content": "first answer", "turn_id": "turn-1"},
+    ]
+
+    def submit(client_id, prompt, hook_handler=None, on_token=None, permission_mode=None):
+        turn_id = "turn-1" if prompt == "first question" else "turn-2"
+        hook_handler(
+            "turn_started",
+            {
+                "session_id": "session-1",
+                "turn_id": turn_id,
+                "revision_id": f"revision-{turn_id}",
+            },
+        )
+        return replace(manager.result, text=f"answer for {prompt}", turn_id=turn_id)
+
+    manager.submit = submit
+    manager.pop_queued_followup = lambda client_id: followups.pop(0) if followups else None
+    manager.conversation_messages = lambda client_id: completed_messages
+    events = []
+
+    runner.execute(
+        "chat",
+        {
+            "workspace_id": workspace.workspace_id,
+            "client_id": "web_12345678",
+            "prompt": "first question",
+        },
+        event_handler=events.append,
+    )
+
+    queued_starting = next(
+        event
+        for event in events
+        if event.get("type") == "turn" and event.get("phase") == "queued_starting"
+    )
+    queued_started = next(
+        event
+        for event in events
+        if event.get("type") == "turn"
+        and event.get("phase") == "started"
+        and event.get("queued")
+    )
+    assert queued_starting == {
+        "type": "turn",
+        "phase": "queued_starting",
+        "message_id": "queue-1",
+        "content": "second question",
+        "completed_turn_id": "turn-1",
+        "messages": completed_messages,
+    }
+    assert queued_started["turn_id"] == "turn-2"
+    assert queued_started["message_id"] == "queue-1"
+    assert queued_started["content"] == "second question"
+
+
 def test_runner_routes_session_delete_to_workspace_manager(tmp_path):
     runner, workspace, managers = _runner(tmp_path)
 

@@ -482,6 +482,7 @@ class LocalRunner:
         prompt = str(payload.get("prompt", ""))
         attachments = list(payload.get("attachments") or [])
         queued_turn = False
+        queued_message_id = ""
         all_files: list[dict] = []
         all_changed: list[dict] = []
         result = None
@@ -517,8 +518,9 @@ class LocalRunner:
 
             def on_hook(event: str, data: dict) -> None:
                 nonlocal change_store, change_before, started_turn_id
-                if event == "turn_started" and git_before.get("available"):
+                if event == "turn_started":
                     started_turn_id = str(data.get("turn_id", ""))
+                if event == "turn_started" and git_before.get("available"):
                     try:
                         change_store = ChangeSetStore(
                             workspace,
@@ -546,6 +548,8 @@ class LocalRunner:
                             "turn_id": str(data.get("turn_id", "")),
                             "revision_id": str(data.get("revision_id", "")),
                             "queued": queued_turn,
+                            "message_id": queued_message_id,
+                            "content": prompt if queued_turn else "",
                         }
                     )
                 self._emit_hook_event(event_handler, event, data)
@@ -611,12 +615,16 @@ class LocalRunner:
             prompt = followup.content
             attachments = []
             queued_turn = True
+            queued_message_id = followup.message_id
             if event_handler is not None:
                 event_handler(
                     {
                         "type": "turn",
                         "phase": "queued_starting",
                         "message_id": followup.message_id,
+                        "content": followup.content,
+                        "completed_turn_id": started_turn_id,
+                        "messages": manager.conversation_messages(client_id),
                     }
                 )
 
@@ -653,6 +661,17 @@ class LocalRunner:
 
     @staticmethod
     def _emit_hook_event(event_handler, event: str, data: dict) -> None:
+        if event == "user_message" and data.get("message_kind") == "steer":
+            event_handler(
+                {
+                    "type": "turn_message",
+                    "phase": "consumed",
+                    "mode": "steer",
+                    "message_id": str(data.get("message_id", "")),
+                    "turn_id": str(data.get("turn_id", "")),
+                    "content": str(data.get("content", "")),
+                }
+            )
         if event == "model_step_tombstone":
             event_handler(
                 {

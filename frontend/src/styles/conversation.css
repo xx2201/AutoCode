@@ -134,6 +134,9 @@
   font-size: 13px;
   line-height: 1.75;
 }
+.work-guidance { padding: 9px 11px; border-left: 3px solid var(--primary); border-radius: 8px; background: var(--primary-soft); color: #3c3f47; font-size: 13px; }
+.work-guidance > span { display: block; margin-bottom: 4px; color: #5559c7; font-size: 10px; font-weight: 750; letter-spacing: 0.04em; }
+.work-guidance p { margin: 0; }
 .work-item, .work-item-summary {
   color: #858891;
   font-size: 12px;

@@ -51,6 +51,25 @@ export function groupConversation(messages) {
     ) {
       return;
     }
+    if (message.role === "user" && message.message_kind === "steer") {
+      if (!current) {
+        current = {
+          id: message.turn_id || messageKey(message, index),
+          user: null,
+          work: [],
+          answer: null,
+          elapsedMs: 0,
+          changedFiles: [],
+        };
+        turns.push(current);
+      }
+      current.work.push({
+        id: message.message_id || messageKey(message, index),
+        type: "guidance",
+        content: message.content || "",
+      });
+      return;
+    }
     if (message.role === "user") {
       current = {
         id: messageKey(message, index),
@@ -129,6 +148,15 @@ export function groupConversation(messages) {
 }
 
 export function mergeWorkEvent(items, event) {
+  if (event.phase === "guidance") {
+    const content = String(event.content || "");
+    if (!content) return items;
+    const id = event.work_id || event.message_id || `guidance-${items.length}`;
+    const index = items.findIndex((item) => item.id === id);
+    const guidance = { id, type: "guidance", content };
+    if (index < 0) return [...items, guidance];
+    return items.map((item, itemIndex) => (itemIndex === index ? guidance : item));
+  }
   if (event.phase === "narrative") {
     const content = String(event.content || "");
     if (!content) return items;
@@ -187,6 +215,71 @@ export function settlePendingInput(items, id, status, detail = "") {
   return items.map((item) => (
     item.id === id ? { ...item, status, detail } : item
   ));
+}
+
+export function consumePendingInput(items, messageId) {
+  if (!messageId) return items;
+  return items.filter((item) => item.id !== messageId);
+}
+
+export function applyTurnLifecycle(messages, event) {
+  const messageId = String(event.message_id || "");
+  if (event.type === "turn" && event.phase === "queued_starting") {
+    const synchronized = Array.isArray(event.messages) ? event.messages : [];
+    const next = synchronized.length > 0 ? synchronized : messages;
+    if (!event.content || next.some((message) => message.message_id === messageId)) {
+      return next;
+    }
+    return [
+      ...next,
+      {
+        role: "user",
+        content: event.content,
+        message_id: messageId,
+        message_kind: "prompt",
+      },
+    ];
+  }
+  if (event.type === "turn" && event.phase === "started" && event.queued) {
+    const index = messages.findIndex((message) => message.message_id === messageId);
+    if (index < 0) {
+      return event.content
+        ? [
+            ...messages,
+            {
+              role: "user",
+              content: event.content,
+              message_id: messageId,
+              message_kind: "prompt",
+              turn_id: event.turn_id || "",
+            },
+          ]
+        : messages;
+    }
+    return messages.map((message, messageIndex) => (
+      messageIndex === index ? { ...message, turn_id: event.turn_id || "" } : message
+    ));
+  }
+  if (
+    event.type === "turn_message"
+    && event.phase === "consumed"
+    && event.mode === "steer"
+  ) {
+    if (!event.content || messages.some((message) => message.message_id === messageId)) {
+      return messages;
+    }
+    return [
+      ...messages,
+      {
+        role: "user",
+        content: event.content,
+        message_id: messageId,
+        message_kind: "steer",
+        turn_id: event.turn_id || "",
+      },
+    ];
+  }
+  return messages;
 }
 
 export function normalizeChangeAction(result, action) {

@@ -2,6 +2,8 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  applyTurnLifecycle,
+  consumePendingInput,
   formatDuration,
   formatToolTitle,
   groupConversation,
@@ -174,6 +176,64 @@ test("tracks queue and steer messages through their request lifecycle", () => {
     settlePendingInput([queued], "input-1", "accepted", "queued"),
     [{ ...queued, status: "accepted", detail: "queued" }],
   );
+});
+
+test("promotes a queued message after preserving the completed turn snapshot", () => {
+  const completed = [
+    { role: "user", content: "first", turn_id: "turn-1" },
+    { role: "assistant", content: "done", turn_id: "turn-1" },
+  ];
+  const starting = applyTurnLifecycle([], {
+    type: "turn",
+    phase: "queued_starting",
+    message_id: "queue-1",
+    content: "second",
+    messages: completed,
+  });
+  const started = applyTurnLifecycle(starting, {
+    type: "turn",
+    phase: "started",
+    queued: true,
+    message_id: "queue-1",
+    content: "second",
+    turn_id: "turn-2",
+  });
+
+  assert.deepEqual(started.slice(0, 2), completed);
+  assert.deepEqual(started[2], {
+    role: "user",
+    content: "second",
+    message_id: "queue-1",
+    message_kind: "prompt",
+    turn_id: "turn-2",
+  });
+  assert.deepEqual(
+    consumePendingInput([{ id: "queue-1" }, { id: "queue-2" }], "queue-1"),
+    [{ id: "queue-2" }],
+  );
+});
+
+test("keeps consumed steer input inside the active turn", () => {
+  const messages = applyTurnLifecycle(
+    [{ role: "user", content: "inspect", turn_id: "turn-1" }],
+    {
+      type: "turn_message",
+      phase: "consumed",
+      mode: "steer",
+      message_id: "steer-1",
+      turn_id: "turn-1",
+      content: "focus on tests",
+    },
+  );
+  const turns = groupConversation(messages);
+
+  assert.equal(turns.length, 1);
+  assert.equal(turns[0].user.content, "inspect");
+  assert.deepEqual(turns[0].work[0], {
+    id: "steer-1",
+    type: "guidance",
+    content: "focus on tests",
+  });
 });
 
 test("normalizes undo conflicts without losing the server reason", () => {

@@ -1266,7 +1266,12 @@ class Agent:
             )
             self.hooks.emit(
                 "user_message",
-                self._event_payload(content_preview=item.content[:200], message_kind="steer"),
+                self._event_payload(
+                    content=item.content,
+                    content_preview=item.content[:200],
+                    message_id=item.message_id,
+                    message_kind="steer",
+                ),
             )
 
     def _handle_tool_calls(

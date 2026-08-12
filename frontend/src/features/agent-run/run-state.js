@@ -34,6 +34,20 @@ export function runStateReducer(state, action) {
         streamText: "",
       };
     case "accept_work":
+      if (action.event.phase === "guidance") {
+        const precedingWork = state.streamText
+          ? mergeWorkEvent(state.work, {
+              phase: "narrative",
+              work_id: `${action.event.work_id || "guidance"}-preceding-response`,
+              content: state.streamText,
+            })
+          : state.work;
+        return {
+          ...state,
+          streamText: "",
+          work: mergeWorkEvent(precedingWork, action.event),
+        };
+      }
       return {
         ...state,
         streamText: action.event.phase === "narrative" ? "" : state.streamText,

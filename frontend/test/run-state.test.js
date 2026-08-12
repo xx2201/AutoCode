@@ -67,3 +67,32 @@ test("run reducer tombstones provisional text before a model-step retry", () => 
   assert.equal(rolledBack.streamText, "");
   assert.equal(retried.streamText, "replacement response");
 });
+
+test("run reducer records consumed steer guidance in the live timeline", () => {
+  const answered = runStateReducer(initialRunState, {
+    type: "append_token",
+    text: "current answer",
+  });
+  const guided = runStateReducer(answered, {
+    type: "accept_work",
+    event: {
+      phase: "guidance",
+      work_id: "steer-1",
+      content: "focus on tests",
+    },
+  });
+
+  assert.equal(guided.streamText, "");
+  assert.deepEqual(guided.work, [
+    {
+      id: "steer-1-preceding-response",
+      type: "narrative",
+      content: "current answer",
+    },
+    {
+      id: "steer-1",
+      type: "guidance",
+      content: "focus on tests",
+    },
+  ]);
+});

@@ -29,6 +29,8 @@ import {
   storePageSessionId,
 } from "./session-history";
 import {
+  applyTurnLifecycle,
+  consumePendingInput,
   createPendingInput,
   groupConversation,
   latestEditableTurnId,
@@ -387,6 +389,13 @@ export default function App() {
     }
   }
 
+  function acceptTurnLifecycle(event) {
+    setMessages((items) => applyTurnLifecycle(items, event));
+    if (event.message_id) {
+      setPendingInputs((items) => consumePendingInput(items, event.message_id));
+    }
+  }
+
   function beginEditTurn(turn) {
     setEditingTurnId(turn.id);
     setEditDraft(turn.user?.content || "");
@@ -424,6 +433,7 @@ export default function App() {
       }, (streamEvent) => {
         handleRunEvent(streamEvent, {
           run,
+          onTurnLifecycle: acceptTurnLifecycle,
           onResult: (data) => {
             payload = data;
           },
@@ -568,6 +578,7 @@ export default function App() {
         (event) => {
           handleRunEvent(event, {
             run,
+            onTurnLifecycle: acceptTurnLifecycle,
             onResult: (data) => {
               result = data;
             },
@@ -636,6 +647,7 @@ export default function App() {
         }, (event) => {
           handleRunEvent(event, {
             run,
+            onTurnLifecycle: acceptTurnLifecycle,
             onResult: (data) => {
               result = data;
             },

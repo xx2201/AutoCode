@@ -228,7 +228,12 @@ export function WorkBlock({
       </summary>
       <div className="work-content">
         {items.map((item) => (
-          item.type === "narrative" ? (
+          item.type === "guidance" ? (
+            <div className="work-guidance" key={item.id}>
+              <span>引导当前</span>
+              <RichText content={item.content} />
+            </div>
+          ) : item.type === "narrative" ? (
             <div className="work-narrative" key={item.id}>
               <RichText content={item.content} />
             </div>

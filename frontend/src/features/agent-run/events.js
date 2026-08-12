@@ -1,10 +1,26 @@
 export function handleRunEvent(event, {
   run,
   onResult,
+  onTurnLifecycle = () => {},
   errorMessage,
 }) {
   if (event.type === "turn" && event.phase === "queued_starting") {
+    onTurnLifecycle(event);
     run.resetTimeline();
+  } else if (event.type === "turn" && event.phase === "started" && event.queued) {
+    onTurnLifecycle(event);
+  } else if (
+    event.type === "turn_message"
+    && event.phase === "consumed"
+    && event.mode === "steer"
+  ) {
+    onTurnLifecycle(event);
+    run.acceptWork({
+      type: "work",
+      phase: "guidance",
+      work_id: event.message_id,
+      content: event.content,
+    });
   } else if (event.type === "token") {
     run.appendToken(event.text);
   } else if (event.type === "tombstone") {
