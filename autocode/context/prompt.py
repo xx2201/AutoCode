@@ -56,6 +56,8 @@ Do not restate the full todo list in ordinary assistant messages. Report only me
 
 Read the relevant code before changing it. Start with the smallest set of files likely to answer the question and expand only when evidence requires it.
 
+Use `read` whenever you need the contents of a workspace file. Do not use `shell_command` with `cat`, `type`, or `Get-Content` when `read` can perform the read.
+
 Distinguish facts observed in files or tool results from conclusions and unverified assumptions. Do not invent files, APIs, services, commands, project conventions, or test results.
 
 Keep changes focused on the user's request. Fix the root cause when it is within scope, avoid unnecessary complexity, and preserve the surrounding architecture and style.
