@@ -29,6 +29,7 @@ from .relay import (
 
 _STATIC_DIR = Path(__file__).with_name("static")
 _CLIENT_ID_RE = re.compile(r"^[A-Za-z0-9_-]{8,64}$")
+PermissionPresetName = Literal["workspace-write", "danger-full-access"]
 _SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "Content-Security-Policy": (
@@ -58,14 +59,14 @@ class ClientRequest(BaseModel):
 class ChatRequest(ClientRequest):
     prompt: str = Field(default="", max_length=32_000)
     attachments: list["AttachmentRequest"] = Field(default_factory=list, max_length=5)
-    approval_policy: Literal["ask", "never"] = "ask"
+    permission_preset: PermissionPresetName = "workspace-write"
     session_id: str = Field(default="", max_length=128)
 
 
 class TurnEditRequest(ClientRequest):
     turn_id: str = Field(min_length=1, max_length=128)
     prompt: str = Field(min_length=1, max_length=32_000)
-    approval_policy: Literal["ask", "never"] = "ask"
+    permission_preset: PermissionPresetName = "workspace-write"
 
 
 class TurnMessageRequest(ClientRequest):
@@ -97,13 +98,12 @@ class ApprovalContinuationRequest(ClientRequest):
     batch_id: str = Field(min_length=1, max_length=128)
 
 
-class ApprovalPolicyRequest(ClientRequest):
-    approval_policy: Literal["ask", "never"]
+class PermissionPresetRequest(ClientRequest):
+    permission_preset: PermissionPresetName
 
 
 class ResumeRequest(ClientRequest):
     session_id: str = Field(min_length=1, max_length=128)
-    approval_policy: Literal["ask", "never"] = "ask"
 
 
 class DeleteSessionRequest(ResumeRequest):
@@ -287,7 +287,7 @@ def create_app(
             "client_id": client_id,
             "workspace_id": payload.workspace_id,
             "prompt": prompt,
-            "approval_policy": payload.approval_policy,
+            "permission_preset": payload.permission_preset,
         }
         session_id = payload.session_id.strip()
         if session_id:
@@ -307,7 +307,7 @@ def create_app(
                 "client_id": client_id,
                 "workspace_id": payload.workspace_id,
                 "prompt": prompt,
-                "approval_policy": payload.approval_policy,
+                "permission_preset": payload.permission_preset,
             }
             session_id = payload.session_id.strip()
             if session_id:
@@ -347,7 +347,7 @@ def create_app(
                     "workspace_id": payload.workspace_id,
                     "turn_id": payload.turn_id,
                     "prompt": prompt,
-                    "approval_policy": payload.approval_policy,
+                    "permission_preset": payload.permission_preset,
                 },
             )
         except RunnerOfflineError as exc:
@@ -384,14 +384,14 @@ def create_app(
             timeout=control_request_timeout,
         )
 
-    @app.post("/api/approval-policy", dependencies=browser_auth)
-    async def approval_policy(payload: ApprovalPolicyRequest):
+    @app.post("/api/permission-preset", dependencies=browser_auth)
+    async def permission_preset(payload: PermissionPresetRequest):
         return await dispatch(
-            "approval_policy",
+            "permission_preset",
             {
                 "client_id": _validate_client_id(payload.client_id),
                 "workspace_id": payload.workspace_id,
-                "approval_policy": payload.approval_policy,
+                "permission_preset": payload.permission_preset,
             },
             timeout=control_request_timeout,
         )
@@ -554,7 +554,6 @@ def create_app(
                 "client_id": _validate_client_id(payload.client_id),
                 "workspace_id": payload.workspace_id,
                 "session_id": payload.session_id,
-                "approval_policy": payload.approval_policy,
             },
             timeout=control_request_timeout,
         )

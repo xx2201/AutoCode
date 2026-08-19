@@ -338,13 +338,11 @@ class LocalRunner:
                 "turn_id": expected_turn_id,
                 "queued_message": queued_message,
             }
-        if action == "approval_policy":
-            return {
-                "approval_policy": manager.set_approval_policy(
-                    payload["client_id"],
-                    str(payload.get("approval_policy", "")),
-                )
-            }
+        if action == "permission_preset":
+            return manager.set_permission_preset(
+                payload["client_id"],
+                str(payload.get("permission_preset", "")),
+            )
         if action == "change_action":
             workspace = self.registry.resolve(workspace_id)
             turn_id = str(payload.get("turn_id", ""))
@@ -440,7 +438,6 @@ class LocalRunner:
             result = manager.resume_session(
                 payload["client_id"],
                 payload["session_id"],
-                payload.get("approval_policy"),
             )
             return {
                 "result": asdict(result),
@@ -497,7 +494,6 @@ class LocalRunner:
                 manager.resume_session(
                     client_id,
                     requested_session_id,
-                    approval_policy=payload.get("approval_policy"),
                 )
 
         while True:
@@ -555,7 +551,7 @@ class LocalRunner:
                 self._emit_hook_event(event_handler, event, data)
 
             submit_kwargs = {"hook_handler": on_hook}
-            submit_kwargs["approval_policy"] = payload.get("approval_policy")
+            submit_kwargs["permission_preset"] = payload.get("permission_preset")
             if event_handler is not None:
                 submit_kwargs["on_token"] = on_token
             if attachments:

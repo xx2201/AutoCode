@@ -10,7 +10,15 @@ from ..infra import BackgroundProcessManager, Sandbox, SandboxPolicy, WorkspaceF
 from ..llm import LLM, ToolCall, is_retryable_llm_error
 from ..message_content import content_text, is_internal_visual_context, user_content
 from ..message_projection import serialize_anthropic_messages, serialize_chat_completions
-from ..runtime import HookBus, Policy, RecoveryManager, Runtime, StreamingToolExecutor
+from ..runtime import (
+    HookBus,
+    Policy,
+    RecoveryManager,
+    Runtime,
+    StreamingToolExecutor,
+    infer_permission_preset,
+    resolve_permission_preset,
+)
 from ..skills import SkillError, SkillManager
 from ..state import (
     AuditLogger,
@@ -312,6 +320,11 @@ class Agent:
         if self.session_state is None:
             self.session_state = SessionState(
                 session_id=new_session_id(),
+                permission_preset=infer_permission_preset(
+                    self.sandbox_policy.mode,
+                    self.policy.approval_policy,
+                ),
+                approval_policy=self.policy.approval_policy,
                 sandbox_mode=self.sandbox_policy.mode,
             )
         return self.session_state
@@ -422,6 +435,12 @@ class Agent:
 
     def set_approval_policy(self, approval_policy: str) -> None:
         self.policy.set_approval_policy(approval_policy)
+        session = self._ensure_session()
+        session.approval_policy = approval_policy
+        session.permission_preset = infer_permission_preset(
+            self.sandbox_policy.mode,
+            approval_policy,
+        )
 
     def set_sandbox_mode(self, sandbox_mode: str) -> None:
         self.sandbox_policy.resolve(sandbox_mode)
@@ -433,7 +452,22 @@ class Agent:
                 "Stop them before changing the mode."
             )
         self.sandbox_policy.set_mode(sandbox_mode)
-        self._ensure_session().sandbox_mode = sandbox_mode
+        session = self._ensure_session()
+        session.sandbox_mode = sandbox_mode
+        session.permission_preset = infer_permission_preset(
+            sandbox_mode,
+            self.policy.approval_policy,
+        )
+
+    def set_permission_preset(self, permission_preset: str) -> str:
+        preset = resolve_permission_preset(permission_preset)
+        self.set_sandbox_mode(preset.sandbox_mode)
+        self.set_approval_policy(preset.approval_policy)
+        session = self._ensure_session()
+        session.permission_preset = preset.name
+        session.sandbox_mode = preset.sandbox_mode
+        session.approval_policy = preset.approval_policy
+        return preset.name
 
     def persist_session(self):
         if self.session_state is None:
@@ -963,10 +997,25 @@ class Agent:
             return response
 
     def restore_session(self, session_state: SessionState, messages: list[dict], model: str | None = None):
-        if session_state.sandbox_mode:
-            self.sandbox_policy.set_mode(session_state.sandbox_mode)
+        if session_state.permission_preset and session_state.permission_preset != "custom":
+            preset = resolve_permission_preset(session_state.permission_preset)
+            self.sandbox_policy.set_mode(preset.sandbox_mode)
+            self.policy.set_approval_policy(preset.approval_policy)
+            session_state.sandbox_mode = preset.sandbox_mode
+            session_state.approval_policy = preset.approval_policy
         else:
-            session_state.sandbox_mode = self.sandbox_policy.mode
+            if session_state.sandbox_mode:
+                self.sandbox_policy.set_mode(session_state.sandbox_mode)
+            else:
+                session_state.sandbox_mode = self.sandbox_policy.mode
+            if session_state.approval_policy:
+                self.policy.set_approval_policy(session_state.approval_policy)
+            else:
+                session_state.approval_policy = self.policy.approval_policy
+            session_state.permission_preset = infer_permission_preset(
+                session_state.sandbox_mode,
+                session_state.approval_policy,
+            )
         self.session_state = session_state
         messages = [
             message

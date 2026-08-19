@@ -145,7 +145,7 @@ def test_chat_is_relayed_to_runner(relay_client):
         "client_id": CLIENT_ID,
         "workspace_id": WORKSPACE_ID,
         "prompt": "inspect project",
-        "approval_policy": "ask",
+        "permission_preset": "workspace-write",
     }
 
 
@@ -489,26 +489,30 @@ def test_streaming_approval_continuation_can_outlive_control_timeout(relay_clien
     assert final["data"]["text"] == "continued"
 
 
-def test_approval_policy_is_relayed_to_runner(relay_client):
+def test_permission_preset_is_relayed_to_runner(relay_client):
     client, _ = relay_client
     _connect_runner(client)
     response, job = _round_trip(
         client,
         lambda: client.post(
-            "/api/approval-policy",
+            "/api/permission-preset",
             headers=_browser_headers(),
             json={
                 "client_id": CLIENT_ID,
                 "workspace_id": WORKSPACE_ID,
-                "approval_policy": "never",
+                "permission_preset": "danger-full-access",
             },
         ),
-        "approval_policy",
-        {"approval_policy": "never"},
+        "permission_preset",
+        {
+            "permission_preset": "danger-full-access",
+            "approval_policy": "never",
+            "sandbox_mode": "danger-full-access",
+        },
     )
 
     assert response.status_code == 200
-    assert job["payload"]["approval_policy"] == "never"
+    assert job["payload"]["permission_preset"] == "danger-full-access"
 
 
 def test_turn_controls_and_change_actions_are_relayed(relay_client):

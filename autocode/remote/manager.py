@@ -16,6 +16,7 @@ from ..llm import llm_class_for_provider
 from ..message_content import content_text, is_internal_visual_context
 from ..mcp import get_shared_mcp_manager
 from ..observability import LangfuseTracer
+from ..runtime.permissions import infer_permission_preset
 from ..state import (
     delete_session,
     format_trace,
@@ -67,7 +68,9 @@ class RemoteTurnResult:
     pending_approval_label: str = ""
     approval_batch_id: str = ""
     pending_approvals: list[dict] | None = None
+    permission_preset: str = "workspace-write"
     approval_policy: str = "ask"
+    sandbox_mode: str = "workspace-write"
     context_used_tokens: int = 0
     context_window_tokens: int = 0
 
@@ -129,10 +132,13 @@ class RemoteManager:
         on_token=None,
         on_tool=None,
         approval_policy: str | None = None,
+        permission_preset: str | None = None,
     ) -> RemoteTurnResult:
         runtime = self._get_or_create_runtime(chat_id)
         with runtime.lock:
-            if approval_policy:
+            if permission_preset:
+                runtime.agent.set_permission_preset(permission_preset)
+            elif approval_policy:
                 runtime.agent.set_approval_policy(approval_policy)
             message_start = len(runtime.agent.messages)
             started_at = time.monotonic()
@@ -169,11 +175,14 @@ class RemoteManager:
         on_token=None,
         on_tool=None,
         approval_policy: str | None = None,
+        permission_preset: str | None = None,
     ) -> RemoteTurnResult:
         """Edit and rerun only the last completed turn in the same session."""
         runtime = self._require_runtime(chat_id)
         with runtime.lock:
-            if approval_policy:
+            if permission_preset:
+                runtime.agent.set_permission_preset(permission_preset)
+            elif approval_policy:
                 runtime.agent.set_approval_policy(approval_policy)
             started_at = time.monotonic()
             prepared = prepare_attachments(
@@ -356,8 +365,25 @@ class RemoteManager:
 
     def set_approval_policy(self, chat_id: Hashable, approval_policy: str) -> str:
         runtime = self._get_or_create_runtime(chat_id)
-        runtime.agent.set_approval_policy(approval_policy)
-        return runtime.agent.policy.approval_policy
+        with runtime.lock:
+            had_session = runtime.agent.session_state is not None
+            runtime.agent.set_approval_policy(approval_policy)
+            if had_session:
+                runtime.agent.persist_session()
+            return runtime.agent.policy.approval_policy
+
+    def set_permission_preset(self, chat_id: Hashable, permission_preset: str) -> dict:
+        runtime = self._get_or_create_runtime(chat_id)
+        with runtime.lock:
+            had_session = runtime.agent.session_state is not None
+            selected = runtime.agent.set_permission_preset(permission_preset)
+            if had_session:
+                runtime.agent.persist_session()
+            return {
+                "permission_preset": selected,
+                "approval_policy": runtime.agent.policy.approval_policy,
+                "sandbox_mode": runtime.agent.sandbox_policy.mode,
+            }
 
     def reset_chat(self, chat_id: Hashable) -> None:
         with self._state_lock:
@@ -681,7 +707,6 @@ class RemoteManager:
         self,
         chat_id: Hashable,
         session_id: str,
-        approval_policy: str | None = None,
     ) -> RemoteTurnResult:
         allowed_session_ids = {
             item["session_id"]
@@ -696,8 +721,6 @@ class RemoteManager:
         session_state, messages, _saved_model = loaded
         runtime = self._get_or_create_runtime(chat_id, replace=True)
         with runtime.lock:
-            if approval_policy:
-                runtime.agent.set_approval_policy(approval_policy)
             # 远程会话恢复历史上下文，但始终使用当前 Runner 配置的模型。
             runtime.agent.restore_session(session_state, messages)
             # 首次恢复旧 checkpoint 时立即固化补齐的 message/turn/revision ID。
@@ -833,6 +856,12 @@ class RemoteManager:
         if agent.session_state is None:
             return RemoteTurnResult(
                 text=text,
+                permission_preset=infer_permission_preset(
+                    agent.sandbox_policy.mode,
+                    agent.policy.approval_policy,
+                ),
+                approval_policy=agent.policy.approval_policy,
+                sandbox_mode=agent.sandbox_policy.mode,
                 context_used_tokens=context["used_tokens"],
                 context_window_tokens=context["window_tokens"],
             )
@@ -841,6 +870,9 @@ class RemoteManager:
             return RemoteTurnResult(
                 text=text,
                 session_id=agent.session_state.session_id,
+                permission_preset=agent.session_state.permission_preset,
+                approval_policy=agent.policy.approval_policy,
+                sandbox_mode=agent.sandbox_policy.mode,
                 context_used_tokens=context["used_tokens"],
                 context_window_tokens=context["window_tokens"],
             )
@@ -886,7 +918,9 @@ class RemoteManager:
             pending_approval_label=pending_approval_label,
             approval_batch_id=approval_batch_id,
             pending_approvals=pending_approvals,
+            permission_preset=agent.session_state.permission_preset,
             approval_policy=agent.policy.approval_policy,
+            sandbox_mode=agent.sandbox_policy.mode,
             context_used_tokens=context["used_tokens"],
             context_window_tokens=context["window_tokens"],
         )

@@ -20,6 +20,8 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
 
     state = SessionState(
         session_id="session_demo",
+        permission_preset="custom",
+        approval_policy="ask",
         sandbox_mode="read-only",
         context_used_tokens=12_345,
         context_anchor_messages=7,
@@ -67,6 +69,8 @@ def test_checkpoint_round_trip(tmp_path, monkeypatch):
     assert loaded is not None
     loaded_state, loaded_messages, loaded_model = loaded
     assert loaded_state.session_id == "session_demo"
+    assert loaded_state.permission_preset == "custom"
+    assert loaded_state.approval_policy == "ask"
     assert loaded_state.sandbox_mode == "read-only"
     assert loaded_state.context_used_tokens == 12_345
     assert loaded_state.context_anchor_messages == 7

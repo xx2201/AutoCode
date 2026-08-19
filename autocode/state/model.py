@@ -288,6 +288,8 @@ class TurnState:
 class SessionState:
     session_id: str
     title: str = ""
+    permission_preset: str = ""
+    approval_policy: str = ""
     sandbox_mode: str = ""
     context_used_tokens: int = 0
     context_anchor_messages: int = 0
@@ -312,6 +314,8 @@ class SessionState:
         return {
             "session_id": self.session_id,
             "title": self.title,
+            "permission_preset": self.permission_preset,
+            "approval_policy": self.approval_policy,
             "sandbox_mode": self.sandbox_mode,
             "context_used_tokens": self.context_used_tokens,
             "context_anchor_messages": self.context_anchor_messages,
@@ -328,6 +332,8 @@ class SessionState:
         return cls(
             session_id=data.get("session_id", ""),
             title=data.get("title", ""),
+            permission_preset=str(data.get("permission_preset", "")),
+            approval_policy=str(data.get("approval_policy", "")),
             sandbox_mode=str(data.get("sandbox_mode", "")),
             context_used_tokens=max(0, int(data.get("context_used_tokens", 0))),
             context_anchor_messages=max(0, int(data.get("context_anchor_messages", 0))),

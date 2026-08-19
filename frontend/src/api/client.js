@@ -40,7 +40,6 @@ export function requestSessionResume(token, {
   clientId,
   workspaceId,
   sessionId,
-  approvalPolicy,
 }) {
   return request(token, "/api/resume", {
     method: "POST",
@@ -50,7 +49,6 @@ export function requestSessionResume(token, {
       client_id: clientId,
       workspace_id: workspaceId,
       session_id: sessionId,
-      approval_policy: approvalPolicy,
     }),
   });
 }

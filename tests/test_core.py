@@ -723,6 +723,42 @@ def test_agent_persists_mode_changes_and_fences_running_processes(tmp_path):
     assert agent.sandbox_policy.mode == "read-only"
 
 
+def test_agent_permission_preset_updates_and_restores_both_knobs(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+
+    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path))
+    selected = agent.set_permission_preset("danger-full-access")
+
+    assert selected == "danger-full-access"
+    assert agent.sandbox_policy.mode == "danger-full-access"
+    assert agent.policy.approval_policy == "never"
+    assert agent.session_state is not None
+    assert agent.session_state.permission_preset == "danger-full-access"
+    assert agent.session_state.sandbox_mode == "danger-full-access"
+    assert agent.session_state.approval_policy == "never"
+
+    restored = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path))
+    restored.restore_session(agent.session_state, [])
+
+    assert restored.sandbox_policy.mode == "danger-full-access"
+    assert restored.policy.approval_policy == "never"
+
+
+def test_agent_permission_preset_change_is_atomic_when_sandbox_is_busy(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+
+    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path))
+    agent.processes.has_running_processes = lambda: True
+
+    with pytest.raises(RuntimeError, match="background processes"):
+        agent.set_permission_preset("danger-full-access")
+
+    assert agent.sandbox_policy.mode == "workspace-write"
+    assert agent.policy.approval_policy == "ask"
+
+
 def test_memory_manager_separates_rules_and_project_memory(tmp_path):
     workspace = tmp_path / "workspace"
     workspace.mkdir()

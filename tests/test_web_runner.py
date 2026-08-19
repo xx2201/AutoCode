@@ -33,7 +33,7 @@ class _FakeManager:
     def list_resume_candidates(self, limit=10):
         return [{"session_id": "session_1"}][:limit]
 
-    def submit(self, client_id, prompt, hook_handler=None, on_token=None, attachments=None, approval_policy=None):
+    def submit(self, client_id, prompt, hook_handler=None, on_token=None, attachments=None, permission_preset=None):
         self.calls.append(("chat", client_id, prompt))
         if not self.active_session_id:
             self.active_session_id = self.result.session_id
@@ -58,7 +58,7 @@ class _FakeManager:
     def annotate_turn_changes(self, client_id, changed_files):
         self.changed_files.extend(changed_files)
 
-    def resume_session(self, client_id, session_id, approval_policy=None):
+    def resume_session(self, client_id, session_id):
         self.calls.append(("resume", client_id, session_id))
         self.active_session_id = session_id
         return replace(self.result, text="resumed")
@@ -68,9 +68,13 @@ class _FakeManager:
             raise ValueError("No chat session yet.")
         return self.active_session_id
 
-    def set_approval_policy(self, client_id, approval_policy):
-        self.calls.append(("approval_policy", client_id, approval_policy))
-        return approval_policy
+    def set_permission_preset(self, client_id, permission_preset):
+        self.calls.append(("permission_preset", client_id, permission_preset))
+        return {
+            "permission_preset": permission_preset,
+            "approval_policy": "never" if permission_preset == "danger-full-access" else "ask",
+            "sandbox_mode": permission_preset,
+        }
 
     def delete_session(self, session_id):
         self.calls.append(("delete_session", session_id))
@@ -320,7 +324,7 @@ def test_runner_captures_undo_and_reapply_for_one_turn(tmp_path, monkeypatch):
     manager = runner._manager(workspace.workspace_id)
     manager.current_session_id = lambda client_id: "session_1"
 
-    def submit(client_id, prompt, hook_handler=None, on_token=None, approval_policy=None):
+    def submit(client_id, prompt, hook_handler=None, on_token=None, permission_preset=None):
         hook_handler(
             "turn_started",
             {
@@ -378,7 +382,7 @@ def test_runner_continues_when_undo_capture_before_exceeds_limit(tmp_path, monke
     )
     manager = runner._manager(workspace.workspace_id)
 
-    def submit(client_id, prompt, hook_handler=None, on_token=None, approval_policy=None):
+    def submit(client_id, prompt, hook_handler=None, on_token=None, permission_preset=None):
         hook_handler(
             "turn_started",
             {
@@ -441,7 +445,7 @@ def test_runner_continues_when_undo_capture_after_exceeds_limit(tmp_path, monkey
     )
     manager = runner._manager(workspace.workspace_id)
 
-    def submit(client_id, prompt, hook_handler=None, on_token=None, approval_policy=None):
+    def submit(client_id, prompt, hook_handler=None, on_token=None, permission_preset=None):
         hook_handler(
             "turn_started",
             {
@@ -482,7 +486,7 @@ def test_runner_converts_tool_hooks_to_work_events(tmp_path):
     runner, workspace, managers = _runner(tmp_path)
     manager = runner._manager(workspace.workspace_id)
 
-    def submit(client_id, prompt, hook_handler=None, on_token=None, approval_policy=None):
+    def submit(client_id, prompt, hook_handler=None, on_token=None, permission_preset=None):
         manager.calls.append(("chat", client_id, prompt))
         if on_token:
             on_token("I will inspect the repository.")
@@ -610,7 +614,7 @@ def test_runner_emits_completed_snapshot_before_starting_queued_turn(tmp_path):
         {"role": "assistant", "content": "first answer", "turn_id": "turn-1"},
     ]
 
-    def submit(client_id, prompt, hook_handler=None, on_token=None, approval_policy=None):
+    def submit(client_id, prompt, hook_handler=None, on_token=None, permission_preset=None):
         turn_id = "turn-1" if prompt == "first question" else "turn-2"
         hook_handler(
             "turn_started",

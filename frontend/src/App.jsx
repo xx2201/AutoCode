@@ -2,7 +2,7 @@ import { Check, Code2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { encodeAttachment, isTransientRestoreError, request, requestSessionResume, streamRequest } from "./api/client";
-import { createInteractionId, APPROVAL_POLICY_KEY, renewClientId } from "./app/storage";
+import { createInteractionId, PERMISSION_PRESET_KEY, renewClientId } from "./app/storage";
 import useToast from "./app/useToast";
 import FilePanel from "./FilePanel";
 import GitPanel from "./GitPanel";
@@ -57,8 +57,8 @@ export default function App() {
     openProjectPicker,
     selectWorkspace: selectWorkspaceBase,
   } = workspaceBootstrap;
-  const [approvalPolicy, setApprovalPolicy] = useState(
-    () => localStorage.getItem(APPROVAL_POLICY_KEY) || "ask",
+  const [permissionPreset, setPermissionPreset] = useState(
+    () => localStorage.getItem(PERMISSION_PRESET_KEY) || "workspace-write",
   );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [messages, setMessages] = useState([]);
@@ -190,6 +190,11 @@ export default function App() {
   });
 
   const applyResumedSession = useCallback((workspaceId, sessionId, data) => {
+    const restoredPreset = data.result?.permission_preset;
+    if (["workspace-write", "danger-full-access"].includes(restoredPreset)) {
+      setPermissionPreset(restoredPreset);
+      localStorage.setItem(PERMISSION_PRESET_KEY, restoredPreset);
+    }
     setMessages(data.messages || []);
     setPending(hasPendingApprovals(data.result) ? data.result : null);
     setStatus(data.result?.status || "idle");
@@ -287,7 +292,6 @@ export default function App() {
             clientId: restoreClientId,
             workspaceId,
             sessionId: pageSessionId,
-            approvalPolicy,
           });
           if (ignore) return;
           applyResumedSession(workspaceId, pageSessionId, data);
@@ -316,7 +320,6 @@ export default function App() {
     };
   }, [
     applyResumedSession,
-    approvalPolicy,
     refreshGit,
     refreshSessions,
     selectedWorkspace,
@@ -429,7 +432,7 @@ export default function App() {
         workspace_id: selectedWorkspace.workspace_id,
         turn_id: turnId,
         prompt: cleanPrompt,
-        approval_policy: approvalPolicy,
+        permission_preset: permissionPreset,
       }, (streamEvent) => {
         handleRunEvent(streamEvent, {
           run,
@@ -572,7 +575,7 @@ export default function App() {
           workspace_id: selectedWorkspace.workspace_id,
           prompt: cleanPrompt,
           attachments: encodedAttachments,
-          approval_policy: approvalPolicy,
+          permission_preset: permissionPreset,
           session_id: continuedSessionId,
         },
         (event) => {
@@ -718,24 +721,24 @@ export default function App() {
     }
   }
 
-  async function changeApprovalPolicy(nextMode) {
-    if (!selectedWorkspace || nextMode === approvalPolicy) return;
-    const previous = approvalPolicy;
-    setApprovalPolicy(nextMode);
-    localStorage.setItem(APPROVAL_POLICY_KEY, nextMode);
+  async function changePermissionPreset(nextPreset) {
+    if (!selectedWorkspace || nextPreset === permissionPreset) return;
+    const previous = permissionPreset;
+    setPermissionPreset(nextPreset);
+    localStorage.setItem(PERMISSION_PRESET_KEY, nextPreset);
     try {
-      await request(token, "/api/approval-policy", {
+      await request(token, "/api/permission-preset", {
         method: "POST",
         body: JSON.stringify({
           client_id: clientId,
           workspace_id: selectedWorkspace.workspace_id,
-          approval_policy: nextMode,
+          permission_preset: nextPreset,
         }),
       });
-      showToast(nextMode === "never" ? "已设置为不请求审批并拒绝受控操作" : "已启用请求批准");
+      showToast(nextPreset === "danger-full-access" ? "已启用完全访问" : "已限制为工作区写入");
     } catch (error) {
-      setApprovalPolicy(previous);
-      localStorage.setItem(APPROVAL_POLICY_KEY, previous);
+      setPermissionPreset(previous);
+      localStorage.setItem(PERMISSION_PRESET_KEY, previous);
       showToast(error.message);
     }
   }
@@ -753,7 +756,6 @@ export default function App() {
         clientId,
         workspaceId,
         sessionId,
-        approvalPolicy,
       });
       applyResumedSession(workspaceId, sessionId, data);
       showToast("会话已恢复");
@@ -934,13 +936,13 @@ export default function App() {
           attachments={attachments}
           pendingInputs={pendingInputs}
           deliveryMode={deliveryMode}
-          approvalPolicy={approvalPolicy}
+          permissionPreset={permissionPreset}
           fileInputRef={fileInputRef}
           promptInputRef={promptInputRef}
           onPromptChange={setPrompt}
           onSubmit={() => submitPrompt()}
           onDeliveryModeChange={setDeliveryMode}
-          onApprovalPolicyChange={changeApprovalPolicy}
+          onPermissionPresetChange={changePermissionPreset}
           onAddAttachments={addAttachments}
           onRemoveAttachment={removeAttachment}
         />

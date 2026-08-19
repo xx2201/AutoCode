@@ -68,15 +68,28 @@ test("App orchestrates domain modules instead of declaring UI subsystems", async
 });
 
 test("agent interaction endpoints remain wired after the architecture split", async () => {
-  const { app } = await readSources();
+  const { app, composer } = await readSources();
 
   assert.match(app, /\/api\/turn\/edit\/stream/);
   assert.match(app, /\/api\/turn\/message/);
   assert.match(app, /\/api\/changes\/action/);
   assert.match(app, /\/api\/approval\/decision/);
   assert.match(app, /\/api\/turn\/continue\/stream/);
-  assert.match(app, /\/api\/approval-policy/);
-  assert.match(app, /never/);
+  assert.match(app, /\/api\/permission-preset/);
+  assert.match(app, /danger-full-access/);
+  assert.match(composer, /value="workspace-write">工作区写入/);
+  assert.match(composer, /value="danger-full-access">完全访问/);
+});
+
+test("permission preset changes do not reinitialize or restore the workspace", async () => {
+  const { app } = await readSources();
+  const effectStart = app.indexOf("async function initializeWorkspace");
+  const effectEnd = app.indexOf("messageEndRef.current", effectStart);
+  const initializationEffect = app.slice(effectStart, effectEnd);
+
+  assert.ok(effectStart >= 0 && effectEnd > effectStart);
+  assert.doesNotMatch(initializationEffect, /permissionPreset/);
+  assert.doesNotMatch(initializationEffect, /setPermissionPreset/);
 });
 
 test("new turns carry the durable page session identity", async () => {
