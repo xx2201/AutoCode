@@ -333,7 +333,8 @@ def main():
         max_context_tokens=config.max_context_tokens,
         max_output_tokens=config.max_tokens,
         workspace_root=config.workspace_root,
-        permission_mode=config.permission_mode,
+        approval_policy=config.approval_policy,
+        sandbox_mode=config.sandbox_mode,
     )
 
     if args.resume:
@@ -622,7 +623,8 @@ def _repl(agent: Agent, config: Config):
                         f"title: [bold]{agent.turn_state.title or '(untitled)'}[/bold]  "
                         f"status: [yellow]{agent.turn_state.status}[/yellow]  "
                         f"steps: [bold]{agent.turn_state.step_index}[/bold]  "
-                        f"permissions: [bold]{agent.policy.permission_mode}[/bold]{pending}"
+                        f"approval: [bold]{agent.policy.approval_policy}[/bold]  "
+                        f"sandbox: [bold]{agent.sandbox_policy.mode}[/bold]{pending}"
                     )
                 continue
             if user_input == "/todo":
@@ -699,14 +701,25 @@ def _repl(agent: Agent, config: Config):
             if user_input == "/approve_scope":
                 worker.start_approval(True, grant_scope=True)
                 continue
-            if user_input == "/permissions" or user_input.startswith("/permissions "):
-                requested = user_input[len("/permissions"):].strip()
-                if requested not in {"ask", "full_access"}:
-                    console.print("[yellow]Usage: /permissions ask|full_access[/yellow]")
+            if user_input == "/approvals" or user_input.startswith("/approvals "):
+                requested = user_input[len("/approvals"):].strip()
+                if requested not in {"ask", "never"}:
+                    console.print("[yellow]Usage: /approvals ask|never[/yellow]")
                     continue
-                agent.set_permission_mode(requested)
-                config.permission_mode = requested
-                console.print(f"[green]Permission mode: {requested}[/green]")
+                agent.set_approval_policy(requested)
+                config.approval_policy = requested
+                console.print(f"[green]Approval policy: {requested}[/green]")
+                continue
+            if user_input == "/sandbox" or user_input.startswith("/sandbox "):
+                requested = user_input[len("/sandbox"):].strip()
+                if requested not in {"read-only", "workspace-write", "danger-full-access"}:
+                    console.print(
+                        "[yellow]Usage: /sandbox read-only|workspace-write|danger-full-access[/yellow]"
+                    )
+                    continue
+                agent.set_sandbox_mode(requested)
+                config.sandbox_mode = requested
+                console.print(f"[green]Sandbox mode: {requested}[/green]")
                 continue
             if user_input == "/reject":
                 worker.start_approval(False)
@@ -802,7 +815,8 @@ def _show_help():
         "  /reapply [turn] Reapply a previously undone turn\n"
         "  /approve       Approve the pending tool call\n"
         "  /approve_scope Approve and allow this scope for the current turn\n"
-        "  /permissions   Set ask or full_access tool permissions\n"
+        "  /approvals     Set ask or never approval policy\n"
+        "  /sandbox      Set read-only, workspace-write, or danger-full-access\n"
         "  /reject        Reject the pending tool call\n"
         "  quit           Exit AutoCode\n"
         "\n"

@@ -2,7 +2,7 @@ import { Check, Code2, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import { encodeAttachment, isTransientRestoreError, request, requestSessionResume, streamRequest } from "./api/client";
-import { createInteractionId, PERMISSION_MODE_KEY, renewClientId } from "./app/storage";
+import { createInteractionId, APPROVAL_POLICY_KEY, renewClientId } from "./app/storage";
 import useToast from "./app/useToast";
 import FilePanel from "./FilePanel";
 import GitPanel from "./GitPanel";
@@ -57,8 +57,8 @@ export default function App() {
     openProjectPicker,
     selectWorkspace: selectWorkspaceBase,
   } = workspaceBootstrap;
-  const [permissionMode, setPermissionMode] = useState(
-    () => localStorage.getItem(PERMISSION_MODE_KEY) || "ask",
+  const [approvalPolicy, setApprovalPolicy] = useState(
+    () => localStorage.getItem(APPROVAL_POLICY_KEY) || "ask",
   );
   const [mobileNavOpen, setMobileNavOpen] = useState(false);
   const [messages, setMessages] = useState([]);
@@ -287,7 +287,7 @@ export default function App() {
             clientId: restoreClientId,
             workspaceId,
             sessionId: pageSessionId,
-            permissionMode,
+            approvalPolicy,
           });
           if (ignore) return;
           applyResumedSession(workspaceId, pageSessionId, data);
@@ -316,7 +316,7 @@ export default function App() {
     };
   }, [
     applyResumedSession,
-    permissionMode,
+    approvalPolicy,
     refreshGit,
     refreshSessions,
     selectedWorkspace,
@@ -429,7 +429,7 @@ export default function App() {
         workspace_id: selectedWorkspace.workspace_id,
         turn_id: turnId,
         prompt: cleanPrompt,
-        permission_mode: permissionMode,
+        approval_policy: approvalPolicy,
       }, (streamEvent) => {
         handleRunEvent(streamEvent, {
           run,
@@ -572,7 +572,7 @@ export default function App() {
           workspace_id: selectedWorkspace.workspace_id,
           prompt: cleanPrompt,
           attachments: encodedAttachments,
-          permission_mode: permissionMode,
+          approval_policy: approvalPolicy,
           session_id: continuedSessionId,
         },
         (event) => {
@@ -718,24 +718,24 @@ export default function App() {
     }
   }
 
-  async function changePermissionMode(nextMode) {
-    if (!selectedWorkspace || nextMode === permissionMode) return;
-    const previous = permissionMode;
-    setPermissionMode(nextMode);
-    localStorage.setItem(PERMISSION_MODE_KEY, nextMode);
+  async function changeApprovalPolicy(nextMode) {
+    if (!selectedWorkspace || nextMode === approvalPolicy) return;
+    const previous = approvalPolicy;
+    setApprovalPolicy(nextMode);
+    localStorage.setItem(APPROVAL_POLICY_KEY, nextMode);
     try {
-      await request(token, "/api/permission-mode", {
+      await request(token, "/api/approval-policy", {
         method: "POST",
         body: JSON.stringify({
           client_id: clientId,
           workspace_id: selectedWorkspace.workspace_id,
-          permission_mode: nextMode,
+          approval_policy: nextMode,
         }),
       });
-      showToast(nextMode === "full_access" ? "已启用完全访问" : "已启用请求批准");
+      showToast(nextMode === "never" ? "已设置为不请求审批并拒绝受控操作" : "已启用请求批准");
     } catch (error) {
-      setPermissionMode(previous);
-      localStorage.setItem(PERMISSION_MODE_KEY, previous);
+      setApprovalPolicy(previous);
+      localStorage.setItem(APPROVAL_POLICY_KEY, previous);
       showToast(error.message);
     }
   }
@@ -753,7 +753,7 @@ export default function App() {
         clientId,
         workspaceId,
         sessionId,
-        permissionMode,
+        approvalPolicy,
       });
       applyResumedSession(workspaceId, sessionId, data);
       showToast("会话已恢复");
@@ -934,13 +934,13 @@ export default function App() {
           attachments={attachments}
           pendingInputs={pendingInputs}
           deliveryMode={deliveryMode}
-          permissionMode={permissionMode}
+          approvalPolicy={approvalPolicy}
           fileInputRef={fileInputRef}
           promptInputRef={promptInputRef}
           onPromptChange={setPrompt}
           onSubmit={() => submitPrompt()}
           onDeliveryModeChange={setDeliveryMode}
-          onPermissionModeChange={changePermissionMode}
+          onApprovalPolicyChange={changeApprovalPolicy}
           onAddAttachments={addAttachments}
           onRemoveAttachment={removeAttachment}
         />

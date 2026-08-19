@@ -285,7 +285,7 @@ class FeishuBot:
                 live.session_id = result.session_id or live.session_id
                 live.turn_id = result.turn_id or live.turn_id
                 live.status = result.status or live.status
-                live.permission_mode = result.permission_mode
+                live.approval_policy = result.approval_policy
                 live.phase = "Waiting Approval"
                 live.detail = result.pending_reason or "approval required"
                 live.last_tool = result.pending_tool
@@ -299,7 +299,7 @@ class FeishuBot:
             live.session_id = result.session_id or live.session_id
             live.turn_id = result.turn_id or live.turn_id
             live.status = result.status or live.status or "completed"
-            live.permission_mode = result.permission_mode
+            live.approval_policy = result.approval_policy
             live.phase = "Completed"
             live.detail = "Final result sent below."
             self._patch_live_card(live, force=True, template="green")
@@ -600,7 +600,7 @@ class _LiveStatus:
     compactions: int = 0
     cache_segments: int = 1
     last_tool: str = ""
-    permission_mode: str = "ask"
+    approval_policy: str = "ask"
     last_patch_at: float = 0.0
 
     @classmethod
@@ -649,7 +649,7 @@ class _LiveStatus:
             decision = payload.get("decision", {})
             self.last_tool = payload.get("tool_name", self.last_tool)
             action = decision.get("action", "")
-            if action == "confirm":
+            if action == "ask":
                 self.phase = "Waiting Approval"
                 self.detail = decision.get("reason", "Approval required.")
             elif action == "deny":
@@ -691,7 +691,7 @@ class _LiveStatus:
             "cache_segments": self.cache_segments,
             "last_tool": self.last_tool,
             "detail": self.detail,
-            "permission_mode": self.permission_mode,
+            "approval_policy": self.approval_policy,
         }
 
 

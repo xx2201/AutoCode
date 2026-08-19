@@ -3,18 +3,9 @@
 from __future__ import annotations
 
 import json
-import os
-import re
 
-from ..infra import Sandbox
 from ..infra.shell import available_shell_names, default_shell_name
 from .base import ConcurrencySpec, Tool, ToolResult
-
-_DANGEROUS_PATTERNS = [
-    (r":\(\)\s*\{.*:\|:.*\}", "fork bomb"),
-    (r"\bcurl\b.*\|\s*(sudo\s+)?bash", "pipe curl to bash"),
-]
-
 
 class ShellCommandTool(Tool):
     name = "shell_command"
@@ -64,23 +55,22 @@ class ShellCommandTool(Tool):
         workdir: str = ".",
         shell: str | None = None,
         timeout: int = 120,
-        _confirmed_sensitive: bool = False,
     ) -> ToolResult:
-        warning = None if _confirmed_sensitive else _check_dangerous(command)
-        if warning:
-            payload = {
-                "exit_code": -1,
-                "stdout": "",
-                "stderr": f"Blocked: {warning}",
-                "timed_out": False,
-                "truncated": False,
-                "full_output_path": None,
-                "cwd": str(workdir),
-                "shell": shell or default_shell_name(),
-            }
-            return ToolResult(text=json.dumps(payload, ensure_ascii=False, indent=2), is_error=True)
-
-        sandbox = getattr(self, "_sandbox", None) or Sandbox(os.getcwd())
+        sandbox = getattr(self, "_sandbox", None)
+        if sandbox is None:
+            return ToolResult(
+                text=json.dumps({
+                    "exit_code": -1,
+                    "stdout": "",
+                    "stderr": "shell_command requires an attached sandbox provider",
+                    "timed_out": False,
+                    "truncated": False,
+                    "full_output_path": None,
+                    "cwd": str(workdir),
+                    "shell": shell or default_shell_name(),
+                }, ensure_ascii=False, indent=2),
+                is_error=True,
+            )
         try:
             result = sandbox.run(
                 command=command,
@@ -104,10 +94,3 @@ class ShellCommandTool(Tool):
             text=json.dumps(result.to_dict(), ensure_ascii=False, indent=2),
             is_error=result.exit_code != 0 or result.timed_out,
         )
-
-
-def _check_dangerous(command: str) -> str | None:
-    for pattern, reason in _DANGEROUS_PATTERNS:
-        if re.search(pattern, command, re.IGNORECASE):
-            return reason
-    return None

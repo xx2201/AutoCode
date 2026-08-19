@@ -64,17 +64,12 @@ class EditFileTool(Tool):
     ) -> str:
         try:
             fs = getattr(self, "_fs", None)
-            if fs:
-                p = fs.resolve_path(file_path)
-                if not p.exists():
-                    return f"Error: {file_path} not found"
-                content = fs.read_text(file_path)
-            else:
-                from pathlib import Path
-                p = Path(file_path).expanduser().resolve()
-                if not p.exists():
-                    return f"Error: {file_path} not found"
-                content = p.read_text()
+            if fs is None:
+                return "Error: edit_file requires an attached sandboxed filesystem"
+            p = fs.resolve_path(file_path)
+            if not p.exists():
+                return f"Error: {file_path} not found"
+            content = fs.read_text(file_path)
             tracker = getattr(self, "_file_read_tracker", DEFAULT_FILE_READ_TRACKER)
             read_status = tracker.status(p, content)
             if read_status == "unread":
@@ -97,10 +92,7 @@ class EditFileTool(Tool):
 
             replacement_count = occurrences if replace_all else 1
             new_content = content.replace(old_string, new_string, replacement_count)
-            if fs:
-                fs.write_text(file_path, new_content)
-            else:
-                p.write_text(new_content)
+            fs.write_text(file_path, new_content)
             if read_status == "changed":
                 tracker.forget(p)
             else:

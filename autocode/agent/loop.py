@@ -6,7 +6,7 @@ import uuid
 from contextlib import contextmanager
 
 from ..context import ContextManager, MemoryManager, estimate_tokens, static_system_prompt
-from ..infra import BackgroundProcessManager, Sandbox, WorkspaceFS
+from ..infra import BackgroundProcessManager, Sandbox, SandboxPolicy, WorkspaceFS
 from ..llm import LLM, ToolCall, is_retryable_llm_error
 from ..message_content import content_text, is_internal_visual_context, user_content
 from ..message_projection import serialize_anthropic_messages, serialize_chat_completions
@@ -66,7 +66,8 @@ class Agent:
         max_output_tokens: int = 0,
         max_rounds: int = 200,
         workspace_root: str | None = None,
-        permission_mode: str = "ask",
+        approval_policy: str = "ask",
+        sandbox_mode: str = "workspace-write",
         turn_controller: TurnController | None = None,
     ):
         self.llm = llm
@@ -92,10 +93,11 @@ class Agent:
         self._last_prompt_digest = ""
         self.max_rounds = max_rounds
         self.workspace_root = workspace_root or "."
-        self.fs = WorkspaceFS(self.workspace_root)
-        self.sandbox = Sandbox(self.workspace_root)
-        self.processes = BackgroundProcessManager(self.workspace_root)
-        self.memory = MemoryManager(self.workspace_root)
+        self.sandbox_policy = SandboxPolicy(self.workspace_root, sandbox_mode)
+        self.fs = WorkspaceFS(self.workspace_root, policy=self.sandbox_policy)
+        self.sandbox = Sandbox(self.workspace_root, policy=self.sandbox_policy)
+        self.processes = BackgroundProcessManager(self.workspace_root, sandbox=self.sandbox)
+        self.memory = MemoryManager(self.workspace_root, policy=self.sandbox_policy)
         self.skills = SkillManager(self.workspace_root)
         self.file_reads = FileReadTracker()
         self.sessions = SessionStore()
@@ -129,7 +131,7 @@ class Agent:
         self.hooks.on("turn_error", self._handle_lifecycle_event)
         self.policy = Policy(
             workspace_root=self.workspace_root,
-            permission_mode=permission_mode,
+            approval_policy=approval_policy,
         )
         self._sync_mcp_tools()
         self.runtime = Runtime(
@@ -308,7 +310,10 @@ class Agent:
 
     def _ensure_session(self) -> SessionState:
         if self.session_state is None:
-            self.session_state = SessionState(session_id=new_session_id())
+            self.session_state = SessionState(
+                session_id=new_session_id(),
+                sandbox_mode=self.sandbox_policy.mode,
+            )
         return self.session_state
 
     def _event_payload(self, **extra) -> dict:
@@ -415,8 +420,20 @@ class Agent:
         session.current_turn.touch("running")
         session.touch()
 
-    def set_permission_mode(self, permission_mode: str) -> None:
-        self.policy.set_permission_mode(permission_mode)
+    def set_approval_policy(self, approval_policy: str) -> None:
+        self.policy.set_approval_policy(approval_policy)
+
+    def set_sandbox_mode(self, sandbox_mode: str) -> None:
+        self.sandbox_policy.resolve(sandbox_mode)
+        if sandbox_mode == self.sandbox_policy.mode:
+            return
+        if self.processes.has_running_processes():
+            raise RuntimeError(
+                "Cannot change sandbox mode while managed background processes are running. "
+                "Stop them before changing the mode."
+            )
+        self.sandbox_policy.set_mode(sandbox_mode)
+        self._ensure_session().sandbox_mode = sandbox_mode
 
     def persist_session(self):
         if self.session_state is None:
@@ -523,7 +540,7 @@ class Agent:
         metadata = self._event_payload(
             workspace_root=str(self.fs.workspace_root),
             llm_backend=type(self.llm).__name__,
-            permission_mode=self.policy.permission_mode,
+            approval_policy=self.policy.approval_policy,
             turn_status=self.turn_state.status if self.turn_state else None,
             step_index=self.turn_state.step_index if self.turn_state else None,
         )
@@ -564,7 +581,7 @@ class Agent:
             metadata=self._event_payload(
                 workspace_root=str(self.fs.workspace_root),
                 llm_backend=type(self.llm).__name__,
-                permission_mode=self.policy.permission_mode,
+                approval_policy=self.policy.approval_policy,
                 turn_status=self.turn_state.status if self.turn_state else None,
                 step_index=self.turn_state.step_index if self.turn_state else None,
             ),
@@ -946,6 +963,10 @@ class Agent:
             return response
 
     def restore_session(self, session_state: SessionState, messages: list[dict], model: str | None = None):
+        if session_state.sandbox_mode:
+            self.sandbox_policy.set_mode(session_state.sandbox_mode)
+        else:
+            session_state.sandbox_mode = self.sandbox_policy.mode
         self.session_state = session_state
         messages = [
             message
@@ -1322,7 +1343,7 @@ class Agent:
                 approval_label=decision.approval_label,
             )
             for tool_call, decision in zip(tool_calls, decisions)
-            if decision is not None and decision.action == "confirm"
+            if decision is not None and decision.action == "ask"
         ]
         batch = PendingToolBatch(
             batch_id=uuid.uuid4().hex,
@@ -1417,7 +1438,7 @@ class Agent:
             if decision.action == "deny":
                 results_by_call[tool_call.id] = self.runtime.blocked_result(tool_call.name, decision)
                 continue
-            if decision.action == "confirm":
+            if decision.action == "ask":
                 approval = approval_by_call.get(tool_call.id)
                 if approval is None:
                     legacy_batch = PendingToolBatch(
@@ -1527,7 +1548,7 @@ class Agent:
     def _is_scope_approved(self, decision: PolicyDecision) -> bool:
         return bool(
             self.turn_state
-            and decision.action == "confirm"
+            and decision.action == "ask"
             and self.turn_state.has_approval_scope(decision.approval_scope)
         )
 

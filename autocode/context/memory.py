@@ -10,6 +10,7 @@ import threading
 from pathlib import Path
 
 from ..message_content import content_text
+from ..infra.sandbox_policy import SandboxDenied, SandboxPolicy
 
 
 class MemoryManager:
@@ -28,8 +29,9 @@ class MemoryManager:
         r"\s*[:：=]\s*\S+|\bsk-[A-Za-z0-9_-]{12,}"
     )
 
-    def __init__(self, workspace_root: str):
+    def __init__(self, workspace_root: str, policy: SandboxPolicy | None = None):
         self.workspace_root = Path(workspace_root).expanduser().resolve()
+        self.policy = policy or SandboxPolicy(str(self.workspace_root))
         self._last_project_memory_key = ""
         self._last_trajectory_key = ""
         self._pending_project_memory_key = ""
@@ -144,6 +146,8 @@ class MemoryManager:
         llm,
         force: bool = False,
     ) -> bool:
+        if not self.policy.resolve().can_write(self.memory_file_path()):
+            return False
         trajectory = self._flatten_messages(messages)
         if not trajectory or not hasattr(llm, "clone"):
             return False
@@ -177,13 +181,17 @@ class MemoryManager:
     def wait_for_pending_refresh(self, timeout: float | None = None):
         future = self._future
         if future is not None:
-            future.result(timeout=timeout)
+            try:
+                future.result(timeout=timeout)
+            except SandboxDenied:
+                return
 
     def close(self) -> None:
         self._executor.shutdown(wait=False, cancel_futures=True)
 
     def _write_memory(self, content: str) -> None:
         path = self.memory_file_path()
+        self.policy.resolve().require_write(path)
         path.parent.mkdir(parents=True, exist_ok=True)
         temporary = path.with_suffix(".tmp")
         temporary.write_text(content.rstrip() + "\n", encoding="utf-8")
@@ -255,7 +263,9 @@ class MemoryManager:
         if rendered:
             self._write_memory(rendered)
         else:
-            self.memory_file_path().unlink(missing_ok=True)
+            path = self.memory_file_path()
+            self.policy.resolve().require_write(path)
+            path.unlink(missing_ok=True)
         return result
 
     @classmethod

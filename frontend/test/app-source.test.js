@@ -75,8 +75,8 @@ test("agent interaction endpoints remain wired after the architecture split", as
   assert.match(app, /\/api\/changes\/action/);
   assert.match(app, /\/api\/approval\/decision/);
   assert.match(app, /\/api\/turn\/continue\/stream/);
-  assert.match(app, /\/api\/permission-mode/);
-  assert.match(app, /full_access/);
+  assert.match(app, /\/api\/approval-policy/);
+  assert.match(app, /never/);
 });
 
 test("new turns carry the durable page session identity", async () => {

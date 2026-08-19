@@ -36,14 +36,12 @@ class WriteFileTool(Tool):
     def execute(self, file_path: str, content: str) -> str:
         try:
             fs = getattr(self, "_fs", None)
-            if fs:
-                p = fs.resolve_path(file_path)
-            else:
-                from pathlib import Path
-                p = Path(file_path).expanduser().resolve()
+            if fs is None:
+                return "Error: write_file requires an attached sandboxed filesystem"
+            p = fs.resolve_path(file_path)
             tracker = getattr(self, "_file_read_tracker", DEFAULT_FILE_READ_TRACKER)
             if p.exists():
-                current = fs.read_text(file_path) if fs else p.read_text(encoding="utf-8")
+                current = fs.read_text(file_path)
                 status = tracker.status(p, current)
                 if status == "unread":
                     return f"Error: read must be called on the complete {file_path} before write_file"
@@ -52,11 +50,7 @@ class WriteFileTool(Tool):
                         f"Error: {file_path} changed since it was read. "
                         "Call read again before write_file."
                     )
-            if fs:
-                fs.write_text(file_path, content)
-            else:
-                p.parent.mkdir(parents=True, exist_ok=True)
-                p.write_text(content, encoding="utf-8")
+            fs.write_text(file_path, content)
             tracker.record(p, content)
             with _changed_files_lock:
                 _changed_files.add(str(p))

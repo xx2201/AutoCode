@@ -92,7 +92,7 @@ def run_trial(
             agent = Agent(
                 llm=llm,
                 workspace_root=str(workspace),
-                permission_mode="full_access" if spec.auto_approve else "ask",
+                approval_policy="ask",
                 max_rounds=spec.max_rounds,
             )
             started = time.time()

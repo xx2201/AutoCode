@@ -58,14 +58,14 @@ class ClientRequest(BaseModel):
 class ChatRequest(ClientRequest):
     prompt: str = Field(default="", max_length=32_000)
     attachments: list["AttachmentRequest"] = Field(default_factory=list, max_length=5)
-    permission_mode: Literal["ask", "full_access"] = "ask"
+    approval_policy: Literal["ask", "never"] = "ask"
     session_id: str = Field(default="", max_length=128)
 
 
 class TurnEditRequest(ClientRequest):
     turn_id: str = Field(min_length=1, max_length=128)
     prompt: str = Field(min_length=1, max_length=32_000)
-    permission_mode: Literal["ask", "full_access"] = "ask"
+    approval_policy: Literal["ask", "never"] = "ask"
 
 
 class TurnMessageRequest(ClientRequest):
@@ -97,13 +97,13 @@ class ApprovalContinuationRequest(ClientRequest):
     batch_id: str = Field(min_length=1, max_length=128)
 
 
-class PermissionModeRequest(ClientRequest):
-    permission_mode: Literal["ask", "full_access"]
+class ApprovalPolicyRequest(ClientRequest):
+    approval_policy: Literal["ask", "never"]
 
 
 class ResumeRequest(ClientRequest):
     session_id: str = Field(min_length=1, max_length=128)
-    permission_mode: Literal["ask", "full_access"] = "ask"
+    approval_policy: Literal["ask", "never"] = "ask"
 
 
 class DeleteSessionRequest(ResumeRequest):
@@ -287,7 +287,7 @@ def create_app(
             "client_id": client_id,
             "workspace_id": payload.workspace_id,
             "prompt": prompt,
-            "permission_mode": payload.permission_mode,
+            "approval_policy": payload.approval_policy,
         }
         session_id = payload.session_id.strip()
         if session_id:
@@ -307,7 +307,7 @@ def create_app(
                 "client_id": client_id,
                 "workspace_id": payload.workspace_id,
                 "prompt": prompt,
-                "permission_mode": payload.permission_mode,
+                "approval_policy": payload.approval_policy,
             }
             session_id = payload.session_id.strip()
             if session_id:
@@ -347,7 +347,7 @@ def create_app(
                     "workspace_id": payload.workspace_id,
                     "turn_id": payload.turn_id,
                     "prompt": prompt,
-                    "permission_mode": payload.permission_mode,
+                    "approval_policy": payload.approval_policy,
                 },
             )
         except RunnerOfflineError as exc:
@@ -384,14 +384,14 @@ def create_app(
             timeout=control_request_timeout,
         )
 
-    @app.post("/api/permission-mode", dependencies=browser_auth)
-    async def permission_mode(payload: PermissionModeRequest):
+    @app.post("/api/approval-policy", dependencies=browser_auth)
+    async def approval_policy(payload: ApprovalPolicyRequest):
         return await dispatch(
-            "permission_mode",
+            "approval_policy",
             {
                 "client_id": _validate_client_id(payload.client_id),
                 "workspace_id": payload.workspace_id,
-                "permission_mode": payload.permission_mode,
+                "approval_policy": payload.approval_policy,
             },
             timeout=control_request_timeout,
         )
@@ -554,7 +554,7 @@ def create_app(
                 "client_id": _validate_client_id(payload.client_id),
                 "workspace_id": payload.workspace_id,
                 "session_id": payload.session_id,
-                "permission_mode": payload.permission_mode,
+                "approval_policy": payload.approval_policy,
             },
             timeout=control_request_timeout,
         )

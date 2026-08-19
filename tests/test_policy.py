@@ -1,173 +1,132 @@
+import pytest
+
 from autocode.runtime import Policy
+from autocode.state import PolicyDecision
 
 
-def test_policy_allows_workspace_edit(tmp_path):
+def test_default_policy_allows_every_tool_without_name_classification(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    target = tmp_path / "sample.py"
-    decision = policy.evaluate_tool_call("edit_file", {"file_path": str(target)})
-    assert decision.action == "allow"
+    calls = [
+        ("write_file", {"file_path": str(tmp_path.parent / "outside.py")}),
+        ("delete_path", {"path": str(tmp_path / ".env")}),
+        ("shell_command", {"command": "rm -rf ../outside"}),
+        ("web_fetch", {"url": "https://example.com"}),
+        ("mcp_remote_delete", {"id": "1"}),
+    ]
+
+    for tool_name, arguments in calls:
+        assert policy.evaluate_tool_call(tool_name, arguments).action == "allow"
 
 
-def test_policy_denies_outside_workspace(tmp_path):
+def test_pre_execute_policies_form_an_ordered_waterfall(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    target = tmp_path.parent / "outside.py"
-    decision = policy.evaluate_tool_call("write_file", {"file_path": str(target)})
-    assert decision.action == "deny"
+    observed = []
+
+    def outer(execution, next_policy):
+        observed.append(("outer-before", execution.tool_name, dict(execution.arguments)))
+        decision = next_policy()
+        observed.append(("outer-after", decision.action))
+        return decision
+
+    def inner(execution, next_policy):
+        observed.append(("inner", execution.tool_name))
+        return PolicyDecision("ask", "deployment requires approval")
+
+    policy.on_pre_execute(outer)
+    policy.on_pre_execute(inner)
+
+    decision = policy.evaluate_tool_call("deploy", {"environment": "production"})
+
+    assert decision == PolicyDecision("ask", "deployment requires approval")
+    assert observed == [
+        ("outer-before", "deploy", {"environment": "production"}),
+        ("inner", "deploy"),
+        ("outer-after", "ask"),
+    ]
 
 
-def test_policy_protects_env_file(tmp_path):
+def test_pre_execute_policy_can_deny_before_tool_execution(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    target = tmp_path / ".env"
-    decision = policy.evaluate_tool_call("write_file", {"file_path": str(target)})
-    assert decision.action == "deny"
-
-
-def test_policy_allows_unknown_shell_command(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("shell_command", {"command": "python manage.py migrate"})
-    assert decision.action == "allow"
-
-
-def test_policy_denies_destructive_delete_in_workspace(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("shell_command", {"command": "rm -rf build"})
-    assert decision.action == "deny"
-
-
-def test_policy_denies_destructive_delete_outside_workspace(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("shell_command", {"command": "rm -rf ../outside"})
-    assert decision.action == "deny"
-
-
-def test_policy_denies_workspace_local_del(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("shell_command", {"command": "del receive.log 2>nul"})
-    assert decision.action == "deny"
-    assert "delete_path" in decision.reason
-
-
-def test_policy_requires_manual_confirmation_for_delete_tool(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    target = tmp_path / "sample.py"
-    decision = policy.evaluate_tool_call("delete_path", {"path": str(target)})
-    assert decision.action == "confirm"
-    assert decision.requires_manual is True
-
-
-def test_policy_requires_manual_confirmation_for_web_fetch(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call(
-        "web_fetch",
-        {"url": "https://example.com", "prompt": "summarize"},
-    )
-    assert decision.action == "confirm"
-    assert decision.requires_manual is True
-    assert decision.approval_scope == "web_fetch:https://example.com:443"
-    assert "example.com" in decision.approval_label
-
-
-def test_policy_groups_web_fetch_by_protocol_host_and_port(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    first = policy.evaluate_tool_call(
-        "web_fetch",
-        {"url": "https://example.com/a"},
-    )
-    second = policy.evaluate_tool_call(
-        "web_fetch",
-        {"url": "https://example.com/b"},
-    )
-    other_port = policy.evaluate_tool_call(
-        "web_fetch",
-        {"url": "https://example.com:8443/b"},
+    policy.on_pre_execute(
+        lambda execution, next_policy: (
+            PolicyDecision("deny", "production deletion is forbidden")
+            if execution.tool_name == "delete_production"
+            else next_policy()
+        )
     )
 
-    assert first.approval_scope == second.approval_scope
-    assert first.approval_scope != other_port.approval_scope
+    decision = policy.evaluate_tool_call("delete_production", {"id": "1"})
+
+    assert decision == PolicyDecision("deny", "production deletion is forbidden")
 
 
-def test_full_access_skips_confirmations_but_keeps_hard_denies(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path), permission_mode="full_access")
-    target = tmp_path / "generated.txt"
-
-    assert policy.evaluate_tool_call(
-        "web_fetch",
-        {"url": "https://example.com"},
-    ).action == "allow"
-    assert policy.evaluate_tool_call(
-        "delete_path",
-        {"path": str(target)},
-    ).action == "allow"
-    assert policy.evaluate_tool_call(
-        "shell_command",
-        {"command": "rm -rf *"},
-    ).action == "deny"
-    assert policy.evaluate_tool_call(
-        "write_file",
-        {"file_path": str(tmp_path / ".env")},
-    ).action == "deny"
-
-
-def test_policy_rejects_unknown_permission_mode(tmp_path):
-    try:
-        Policy(workspace_root=str(tmp_path), permission_mode="unrestricted")
-    except ValueError as exc:
-        assert "Unsupported permission mode" in str(exc)
-    else:
-        raise AssertionError("invalid permission mode must fail")
-
-
-def test_policy_does_not_mistake_embedded_del_text_for_shell_delete(tmp_path):
+def test_monotonic_guard_runs_after_allow_and_can_only_deny(tmp_path):
     policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call(
-        "shell_command",
-        {"command": "python -c \"print('DEL label only')\""},
+    policy.on_pre_execute(lambda execution, next_policy: PolicyDecision("allow"))
+    policy.add_guard(
+        lambda execution: (
+            "agent scope forbids this tool"
+            if execution.tool_name == "restricted_tool"
+            else None
+        )
     )
-    assert decision.action == "allow"
 
-
-def test_policy_denies_streaming_redis_monitor_in_bash(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call(
-        "shell_command",
-        {"command": "docker exec demo-redis redis-cli MONITOR"},
+    assert policy.evaluate_tool_call("restricted_tool", {}).action == "allow"
+    assert policy.evaluate_guards("safe_tool", {}).action == "allow"
+    assert policy.evaluate_guards("restricted_tool", {}) == PolicyDecision(
+        "deny",
+        "agent scope forbids this tool",
     )
-    assert decision.action == "deny"
-    assert "start_process" in decision.reason
 
 
-def test_policy_denies_tail_follow_in_bash(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("shell_command", {"command": "tail -f backend.log"})
-    assert decision.action == "deny"
-    assert "start_process" in decision.reason
+def test_never_rejects_ask_but_does_not_change_allow_or_deny(tmp_path):
+    policy = Policy(workspace_root=str(tmp_path), approval_policy="never")
 
+    def policy_rule(execution, next_policy):
+        if execution.tool_name == "needs_approval":
+            return PolicyDecision("ask", "approval required")
+        if execution.tool_name == "forbidden":
+            return PolicyDecision("deny", "forbidden by deployment")
+        return next_policy()
 
-def test_policy_allows_read_only_bash(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("shell_command", {"command": "git status"})
-    assert decision.action == "allow"
+    policy.on_pre_execute(policy_rule)
 
-
-def test_policy_denies_bash_redirect_to_protected_env(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("shell_command", {"command": "echo hi > .env"})
-    assert decision.action == "deny"
-
-
-def test_policy_denies_shell_taskkill_even_with_pid(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call("shell_command", {"command": "taskkill /PID 12345 /T /F"})
-    assert decision.action == "deny"
-    assert "use stop_process" in decision.reason
-
-
-def test_policy_denies_shell_stop_process_pipeline(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path))
-    decision = policy.evaluate_tool_call(
-        "shell_command",
-        {"command": "powershell -Command \"Get-Process python -ErrorAction SilentlyContinue | Stop-Process -Force\""},
+    assert policy.evaluate_tool_call("ordinary", {}).action == "allow"
+    assert policy.evaluate_tool_call("needs_approval", {}).action == "deny"
+    assert policy.evaluate_tool_call("forbidden", {}) == PolicyDecision(
+        "deny",
+        "forbidden by deployment",
     )
-    assert decision.action == "deny"
-    assert "use stop_process" in decision.reason
 
+
+def test_policy_registration_disposer_removes_exact_handler(tmp_path):
+    policy = Policy(workspace_root=str(tmp_path))
+    dispose = policy.on_pre_execute(
+        lambda execution, next_policy: PolicyDecision("deny", "temporarily blocked")
+    )
+
+    assert policy.evaluate_tool_call("echo", {}).action == "deny"
+    dispose()
+    assert policy.evaluate_tool_call("echo", {}).action == "allow"
+
+
+def test_policy_rejects_invalid_decisions_and_repeated_next(tmp_path):
+    policy = Policy(workspace_root=str(tmp_path))
+    policy.on_pre_execute(lambda execution, next_policy: "allow")
+    with pytest.raises(TypeError, match="PolicyDecision"):
+        policy.evaluate_tool_call("echo", {})
+
+    repeated = Policy(workspace_root=str(tmp_path))
+
+    def call_next_twice(execution, next_policy):
+        next_policy()
+        return next_policy()
+
+    repeated.on_pre_execute(call_next_twice)
+    with pytest.raises(RuntimeError, match="more than once"):
+        repeated.evaluate_tool_call("echo", {})
+
+
+def test_policy_rejects_unknown_approval_policy(tmp_path):
+    with pytest.raises(ValueError, match="Unsupported approval policy"):
+        Policy(workspace_root=str(tmp_path), approval_policy="unrestricted")

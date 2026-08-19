@@ -27,7 +27,7 @@ def test_trace_recorder_aggregates_events(tmp_path, monkeypatch):
         "session_id": "session_trace",
         "turn_id": "turn_trace",
         "tool_name": "shell_command",
-        "decision": {"action": "confirm", "reason": "unsafe"},
+        "decision": {"action": "ask", "reason": "unsafe"},
     })
     recorder.handle("before_tool", {
         "session_id": "session_trace",

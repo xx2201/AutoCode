@@ -14,7 +14,7 @@ def render_turn_result(result: RemoteTurnResult) -> str:
             f"\nSession: {result.session_id or 'unknown'}\n"
             f"Turn: {result.turn_id or '(none)'}\n"
             f"Status: {result.status or 'unknown'}\n"
-            f"Permissions: {result.permission_mode}"
+            f"Approval policy: {result.approval_policy}"
         )
     if result.pending_tool:
         command_block = ""

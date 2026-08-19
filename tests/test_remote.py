@@ -43,7 +43,7 @@ class _FakeLLM:
 class _ConfirmDelegationPolicy(Policy):
     def evaluate_tool_call(self, tool_name: str, arguments: dict) -> PolicyDecision:
         if tool_name == "agent":
-            return PolicyDecision("confirm", "approval required for delegation")
+            return PolicyDecision("ask", "approval required for delegation")
         return super().evaluate_tool_call(tool_name, arguments)
 
 
@@ -440,7 +440,7 @@ def test_render_turn_result_includes_approval_hint():
             "pending_requires_manual": False,
             "pending_approval_scope": "tool:shell_command",
             "pending_approval_label": "本任务允许运行 shell_command",
-            "permission_mode": "ask",
+            "approval_policy": "ask",
         })()
     )
     assert "/approve" in text
@@ -465,9 +465,9 @@ def test_remote_manager_scope_approval_marks_turn_grant(tmp_path):
     manager.submit(404, "run delegated task")
 
     result = manager.resolve_next_approval(404, approved=True, grant_scope=True)
-    assert result.permission_mode == "ask"
+    assert result.approval_policy == "ask"
     summary = manager.current_turn_summary(404)
-    assert "Permission mode: ask" in summary
+    assert "Approval policy: ask" in summary
 
 
 def test_replacing_busy_runtime_fails_fast_instead_of_blocking(tmp_path):

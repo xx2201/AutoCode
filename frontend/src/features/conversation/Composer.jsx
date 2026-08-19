@@ -17,13 +17,13 @@ export default function Composer({
   attachments,
   pendingInputs,
   deliveryMode,
-  permissionMode,
+  approvalPolicy,
   fileInputRef,
   promptInputRef,
   onPromptChange,
   onSubmit,
   onDeliveryModeChange,
-  onPermissionModeChange,
+  onApprovalPolicyChange,
   onAddAttachments,
   onRemoveAttachment,
 }) {
@@ -93,15 +93,15 @@ export default function Composer({
               >下一轮</button>
             </div>
           ) : (
-            <label className="permission-mode">
+            <label className="approval-policy">
               <ShieldCheck size={14} />
               <select
-                value={permissionMode}
-                onChange={(event) => onPermissionModeChange(event.target.value)}
-                aria-label="工具权限"
+                value={approvalPolicy}
+                onChange={(event) => onApprovalPolicyChange(event.target.value)}
+                aria-label="审批策略"
               >
                 <option value="ask">请求批准</option>
-                <option value="full_access">完全访问</option>
+                <option value="never">从不询问（拒绝）</option>
               </select>
             </label>
           )}

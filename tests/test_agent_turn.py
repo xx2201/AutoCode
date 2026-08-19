@@ -34,7 +34,7 @@ class _ToolLLM:
 
 def test_agent_uses_instance_tool_registry(tmp_path):
     llm = _ToolLLM()
-    agent = Agent(llm=llm, tools=[_CustomTool()], workspace_root=str(tmp_path), permission_mode="full_access")
+    agent = Agent(llm=llm, tools=[_CustomTool()], workspace_root=str(tmp_path), approval_policy="never")
     reply = agent.chat("use custom")
     assert reply == "done"
     assert any(m.get("content") == "custom-ok" for m in agent.messages if m.get("role") == "tool")
@@ -105,7 +105,7 @@ class _BashLLM:
         return LLMResponse(content="done")
 
 
-def test_agent_full_access_allows_safe_tools_but_keeps_hard_denies(tmp_path):
+def test_agent_does_not_parse_or_block_local_shell_commands(tmp_path):
     calls = []
 
     def approval_handler(pending):
@@ -123,7 +123,6 @@ def test_agent_full_access_allows_safe_tools_but_keeps_hard_denies(tmp_path):
     tool_outputs = [m.get("content") for m in agent.messages if m.get("role") == "tool"]
     assert "python app.py|confirmed=False" in tool_outputs
     assert "echo ok|confirmed=False" in tool_outputs
-    blocked = [item for item in tool_outputs if "delete via shell is not allowed" in item]
-    assert len(blocked) == 2
-    assert all("use delete_path instead" in item for item in blocked)
+    assert "rm -rf build|confirmed=False" in tool_outputs
+    assert "rm -rf ../outside|confirmed=False" in tool_outputs
 

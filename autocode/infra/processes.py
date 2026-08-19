@@ -13,7 +13,6 @@ from pathlib import Path
 from .filesystem import WorkspaceFS
 from .process_control import process_group_options, terminate_process_tree
 from .sandbox import Sandbox, decode_output
-from .shell import create_shell_provider
 
 _SAFE_PROCESS_RE = re.compile(r"[^A-Za-z0-9._-]+")
 
@@ -32,8 +31,9 @@ class BackgroundProcess:
 
 
 class BackgroundProcessManager:
-    def __init__(self, workspace_root: str):
-        self.fs = WorkspaceFS(workspace_root)
+    def __init__(self, workspace_root: str, sandbox: Sandbox | None = None):
+        self.sandbox = sandbox or Sandbox(workspace_root)
+        self.fs = WorkspaceFS(workspace_root, policy=self.sandbox.policy)
         self._lock = threading.Lock()
         self._processes: dict[str, tuple[subprocess.Popen, BackgroundProcess, object]] = {}
 
@@ -53,20 +53,24 @@ class BackgroundProcessManager:
 
         process_id = _new_process_id()
         log_path = self._resolve_log_path(log_file, process_id)
+        self.fs.policy.resolve().require_write(log_path)
+        prepared = self.sandbox.prepare(command, workdir=cwd, shell=shell)
         log_path.parent.mkdir(parents=True, exist_ok=True)
         log_handle = log_path.open("ab")
-        provider = create_shell_provider(shell)
-        invocation = provider.invocation(command)
 
         popen_kwargs = {
-            "cwd": str(run_cwd),
+            "cwd": str(prepared.cwd),
             "stdout": log_handle,
             "stderr": subprocess.STDOUT,
-            "env": Sandbox._build_env(),
+            "env": prepared.env,
             **process_group_options(),
         }
 
-        proc = subprocess.Popen(invocation.argv(), **popen_kwargs)
+        try:
+            proc = subprocess.Popen(prepared.argv, **popen_kwargs)
+        except Exception:
+            log_handle.close()
+            raise
         meta = BackgroundProcess(
             process_id=process_id,
             command=command,
@@ -74,7 +78,7 @@ class BackgroundProcessManager:
             log_path=str(log_path),
             pid=proc.pid,
             started_at=time.strftime("%Y-%m-%d %H:%M:%S"),
-            shell=invocation.name,
+            shell=prepared.shell,
             turn_id=turn_id or "",
             keep_alive=bool(keep_alive),
         )
@@ -84,7 +88,7 @@ class BackgroundProcessManager:
             f"Started background process {process_id}\n"
             f"PID: {proc.pid}\n"
             f"CWD: {run_cwd}\n"
-            f"Shell: {invocation.name}\n"
+            f"Shell: {prepared.shell}\n"
             f"Log: {log_path}"
         )
 
@@ -127,6 +131,10 @@ class BackgroundProcessManager:
         return self._cleanup_matching_processes(
             lambda meta: include_persistent or not meta.keep_alive
         )
+
+    def has_running_processes(self) -> bool:
+        with self._lock:
+            return any(proc.poll() is None for proc, _, _ in self._processes.values())
 
     def _cleanup_matching_processes(self, predicate) -> list[str]:
         with self._lock:

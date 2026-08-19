@@ -97,6 +97,46 @@ def test_read_output_decodes_non_utf8_log_bytes(tmp_path):
     assert "中文日志" in output
 
 
+def test_background_prepare_failure_does_not_create_log(tmp_path):
+    manager = BackgroundProcessManager(str(tmp_path))
+    log_path = tmp_path / "failed.log"
+
+    def _fail_prepare(*args, **kwargs):
+        raise RuntimeError("sandbox unavailable")
+
+    manager.sandbox.prepare = _fail_prepare
+
+    with pytest.raises(RuntimeError, match="sandbox unavailable"):
+        manager.start_process("ignored", log_file="failed.log")
+    assert not log_path.exists()
+
+
+def test_background_manager_reports_only_live_processes(tmp_path):
+    manager = BackgroundProcessManager(str(tmp_path))
+
+    class _Proc:
+        def __init__(self, returncode):
+            self.returncode = returncode
+
+        def poll(self):
+            return self.returncode
+
+    meta = process_module.BackgroundProcess(
+        process_id="proc_test",
+        command="demo",
+        cwd=str(tmp_path),
+        log_path=str(tmp_path / "demo.log"),
+        pid=123,
+        started_at="2026-08-19 00:00:00",
+        shell="powershell",
+    )
+    manager._processes["proc_test"] = (_Proc(0), meta, None)
+    assert not manager.has_running_processes()
+
+    manager._processes["proc_test"] = (_Proc(None), meta, None)
+    assert manager.has_running_processes()
+
+
 def test_stop_process_uses_taskkill_tree_on_windows(tmp_path, monkeypatch):
     manager = BackgroundProcessManager(str(tmp_path))
     captured = {}
@@ -318,6 +358,6 @@ def test_cleanup_all_stops_persistent_processes_on_manager_close(tmp_path):
 
 
 def test_policy_allows_background_process(tmp_path):
-    policy = Policy(workspace_root=str(tmp_path), permission_mode="ask")
+    policy = Policy(workspace_root=str(tmp_path), approval_policy="ask")
     decision = policy.evaluate_tool_call("start_process", {"command": "python receive.py"})
     assert decision.action == "allow"

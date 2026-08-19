@@ -92,7 +92,13 @@ class Runtime:
         return resp
 
     def evaluate_tool_call(self, turn_state: TurnState, tool_call, session_id: str) -> PolicyDecision:
-        decision = self.policy.evaluate_tool_call(tool_call.name, tool_call.arguments)
+        try:
+            decision = self.policy.evaluate_tool_call(tool_call.name, tool_call.arguments)
+        except Exception as exc:
+            decision = PolicyDecision(
+                "deny",
+                f"pre-execute policy failed: {type(exc).__name__}: {exc}",
+            )
         self.hooks.emit(
             "policy_decision",
             self._payload(
@@ -103,6 +109,34 @@ class Runtime:
                 decision=decision.to_dict(),
             ),
         )
+        return decision
+
+    def evaluate_tool_guards(
+        self,
+        turn_state: TurnState,
+        tool_call,
+        session_id: str,
+    ) -> PolicyDecision:
+        """Run fail-closed monotonic guards immediately before tool dispatch."""
+        try:
+            decision = self.policy.evaluate_guards(tool_call.name, tool_call.arguments)
+        except Exception as exc:
+            decision = PolicyDecision(
+                "deny",
+                f"tool policy guard failed: {type(exc).__name__}: {exc}",
+            )
+        if decision.action == "deny":
+            self.hooks.emit(
+                "policy_decision",
+                self._payload(
+                    session_id,
+                    turn_state,
+                    tool_name=tool_call.name,
+                    arguments=tool_call.arguments,
+                    decision=decision.to_dict(),
+                    policy_stage="guard",
+                ),
+            )
         return decision
 
     def execute_tool_call(
@@ -145,6 +179,19 @@ class Runtime:
             call_indexes=(0,),
             mode=spec.mode.value,
         )
+        guard = self.evaluate_tool_guards(turn_state, tool_call, session_id)
+        if guard.action == "deny":
+            return PreparedToolExecution(
+                outcome=ToolExecutionOutcome(
+                    result=ToolResult(
+                        text=self.blocked_result(tool_call.name, guard),
+                        is_error=True,
+                    ),
+                    duration_ms=0.0,
+                ),
+                group=group,
+                spec=spec,
+            )
         self._announce_tool_call(
             turn_state,
             tool_call,
@@ -254,8 +301,6 @@ class Runtime:
         execute_kwargs = dict(tool_call.arguments)
         if tool_call.name == "start_process":
             execute_kwargs["_turn_id"] = turn_state.turn_id
-        if tool_call.name == "shell_command" and decision is not None and decision.requires_manual:
-            execute_kwargs["_confirmed_sensitive"] = True
         try:
             result = tool.execute(**execute_kwargs)
         except TypeError as e:
@@ -369,7 +414,24 @@ class Runtime:
         results: list[str | ToolResult | None] = [None] * len(tool_calls)
 
         for group in groups:
+            outcomes_by_index: dict[int, ToolExecutionOutcome] = {}
+            runnable_indexes: list[int] = []
             for index in group.call_indexes:
+                guard = self.evaluate_tool_guards(
+                    turn_state,
+                    tool_calls[index],
+                    session_id,
+                )
+                if guard.action == "deny":
+                    outcomes_by_index[index] = ToolExecutionOutcome(
+                        result=ToolResult(
+                            text=self.blocked_result(tool_calls[index].name, guard),
+                            is_error=True,
+                        ),
+                        duration_ms=0.0,
+                    )
+                    continue
+                runnable_indexes.append(index)
                 self._announce_tool_call(
                     turn_state,
                     tool_calls[index],
@@ -379,25 +441,22 @@ class Runtime:
                     spec=specs[index],
                 )
 
-            outcomes: list[ToolExecutionOutcome]
-            if len(group.call_indexes) == 1:
-                index = group.call_indexes[0]
-                outcomes = [
-                    self._run_traced_tool_call(
-                        turn_state,
-                        tool_calls[index],
-                        decision=call_decisions[index],
-                        group=group,
-                        spec=specs[index],
-                        trace_context=trace_context,
-                    )
-                ]
-            else:
+            if len(runnable_indexes) == 1:
+                index = runnable_indexes[0]
+                outcomes_by_index[index] = self._run_traced_tool_call(
+                    turn_state,
+                    tool_calls[index],
+                    decision=call_decisions[index],
+                    group=group,
+                    spec=specs[index],
+                    trace_context=trace_context,
+                )
+            elif len(runnable_indexes) > 1:
                 with concurrent.futures.ThreadPoolExecutor(
-                    max_workers=min(8, len(group.call_indexes))
+                    max_workers=min(8, len(runnable_indexes))
                 ) as pool:
-                    futures = [
-                        pool.submit(
+                    futures = {
+                        index: pool.submit(
                             self._run_traced_tool_call,
                             turn_state,
                             tool_calls[index],
@@ -406,16 +465,17 @@ class Runtime:
                             spec=specs[index],
                             trace_context=trace_context,
                         )
-                        for index in group.call_indexes
-                    ]
-                    outcomes = [future.result() for future in futures]
+                        for index in runnable_indexes
+                    }
+                    for index, future in futures.items():
+                        outcomes_by_index[index] = future.result()
 
-            for index, outcome in zip(group.call_indexes, outcomes):
+            for index in group.call_indexes:
                 results[index] = self._finalize_tool_call(
                     turn_state,
                     tool_calls[index],
                     session_id,
-                    outcome,
+                    outcomes_by_index[index],
                     group=group,
                     spec=specs[index],
                 )

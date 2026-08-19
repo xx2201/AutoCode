@@ -91,8 +91,6 @@ class ReadTool(Tool):
     def _resolve_file(self, file_path: str) -> Path:
         fs = getattr(self, "_fs", None)
         path = fs.resolve_path(file_path) if fs else Path(file_path).expanduser().resolve()
-        if fs:
-            fs.ensure_within_workspace(path)
         if not path.exists():
             raise FileNotFoundError(f"{file_path} not found")
         if not path.is_file():

@@ -255,7 +255,7 @@ class LocalRunner:
                     "image_input": True,
                     "workspace_image_tool": True,
                     "web_search": bool(self._base_config.tavily_api_key),
-                    "permission_modes": ["ask", "full_access"],
+                    "approval_policies": ["ask", "never"],
                 },
                 "diagnostics": {
                     "log_dir": str(diagnostic_log_dir()),
@@ -338,11 +338,11 @@ class LocalRunner:
                 "turn_id": expected_turn_id,
                 "queued_message": queued_message,
             }
-        if action == "permission_mode":
+        if action == "approval_policy":
             return {
-                "permission_mode": manager.set_permission_mode(
+                "approval_policy": manager.set_approval_policy(
                     payload["client_id"],
-                    str(payload.get("permission_mode", "")),
+                    str(payload.get("approval_policy", "")),
                 )
             }
         if action == "change_action":
@@ -440,7 +440,7 @@ class LocalRunner:
             result = manager.resume_session(
                 payload["client_id"],
                 payload["session_id"],
-                payload.get("permission_mode"),
+                payload.get("approval_policy"),
             )
             return {
                 "result": asdict(result),
@@ -497,7 +497,7 @@ class LocalRunner:
                 manager.resume_session(
                     client_id,
                     requested_session_id,
-                    permission_mode=payload.get("permission_mode"),
+                    approval_policy=payload.get("approval_policy"),
                 )
 
         while True:
@@ -555,7 +555,7 @@ class LocalRunner:
                 self._emit_hook_event(event_handler, event, data)
 
             submit_kwargs = {"hook_handler": on_hook}
-            submit_kwargs["permission_mode"] = payload.get("permission_mode")
+            submit_kwargs["approval_policy"] = payload.get("approval_policy")
             if event_handler is not None:
                 submit_kwargs["on_token"] = on_token
             if attachments:

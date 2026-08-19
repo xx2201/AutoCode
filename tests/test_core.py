@@ -9,6 +9,7 @@ from autocode import Agent, LLM, Config, ALL_TOOLS, __version__
 from autocode import cli as cli_module
 from autocode.context import CompressionResult, ContextManager, MemoryManager, estimate_tokens
 from autocode.llm import LLMResponse
+from autocode.infra import WorkspaceFS
 from autocode.state import SessionState
 from autocode.tools import get_tool
 
@@ -76,7 +77,7 @@ def test_config_defaults(monkeypatch):
         "AUTOCODE_BASE_URL",
         "AUTOCODE_PROVIDER",
         "AUTOCODE_MAX_TOKENS",
-        "AUTOCODE_PERMISSION_MODE",
+        "AUTOCODE_APPROVAL_POLICY",
         "OPENAI_API_KEY",
         "OPENAI_BASE_URL",
         "LANGFUSE_PUBLIC_KEY",
@@ -99,7 +100,7 @@ def test_config_defaults(monkeypatch):
     assert c.max_tokens == 32_000
     assert c.max_context_tokens == 1_000_000
     assert c.temperature == 0.0
-    assert c.permission_mode == "ask"
+    assert c.approval_policy == "ask"
 
     os.environ.update(saved)
 
@@ -477,7 +478,7 @@ def test_agent_passes_real_usage_plus_trailing_estimate_into_compression(tmp_pat
             self.total_cache_read_tokens = 0
             self.total_cache_miss_tokens = 0
 
-    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
+    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), approval_policy="never")
     agent.messages = [{"role": "user", "content": "prompt"}]
     agent._record_prompt_usage(4321)
     trailing = [{"role": "assistant", "content": "answer " * 12}]
@@ -506,7 +507,7 @@ def test_agent_refreshes_memory_only_after_actual_compression(tmp_path):
         model = "fake"
         _call_with_retry = object()
 
-    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
+    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), approval_policy="never")
     original_messages = [
         {"role": "user", "content": "old context"},
         {"role": "assistant", "content": "old answer"},
@@ -670,6 +671,56 @@ def test_agent_ignores_unanchored_usage_from_legacy_checkpoint(tmp_path):
     )
 
     assert agent.context_usage()["used_tokens"] == estimate_tokens(agent.messages)
+
+
+def test_agent_restores_persisted_sandbox_mode(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+
+    agent = Agent(
+        llm=_NoopLLM(),
+        workspace_root=str(tmp_path),
+        sandbox_mode="workspace-write",
+    )
+
+    agent.restore_session(
+        SessionState(session_id="restored", sandbox_mode="read-only"),
+        [],
+    )
+
+    assert agent.sandbox_policy.mode == "read-only"
+
+
+def test_agent_upgrades_legacy_session_with_effective_sandbox_mode(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+
+    state = SessionState(session_id="legacy")
+    agent = Agent(
+        llm=_NoopLLM(),
+        workspace_root=str(tmp_path),
+        sandbox_mode="read-only",
+    )
+
+    agent.restore_session(state, [])
+
+    assert state.sandbox_mode == "read-only"
+
+
+def test_agent_persists_mode_changes_and_fences_running_processes(tmp_path):
+    class _NoopLLM:
+        model = "fake"
+
+    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path))
+    agent.set_sandbox_mode("read-only")
+
+    assert agent.session_state is not None
+    assert agent.session_state.sandbox_mode == "read-only"
+
+    agent.processes.has_running_processes = lambda: True
+    with pytest.raises(RuntimeError, match="background processes"):
+        agent.set_sandbox_mode("danger-full-access")
+    assert agent.sandbox_policy.mode == "read-only"
 
 
 def test_memory_manager_separates_rules_and_project_memory(tmp_path):
@@ -929,7 +980,7 @@ def test_agent_prompt_snapshot_keeps_rules_and_memory_in_stable_system_prompt(tm
             self.total_cache_read_tokens = 0
             self.total_cache_miss_tokens = 0
 
-    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), permission_mode="full_access")
+    agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), approval_policy="never")
     agent._ensure_turn("处理任务")
     agent.messages = [{"role": "user", "content": "开始"}]
     waited = []
@@ -983,7 +1034,8 @@ def test_edit_tracks_changed_files(tmp_path):
     from autocode.tools.edit import _changed_files
     _changed_files.clear()
     read = get_tool("read")
-    edit = get_tool("edit_file")
+    edit = get_tool("edit_file").clone()
+    edit._fs = WorkspaceFS(str(tmp_path))
     path = tmp_path / "sample.py"
     path.write_text("aaa\nbbb\n")
     read.execute(file_path=str(path))
@@ -995,7 +1047,8 @@ def test_edit_tracks_changed_files(tmp_path):
 def test_write_tracks_changed_files(tmp_path):
     from autocode.tools.edit import _changed_files
     _changed_files.clear()
-    write = get_tool("write_file")
+    write = get_tool("write_file").clone()
+    write._fs = WorkspaceFS(str(tmp_path))
     path = tmp_path / "tracked.txt"
     write.execute(file_path=str(path), content="tracked\n")
     assert any("tracked" not in p and path.name in p for p in _changed_files) or len(_changed_files) > 0

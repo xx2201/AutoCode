@@ -1,6 +1,6 @@
 export const TOKEN_KEY = "autocode_web_token";
 export const WORKSPACE_KEY = "autocode_workspace_id";
-export const PERMISSION_MODE_KEY = "autocode_permission_mode";
+export const APPROVAL_POLICY_KEY = "autocode_approval_policy";
 
 const CLIENT_MAP_KEY = "autocode_workspace_clients";
 

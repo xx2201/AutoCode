@@ -88,7 +88,7 @@ class TraceRecorder:
             stats["context_saved_tokens"] += int(payload.get("saved_tokens", 0))
         elif event == "policy_decision":
             action = payload.get("decision", {}).get("action")
-            if action == "confirm":
+            if action == "ask":
                 stats["approval_requests"] += 1
             elif action == "deny":
                 stats["blocked_tool_calls"] += 1

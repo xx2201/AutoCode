@@ -58,7 +58,8 @@ class AgentTool(Tool):
             max_output_tokens=parent.context.output_reserve_tokens,
             max_rounds=20,
             workspace_root=str(parent.fs.workspace_root),
-            permission_mode=parent.policy.permission_mode,
+            approval_policy=parent.policy.approval_policy,
+            sandbox_mode=parent.sandbox_policy.mode,
         )
 
         try:

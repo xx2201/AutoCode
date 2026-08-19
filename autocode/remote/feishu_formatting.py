@@ -64,7 +64,7 @@ def build_live_status_card(
     cache_segments: int,
     last_tool: str = "",
     detail: str = "",
-    permission_mode: str = "ask",
+    approval_policy: str = "ask",
     template: str = "blue",
 ) -> dict:
     cache_total = cache_read_tokens + cache_miss_tokens
@@ -90,7 +90,7 @@ def build_live_status_card(
         f"Last Cache Miss: `{last_cache_miss_tokens}`",
         f"Compactions: `{compactions}`",
         f"Cache Segments: `{cache_segments}`",
-        f"Permissions: `{permission_mode}`",
+        f"Approval policy: `{approval_policy}`",
     ]
     if last_tool:
         lines.append(f"Last Tool: `{last_tool}`")
@@ -116,7 +116,7 @@ def build_approval_card(
         f"Session: `{result.session_id}`",
         f"Turn: `{result.turn_id}`",
         f"Status: `{result.status or 'unknown'}`",
-        f"Permissions: `{result.permission_mode}`",
+        f"Approval policy: `{result.approval_policy}`",
         f"Tool: `{result.pending_tool or 'unknown'}`",
         f"Reason: {result.pending_reason or 'confirmation required'}",
     ]

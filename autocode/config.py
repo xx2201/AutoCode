@@ -50,7 +50,8 @@ class Config:
     max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS
     provider: str = "anthropic"
     workspace_root: str = ""
-    permission_mode: str = "ask"
+    approval_policy: str = "ask"
+    sandbox_mode: str = "workspace-write"
     mcp_config_path: str = ""
     telegram_bot_token: str = ""
     telegram_allowed_chat_ids: tuple[int, ...] = ()
@@ -66,6 +67,13 @@ class Config:
             raise ValueError(
                 "AUTOCODE_MAX_CONTEXT must be greater than AUTOCODE_MAX_TOKENS "
                 "so the model has room for both input and output."
+            )
+        if self.approval_policy not in {"ask", "never"}:
+            raise ValueError("AUTOCODE_APPROVAL_POLICY must be ask or never.")
+        if self.sandbox_mode not in {"read-only", "workspace-write", "danger-full-access"}:
+            raise ValueError(
+                "AUTOCODE_SANDBOX_MODE must be read-only, workspace-write, "
+                "or danger-full-access."
             )
 
     @classmethod
@@ -96,10 +104,15 @@ class Config:
             ),
             provider=_resolve_config_value(snapshot, "AUTOCODE_PROVIDER", "anthropic"),
             workspace_root=_resolve_config_value(snapshot, "AUTOCODE_WORKSPACE_ROOT", str(Path.cwd())),
-            permission_mode=_resolve_config_value(
+            approval_policy=_resolve_config_value(
                 snapshot,
-                "AUTOCODE_PERMISSION_MODE",
+                "AUTOCODE_APPROVAL_POLICY",
                 "ask",
+            ),
+            sandbox_mode=_resolve_config_value(
+                snapshot,
+                "AUTOCODE_SANDBOX_MODE",
+                "workspace-write",
             ),
             mcp_config_path=_resolve_config_value(snapshot, "AUTOCODE_MCP_CONFIG"),
             telegram_bot_token=_resolve_config_value(snapshot, "AUTOCODE_TELEGRAM_BOT_TOKEN"),

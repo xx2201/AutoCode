@@ -90,7 +90,7 @@ def test_model_step_rolls_back_partial_stream_and_reuses_prompt_snapshot(
         llm=llm,
         tools=[tool],
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
     events = []
     agent.hooks.on("model_step_tombstone", lambda event, data: events.append((event, data)))
@@ -144,7 +144,7 @@ def test_prompt_snapshot_does_not_refresh_tools_mid_turn(tmp_path):
         llm=llm,
         tools=[_StreamingReadTool(started)],
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
 
     assert agent.chat("run") == "done"

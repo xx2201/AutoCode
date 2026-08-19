@@ -60,7 +60,7 @@ def test_build_approval_card_embeds_actions():
         actions.append(column["elements"][0]["value"]["command"])
     assert actions == ["approve", "approve_scope", "reject"]
     assert "python app.py" in card["body"]["elements"][0]["content"]
-    assert "Permissions" in card["body"]["elements"][0]["content"]
+    assert "Approval policy" in card["body"]["elements"][0]["content"]
     assert "session_123" in card["body"]["elements"][0]["content"]
 
 
@@ -86,7 +86,7 @@ def test_build_live_status_card_shows_runtime_progress():
         cache_segments=2,
         last_tool="read_file",
         detail="Executing read_file.",
-        permission_mode="ask",
+        approval_policy="ask",
     )
     content = card["body"]["elements"][0]["content"]
     assert "Running Tool" in content

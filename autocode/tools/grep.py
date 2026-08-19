@@ -2,9 +2,7 @@
 
 from __future__ import annotations
 
-import os
 import shutil
-import subprocess
 from pathlib import Path
 
 from .base import ConcurrencySpec, Tool
@@ -94,28 +92,22 @@ class GrepTool(Tool):
             arguments.extend(("--glob", f"!**/{directory}/**"))
         arguments.extend(("--", str(pattern), str(target)))
 
-        creationflags = subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0
+        sandbox = getattr(self, "_sandbox", None)
+        if sandbox is None:
+            return "Error: grep requires an attached sandbox provider"
         try:
-            completed = subprocess.run(
-                arguments,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                timeout=_SEARCH_TIMEOUT_SECONDS,
-                creationflags=creationflags,
-            )
-        except subprocess.TimeoutExpired:
-            return f"Error: search timed out after {_SEARCH_TIMEOUT_SECONDS}s"
-        except OSError as exc:
+            completed = sandbox.run_argv(arguments, timeout=_SEARCH_TIMEOUT_SECONDS)
+        except (OSError, RuntimeError, ValueError) as exc:
             return f"Error: failed to start ripgrep: {exc}"
 
         output = completed.stdout.strip()
-        if completed.returncode == 1:
+        if completed.timed_out:
+            return f"Error: search timed out after {_SEARCH_TIMEOUT_SECONDS}s"
+        if completed.exit_code == 1:
             return "No matches found."
-        if completed.returncode != 0:
+        if completed.exit_code != 0:
             diagnostic = (completed.stderr or output).strip()
-            return f"Invalid regex or ripgrep error: {diagnostic or f'exit code {completed.returncode}'}"
+            return f"Invalid regex or ripgrep error: {diagnostic or f'exit code {completed.exit_code}'}"
         lines = output.splitlines()
         collection_truncated = len(lines) > _MAX_COLLECTED_LINES
         lines = lines[:_MAX_COLLECTED_LINES]
@@ -143,7 +135,5 @@ class GrepTool(Tool):
     def _resolve_target(self, path: str) -> Path:
         fs = getattr(self, "_fs", None)
         if fs is not None:
-            target = fs.resolve_path(path)
-            fs.ensure_within_workspace(target)
-            return target
+            return fs.resolve_path(path)
         return Path(path).expanduser().resolve()

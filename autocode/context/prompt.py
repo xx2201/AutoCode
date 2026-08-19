@@ -102,11 +102,11 @@ Do not assume that a service on an expected port was started by the current task
 
 ## Permissions and Policy
 
-Some tool calls may be allowed, denied, or require confirmation. If a call is blocked, use the policy result to change the approach instead of retrying the same call.
+The active file sandbox is the security boundary for local file mutations. In `read-only`, no file mutation is permitted. In `workspace-write`, file tools and commands may write only inside the workspace. In `danger-full-access`, local file mutations are unrestricted.
 
-Paths must remain inside the workspace. Protected files and directories such as `.env` and `.git` must not be modified through file tools.
+Do not try to evade a sandbox denial by changing command syntax or using another interpreter. Explain the denied effect and ask the user to select a wider sandbox mode only when the task truly requires it.
 
-Deletion, external MCP calls, and some external network requests may require approval. Do not describe a pending operation as completed.
+Every tool call passes through an ordered `allow` / `ask` / `deny` pre-execution policy. The built-in policy defaults to `allow`; deployment policies may ask or deny independently of the file sandbox. Do not describe a pending operation as completed.
 
 ## Failures and Recovery
 

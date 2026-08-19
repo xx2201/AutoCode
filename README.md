@@ -140,7 +140,7 @@ autocode --resume SESSION_ID
 
 Important interactive commands include `/help`, `/reset`, `/model`, `/tokens`,
 `/compact`, `/diff`, `/resume`, `/turn`, `/todo`, `/trace`, `/mcp`,
-`/approve`, `/approve_scope`, `/permissions ask|full_access`, and `/reject`.
+`/approve`, `/approve_scope`, `/approvals ask|never`, `/sandbox read-only|workspace-write|danger-full-access`, and `/reject`.
 
 ## Web access from a phone
 
@@ -260,8 +260,10 @@ Point `AUTOCODE_MCP_CONFIG` to a JSON file containing stdio servers:
 }
 ```
 
-MCP tools require policy approval before execution. MCP tools that require
-additional interactive input are not currently supported.
+MCP tools enter the same pre-execution policy waterfall as every other tool.
+The built-in policy defaults to `allow`; a deployment can register an `ask` or
+`deny` rule when a specific MCP capability needs additional control. MCP tools
+that require additional interactive input are not currently supported.
 
 ## Local data
 
@@ -304,19 +306,22 @@ the workspace-local `.autocode/.gitignore`.
 
 ## Safety boundary
 
-The policy layer exposes Ask for approval and Full access modes. Ask mode
-confirms deletion, external web access, and MCP calls, and can grant a
-turn-scoped permission for matching hosts or tools. Full access skips those
-confirmations. Both modes still keep paths inside the workspace, protect
-`.env` and `.git`, and hard-deny destructive shell commands such as `rm -rf`
-and `git reset --hard`.
+Tool policy, approval, and sandboxing are independent controls. Every tool call
+passes through an ordered `allow` / `ask` / `deny` pre-execution waterfall and
+then through monotonic guards. The built-in chain ends in `allow`; it does not
+classify commands, MCP tools, or web access by name. A deployment policy may
+return `ask`, which `approval_policy=ask` routes to the user and
+`approval_policy=never` rejects. Calls that pass policy still execute under the
+active filesystem sandbox.
 
-The class currently named `Sandbox` is **not an operating-system sandbox**. It
-sets the working directory, filters environment variables, applies a timeout,
-and truncates command output, but the spawned process still has the operating
-system permissions of the user running AutoCoder. Use a container, VM, WSL
-isolation, or a dedicated low-privilege account for untrusted repositories or
-models.
+On Windows, `sandbox_mode=read-only` and `workspace-write` execute commands
+with a restricted token, write-restricting capability SIDs, workspace/private
+temp ACLs, and a kill-on-close Job Object. `workspace-write` permits writes
+inside the workspace and its private temp directory; `read-only` grants no
+write capability; `danger-full-access` bypasses confinement. Trusted file
+tools resolve the same policy before mutations. Windows enforcement is
+reported as `partial`: it controls filesystem writes, not network access or
+process visibility, and reads outside the workspace remain possible.
 
 ## Development and verification
 

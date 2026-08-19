@@ -133,7 +133,8 @@ autocode --resume SESSION_ID
 
 主要交互命令包括 `/help`、`/reset`、`/model`、`/tokens`、`/compact`、
 `/diff`、`/resume`、`/turn`、`/todo`、`/trace`、`/mcp`、`/approve`、
-`/approve_scope`、`/permissions ask|full_access` 和 `/reject`。
+`/approve_scope`、`/approvals ask|never`、
+`/sandbox read-only|workspace-write|danger-full-access` 和 `/reject`。
 
 ## 从手机访问 Web
 
@@ -242,7 +243,9 @@ Langfuse 负责可观测性，不负责恢复会话；恢复对话仍以本地�
 }
 ```
 
-执行 MCP 工具前需要经过策略审批。目前不支持需要追加交互输入的 MCP 工具。
+MCP 工具与其他工具进入同一条执行前策略流水线。内置策略默认 `allow`；部署方
+可以针对需要额外控制的 MCP 能力注册 `ask` 或 `deny` 规则。目前不支持需要
+追加交互输入的 MCP 工具。
 
 ## 本地数据
 
@@ -283,16 +286,18 @@ Web 上传文件保存在 `<workspace>/.autocode/uploads/`，并由工作区内�
 
 ## 安全边界
 
-策略层提供“请求批准”和“完全访问”两种用户可见权限。“请求批准”会确认
-删除、外部网页和 MCP 等风险操作，并可按当前任务内的目标站点或工具范围
-一次授权同类请求；“完全访问”会跳过这些确认。两种模式都继续限制路径在
-当前工作区内，保护 `.env` 和 `.git`，并拒绝 `rm -rf`、`git reset --hard`
-等不可绕过的破坏性 Shell 命令。
+工具策略、审批和沙箱是彼此独立的控制层。每次工具调用先经过有序的
+`allow` / `ask` / `deny` 执行前流水线，再经过只能进一步拒绝的 Guard。内置
+策略链以 `allow` 结束，不按命令文本、MCP 名称或网页工具名称分类。部署策略
+返回 `ask` 时，`approval_policy=ask` 会询问用户，`approval_policy=never` 会
+直接拒绝；通过工具策略的调用仍受当前文件系统沙箱约束。
 
-当前名为 `Sandbox` 的类**不是操作系统级沙箱**。它只负责设置工作目录、
-过滤环境变量、限制执行时间和截断命令输出；子进程仍然拥有启动 AutoCoder
-的系统用户权限。处理不可信仓库或模型时，应使用容器、虚拟机、WSL 隔离环境
-或专门的低权限账号。
+Windows 上的 `sandbox_mode=read-only` 与 `workspace-write` 会使用受限 Token、
+限制写入的 capability SID、工作区/私有临时目录 ACL，以及随 runner 关闭而
+终止子进程树的 Job Object。`workspace-write` 只允许写工作区和私有临时目录，
+`read-only` 不授予写 capability，`danger-full-access` 则绕过隔离。可信文件
+工具在修改前解析同一份策略。Windows 强制级别报告为 `partial`：它约束文件
+写入，但不限制网络与进程可见性，也允许读取工作区外文件。
 
 ## 开发与验证
 

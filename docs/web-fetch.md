@@ -13,7 +13,9 @@ Safety behavior:
 - accepts only text, HTML, JSON, and XML responses;
 - reads at most 2 MB and returns at most 50,000 characters;
 - caches a fetched URL in memory for 15 minutes;
-- requires manual policy approval for every Agent call.
+- enters the same pre-execution policy waterfall as every other tool; the
+  built-in policy defaults to `allow`, while deployments may register an
+  `ask` or `deny` rule.
 
 Some desktop proxy products resolve public hostnames into the IANA benchmarking
 range `198.18.0.0/15`. AutoCode permits that range only when DNS returns it for

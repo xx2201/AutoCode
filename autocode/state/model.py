@@ -19,6 +19,10 @@ class PolicyDecision:
     approval_scope: str = ""
     approval_label: str = ""
 
+    def __post_init__(self) -> None:
+        if self.action not in {"allow", "ask", "deny"}:
+            raise ValueError(f"Unsupported policy action: {self.action}")
+
     def to_dict(self) -> dict:
         return {
             "action": self.action,
@@ -246,7 +250,7 @@ class TurnState:
                 "tool_calls": [first_call, *remaining],
                 "policy_decisions": [
                     {
-                        "action": "confirm",
+                        "action": "ask",
                         "reason": approval.reason,
                         "requires_manual": approval.requires_manual,
                         "approval_scope": approval.approval_scope,
@@ -284,6 +288,7 @@ class TurnState:
 class SessionState:
     session_id: str
     title: str = ""
+    sandbox_mode: str = ""
     context_used_tokens: int = 0
     context_anchor_messages: int = 0
     context_anchor_digest: str = ""
@@ -307,6 +312,7 @@ class SessionState:
         return {
             "session_id": self.session_id,
             "title": self.title,
+            "sandbox_mode": self.sandbox_mode,
             "context_used_tokens": self.context_used_tokens,
             "context_anchor_messages": self.context_anchor_messages,
             "context_anchor_digest": self.context_anchor_digest,
@@ -322,6 +328,7 @@ class SessionState:
         return cls(
             session_id=data.get("session_id", ""),
             title=data.get("title", ""),
+            sandbox_mode=str(data.get("sandbox_mode", "")),
             context_used_tokens=max(0, int(data.get("context_used_tokens", 0))),
             context_anchor_messages=max(0, int(data.get("context_anchor_messages", 0))),
             context_anchor_digest=str(data.get("context_anchor_digest", "")),

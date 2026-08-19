@@ -133,7 +133,7 @@ def _install_fake_langfuse(monkeypatch):
 
 class _ConfirmPolicy(Policy):
     def evaluate_tool_call(self, tool_name: str, arguments: dict) -> PolicyDecision:
-        return PolicyDecision("confirm", "test approval")
+        return PolicyDecision("ask", "test approval")
 
 
 class _ScriptedLLM:
@@ -278,7 +278,7 @@ def test_agent_turn_groups_generations_and_tools_by_step(monkeypatch, tmp_path):
         llm=llm,
         tools=[_EchoTool()],
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
 
     assert agent.chat("use echo") == "done"
@@ -338,7 +338,7 @@ def test_speculative_tool_is_sibling_of_generation_inside_step(monkeypatch, tmp_
         llm=_TracedStreamingLLM(tracer),
         tools=[_StreamingReadTool()],
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
 
     assert agent.chat("read then finish") == "done"

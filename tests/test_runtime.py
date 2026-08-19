@@ -107,10 +107,10 @@ class _RecordingLLM(_FakeLLM):
         return super().chat(messages, tools=tools, on_token=on_token)
 
 
-class _ConfirmAllPolicy(Policy):
+class _AskAllPolicy(Policy):
     def evaluate_tool_call(self, tool_name: str, arguments: dict) -> PolicyDecision:
         return PolicyDecision(
-            "confirm",
+            "ask",
             "test approval",
             approval_scope=f"tool:{tool_name}",
             approval_label=f"allow {tool_name}",
@@ -150,6 +150,71 @@ def test_runtime_emits_hooks(tmp_path):
     assert events[1][1]["success"] is True
 
 
+def test_runtime_guard_denies_immediately_before_dispatch(tmp_path):
+    events = []
+    hooks = HookBus()
+    hooks.on("policy_decision", lambda event, payload: events.append((event, payload)))
+    hooks.on("before_tool", lambda event, payload: events.append((event, payload)))
+    hooks.on("after_tool", lambda event, payload: events.append((event, payload)))
+    policy = Policy(workspace_root=str(tmp_path))
+    policy.add_guard(
+        lambda execution: "echo is disabled in this agent scope"
+        if execution.tool_name == "echo"
+        else None
+    )
+    runtime = Runtime({"echo": _EchoTool()}, policy=policy, hooks=hooks)
+    state = TurnState(turn_id="turn_test", status="running")
+    tool_call = ToolCall(id="1", name="echo", arguments={"text": "hi"})
+
+    decision = runtime.evaluate_tool_call(state, tool_call, "session_test")
+    result = runtime.execute_tool_call(
+        state,
+        tool_call,
+        "session_test",
+        decision=decision,
+    )
+
+    assert decision.action == "allow"
+    assert result.text == "Blocked by policy for echo: echo is disabled in this agent scope"
+    assert result.is_error is True
+    assert [event for event, _ in events].count("before_tool") == 0
+    assert events[-2][1]["policy_stage"] == "guard"
+    assert events[-2][1]["decision"]["action"] == "deny"
+    assert events[-1][0] == "after_tool"
+    assert events[-1][1]["success"] is False
+
+
+def test_registered_pre_execute_policy_routes_ask_through_agent_approval(tmp_path):
+    agent = Agent(
+        llm=_FakeLLM([
+            LLMResponse(
+                content="",
+                tool_calls=[ToolCall(id="1", name="echo", arguments={"text": "hi"})],
+            ),
+            LLMResponse(content="done"),
+        ]),
+        tools=[_EchoTool()],
+        workspace_root=str(tmp_path),
+    )
+    agent.policy.on_pre_execute(
+        lambda execution, next_policy: PolicyDecision(
+            "ask",
+            "echo requires approval in this deployment",
+        )
+        if execution.tool_name == "echo"
+        else next_policy()
+    )
+
+    waiting = agent.chat("echo hi")
+    assert "waiting for approval" in waiting
+
+    reply = agent.approve_pending(True)
+
+    assert reply == "done"
+    tool_results = [message for message in agent.messages if message.get("role") == "tool"]
+    assert tool_results[-1]["content"] == "echo:hi"
+
+
 def test_agent_waits_for_approval(tmp_path):
     responses = [
         LLMResponse(content="", tool_calls=[ToolCall(id="1", name="shell_command", arguments={"command": "python manage.py migrate"})]),
@@ -159,7 +224,7 @@ def test_agent_waits_for_approval(tmp_path):
         tools=[],
         workspace_root=str(tmp_path),
     )
-    agent.policy = _ConfirmAllPolicy(workspace_root=str(tmp_path))
+    agent.policy = _AskAllPolicy(workspace_root=str(tmp_path))
     agent.runtime.policy = agent.policy
     reply = agent.chat("run migration")
     assert "waiting for approval" in reply
@@ -178,7 +243,7 @@ def test_agent_emits_ordered_assistant_step_before_tool_execution(tmp_path):
         llm=_FakeLLM([response, LLMResponse(content="done")]),
         tools=[_EchoTool()],
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
     events = []
     agent.hooks.on("assistant_step", lambda event, payload: events.append(payload))
@@ -200,7 +265,7 @@ def test_agent_approves_pending_tool(tmp_path):
         tools=[_EchoTool()],
         workspace_root=str(tmp_path),
     )
-    agent.policy = _ConfirmAllPolicy(workspace_root=str(tmp_path))
+    agent.policy = _AskAllPolicy(workspace_root=str(tmp_path))
     agent.runtime.policy = agent.policy
     reply = agent.chat("run echo", approval_handler=lambda pending: True)
     assert reply == "done"
@@ -256,7 +321,7 @@ def test_agent_scope_approval_completes_matching_tool_calls_before_next_llm(tmp_
         tools=[_SafeShellTool()],
         workspace_root=str(tmp_path),
     )
-    agent.policy = _ConfirmAllPolicy(workspace_root=str(tmp_path))
+    agent.policy = _AskAllPolicy(workspace_root=str(tmp_path))
     agent.runtime.policy = agent.policy
 
     waiting = agent.chat("check environment", approval_handler=None)
@@ -288,7 +353,7 @@ def test_agent_requeues_next_pending_tool_from_same_batch(tmp_path):
         tools=[_SafeShellTool()],
         workspace_root=str(tmp_path),
     )
-    agent.policy = _ConfirmAllPolicy(workspace_root=str(tmp_path))
+    agent.policy = _AskAllPolicy(workspace_root=str(tmp_path))
     agent.runtime.policy = agent.policy
 
     waiting = agent.chat("check environment", approval_handler=None)
@@ -321,7 +386,7 @@ def test_agent_records_independent_decisions_before_executing_batch(tmp_path):
         tools=[_SafeShellTool()],
         workspace_root=str(tmp_path),
     )
-    agent.policy = _ConfirmAllPolicy(workspace_root=str(tmp_path))
+    agent.policy = _AskAllPolicy(workspace_root=str(tmp_path))
     agent.runtime.policy = agent.policy
 
     assert "waiting for approval" in agent.chat("run both")
@@ -370,7 +435,7 @@ def test_agent_todo_tool_updates_turn_state(tmp_path):
     agent = Agent(
         llm=_FakeLLM(responses),
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
     reply = agent.chat("plan the work")
     assert reply == "planned"
@@ -399,7 +464,7 @@ def test_agent_memory_tool_persists_explicit_memory(tmp_path):
     agent = Agent(
         llm=_FakeLLM(responses),
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
 
     reply = agent.chat("记住：修改代码前先说明方案。")
@@ -417,7 +482,7 @@ def test_agent_summarizes_when_max_rounds_reached(tmp_path):
         llm=_FakeLLM(responses),
         tools=[_EchoTool()],
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
         max_rounds=1,
     )
 
@@ -443,7 +508,7 @@ def test_todo_write_rejects_completed_after_blocked_or_failed_tool(tmp_path):
     agent = Agent(
         llm=_FakeLLM([]),
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
     agent._ensure_turn("plan the work")
     assert agent.turn_state is not None
@@ -466,7 +531,7 @@ def test_agent_backfills_placeholder_tool_result_after_interrupt(tmp_path):
         llm=_FakeLLM(responses),
         tools=[_InterruptTool()],
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
 
     reply = agent.chat("run echo")
@@ -489,7 +554,7 @@ def test_agent_backfills_placeholder_after_approved_interrupt(tmp_path):
         tools=[_InterruptShellTool()],
         workspace_root=str(tmp_path),
     )
-    agent.policy = _ConfirmAllPolicy(workspace_root=str(tmp_path))
+    agent.policy = _AskAllPolicy(workspace_root=str(tmp_path))
     agent.runtime.policy = agent.policy
 
     waiting = agent.chat("run shell", approval_handler=None)
@@ -515,7 +580,7 @@ def test_agent_writes_trace_and_audit(tmp_path, monkeypatch):
         llm=_FakeLLM(responses),
         tools=[_EchoTool()],
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
     reply = agent.chat("run echo")
     assert reply == "done"
@@ -540,7 +605,7 @@ def test_agent_reuses_same_session_id_and_rotates_current_turn_after_completion(
     agent = Agent(
         llm=_FakeLLM(responses),
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
 
     first = agent.chat("first prompt")
@@ -567,7 +632,7 @@ def test_agent_does_not_refresh_project_memory_at_normal_turn_completion(tmp_pat
     agent = Agent(
         llm=_FakeLLM(responses),
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
     agent.llm._call_with_retry = object()
     calls = []
@@ -588,7 +653,7 @@ def test_agent_cleans_temporary_processes_when_turn_completes(tmp_path):
     agent = Agent(
         llm=_FakeLLM([LLMResponse(content="done")]),
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
     cleaned = []
     agent.processes.cleanup_turn_processes = lambda turn_id: cleaned.append(turn_id) or []
@@ -608,7 +673,7 @@ def test_agent_cleans_temporary_processes_when_turn_fails(tmp_path):
         ]),
         tools=[_EchoTool()],
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
         max_rounds=1,
     )
     cleaned = []
@@ -626,7 +691,7 @@ def test_agent_reset_cleans_all_managed_processes(tmp_path):
     agent = Agent(
         llm=_FakeLLM([]),
         workspace_root=str(tmp_path),
-        permission_mode="full_access",
+        approval_policy="never",
     )
     calls = []
     agent.processes.cleanup_all = lambda include_persistent=True: calls.append(include_persistent) or []
