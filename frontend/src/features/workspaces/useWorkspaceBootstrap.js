@@ -9,6 +9,13 @@ import {
 
 const EMPTY_BOOTSTRAP = Object.freeze({
   model: "",
+  model_config: {
+    model: "",
+    provider: "anthropic",
+    api_format: "messages",
+    base_url: "",
+    api_key_configured: false,
+  },
   workspaces: [],
   version: "",
   context_window_tokens: 0,
@@ -39,7 +46,14 @@ export default function useWorkspaceBootstrap(showToast) {
 
   const loadBootstrap = useCallback(async (activeToken) => {
     const data = await request(activeToken, "/api/bootstrap");
-    setBootstrap(data);
+    setBootstrap({
+      ...EMPTY_BOOTSTRAP,
+      ...data,
+      model_config: {
+        ...EMPTY_BOOTSTRAP.model_config,
+        ...(data.model_config || {}),
+      },
+    });
     setRunnerOnline(true);
     const saved = localStorage.getItem(WORKSPACE_KEY);
     const savedExists = data.workspaces.some(
@@ -53,6 +67,32 @@ export default function useWorkspaceBootstrap(showToast) {
     }
     return data;
   }, []);
+
+  const saveModelConfig = useCallback(async (values) => {
+    const data = await request(token, "/api/model-config", {
+      method: "POST",
+      body: JSON.stringify(values),
+    });
+    setBootstrap((current) => ({
+      ...current,
+      ...data,
+      model_config: {
+        ...current.model_config,
+        ...(data.model_config || {}),
+      },
+    }));
+    return data;
+  }, [token]);
+
+  const testModelConfig = useCallback(
+    (values) => request(token, "/api/model-config/test", {
+      method: "POST",
+      timeoutMs: 60_000,
+      timeoutMessage: "模型连接测试超时，请检查 URL、网络和服务状态。",
+      body: JSON.stringify(values),
+    }),
+    [token],
+  );
 
   useEffect(() => {
     let ignore = false;
@@ -160,6 +200,8 @@ export default function useWorkspaceBootstrap(showToast) {
     clientId,
     projectPickerOpen,
     runnerOnline,
+    saveModelConfig,
+    testModelConfig,
     closeProjectPicker: () => setProjectPickerOpen(false),
     login,
     logout,

@@ -56,6 +56,13 @@ class ClientRequest(BaseModel):
     workspace_id: str = Field(min_length=20, max_length=20)
 
 
+class ModelConfigRequest(BaseModel):
+    model: str = Field(min_length=1, max_length=200)
+    api_key: str = Field(default="", max_length=4096)
+    base_url: str = Field(default="", max_length=2000)
+    provider: Literal["anthropic", "openai", "litellm"] = "anthropic"
+
+
 class ChatRequest(ClientRequest):
     prompt: str = Field(default="", max_length=32_000)
     attachments: list["AttachmentRequest"] = Field(default_factory=list, max_length=5)
@@ -207,6 +214,13 @@ def create_app(
         request_timeout,
         float(os.getenv("AUTOCODE_CONTROL_REQUEST_TIMEOUT", "20")),
     )
+    model_test_timeout = min(
+        request_timeout,
+        max(
+            control_request_timeout,
+            float(os.getenv("AUTOCODE_MODEL_TEST_TIMEOUT", "60")),
+        ),
+    )
 
     if len(expected_browser_token) < 24:
         raise RuntimeError("AUTOCODE_WEB_TOKEN must contain at least 24 characters.")
@@ -276,6 +290,26 @@ def create_app(
     @app.get("/api/bootstrap", dependencies=browser_auth)
     async def bootstrap():
         return await dispatch("bootstrap")
+
+    @app.get("/api/model-config", dependencies=browser_auth)
+    async def model_config():
+        return await dispatch("model_config", {}, timeout=control_request_timeout)
+
+    @app.post("/api/model-config", dependencies=browser_auth)
+    async def update_model_config(payload: ModelConfigRequest):
+        return await dispatch(
+            "update_model_config",
+            payload.model_dump(),
+            timeout=control_request_timeout,
+        )
+
+    @app.post("/api/model-config/test", dependencies=browser_auth)
+    async def test_model_config(payload: ModelConfigRequest):
+        return await dispatch(
+            "test_model_config",
+            payload.model_dump(),
+            timeout=model_test_timeout,
+        )
 
     @app.post("/api/chat", dependencies=browser_auth)
     async def chat(payload: ChatRequest):

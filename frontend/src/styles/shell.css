@@ -131,7 +131,9 @@
 .connection-pill i { width: 7px; height: 7px; border-radius: 50%; }
 .connection-pill.online i { background: var(--mint); }
 .connection-pill.offline i { background: var(--danger); }
-.model-pill { color: var(--primary); }
+.model-pill { color: var(--primary); cursor: pointer; }
+.model-pill:hover { border-color: #d7d8f7; background: #fafaff; }
+.model-pill:focus-visible { outline: 3px solid rgba(91, 92, 226, 0.2); outline-offset: 2px; }
 .context-meter { position: relative; }
 .context-meter summary {
   display: grid;

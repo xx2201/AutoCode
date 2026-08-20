@@ -14,6 +14,10 @@ const sourcePaths = {
     "../src/features/conversation/Composer.jsx",
     import.meta.url,
   ),
+  modelSettings: new URL(
+    "../src/features/layout/ModelSettingsModal.jsx",
+    import.meta.url,
+  ),
   conversation: new URL(
     "../src/features/conversation/ConversationView.jsx",
     import.meta.url,
@@ -79,6 +83,20 @@ test("agent interaction endpoints remain wired after the architecture split", as
   assert.match(app, /danger-full-access/);
   assert.match(composer, /value="workspace-write">工作区写入/);
   assert.match(composer, /value="danger-full-access">完全访问/);
+});
+
+test("model settings expose protocol, credentials, save, and connection test flows", async () => {
+  const { app, modelSettings, workspaceBootstrap } = await readSources();
+
+  assert.match(app, /<ModelSettingsModal/);
+  assert.match(app, /onOpenModelSettings/);
+  assert.match(modelSettings, /name="provider"/);
+  assert.match(modelSettings, /name="base_url"/);
+  assert.match(modelSettings, /name="api_key"/);
+  assert.match(modelSettings, /测试连接/);
+  assert.match(modelSettings, /保存并应用/);
+  assert.match(workspaceBootstrap, /\/api\/model-config/);
+  assert.match(workspaceBootstrap, /\/api\/model-config\/test/);
 });
 
 test("permission preset changes do not reinitialize or restore the workspace", async () => {

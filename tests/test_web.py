@@ -120,6 +120,53 @@ def test_browser_request_reports_offline_runner(relay_client):
     assert "Runner" in response.json()["detail"]
 
 
+def test_model_config_routes_validate_and_relay_without_echoing_secret(relay_client):
+    client, _ = relay_client
+    invalid = client.post(
+        "/api/model-config",
+        headers=_browser_headers(),
+        json={
+            "model": "model",
+            "provider": "unsupported",
+            "api_key": "secret",
+        },
+    )
+    assert invalid.status_code == 422
+
+    _connect_runner(client)
+    result = {
+        "model": "updated-model",
+        "provider": "openai",
+        "api_format": "chat_completions",
+        "model_config": {
+            "model": "updated-model",
+            "provider": "openai",
+            "api_format": "chat_completions",
+            "base_url": "https://api.example/v1",
+            "api_key_configured": True,
+        },
+    }
+    response, job = _round_trip(
+        client,
+        lambda: client.post(
+            "/api/model-config",
+            headers=_browser_headers(),
+            json={
+                "model": "updated-model",
+                "provider": "openai",
+                "base_url": "https://api.example/v1",
+                "api_key": "secret",
+            },
+        ),
+        "update_model_config",
+        result,
+    )
+    assert response.status_code == 200
+    assert response.json() == result
+    assert "secret" not in json.dumps(response.json())
+    assert job["payload"]["api_key"] == "secret"
+
+
 def test_chat_is_relayed_to_runner(relay_client):
     client, _ = relay_client
     _connect_runner(client)

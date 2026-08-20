@@ -21,9 +21,10 @@ from dotenv import dotenv_values
 
 from .. import __version__
 from ..config import Config
-from ..llm import api_format_for_provider
+from ..llm import api_format_for_provider, llm_class_for_provider
 from ..diagnostics import diagnostic_log_dir, get_diagnostic_logger, log_event
 from ..mcp import get_shared_mcp_manager
+from ..observability import LangfuseTracer
 from ..remote.manager import RemoteManager, presentation_tool_arguments
 from ..state.changes import (
     ChangeSetConflictError,
@@ -36,6 +37,7 @@ from ..tools.factory import build_agent_tools
 from ..workspaces import WorkspaceRegistry
 from .files import WebFileStore, WebSendTool, WorkspaceFileBrowser
 from .git import GitWorkspace
+from .model_config import ModelConfigStore, normalize_model_config, public_model_config
 
 
 _GIT_CHANGE_FIELDS = (
@@ -163,6 +165,7 @@ class LocalRunner:
         settings: RunnerSettings,
         *,
         config: Config | None = None,
+        model_config_path: str | Path | None = None,
         registry: WorkspaceRegistry | None = None,
         manager_factory: Any | None = None,
         client: httpx.Client | Any | None = None,
@@ -170,7 +173,15 @@ class LocalRunner:
     ):
         self.settings = settings
         self.registry = registry or WorkspaceRegistry()
-        self._base_config = config or Config.from_env()
+        self._model_config_store = (
+            ModelConfigStore(model_config_path)
+            if config is None or model_config_path is not None
+            else None
+        )
+        base_config = config or Config.from_env()
+        if self._model_config_store is not None:
+            base_config = self._model_config_store.apply(base_config)
+        self._base_config = base_config
         if not self._base_config.model:
             raise RuntimeError("AUTOCODE_MODEL is required in the Agent runtime .env.")
         if not self._base_config.api_key:
@@ -178,6 +189,7 @@ class LocalRunner:
         self._manager_factory = manager_factory or self._build_manager
         self._managers: dict[str, RemoteManager | Any] = {}
         self._manager_lock = threading.Lock()
+        self._model_config_lock = threading.RLock()
         self._workspace_locks_guard = threading.Lock()
         self._workspace_locks: dict[str, threading.RLock] = {}
         self._pending_changes: dict[tuple[str, str], tuple[ChangeSetStore, Any, str]] = {}
@@ -244,6 +256,7 @@ class LocalRunner:
                 "model": self._base_config.model,
                 "provider": self._base_config.provider,
                 "api_format": api_format_for_provider(self._base_config.provider),
+                "model_config": public_model_config(self._base_config),
                 "context_window_tokens": self._base_config.max_context_tokens,
                 "workspaces": self.registry.list_workspaces(),
                 "version": __version__,
@@ -265,6 +278,12 @@ class LocalRunner:
                     ),
                 },
             }
+        if action == "model_config":
+            return public_model_config(self._base_config)
+        if action == "update_model_config":
+            return self._update_model_config(payload)
+        if action == "test_model_config":
+            return self._test_model_config(payload)
         workspace_id = str(payload["workspace_id"])
         if action == "git_status":
             workspace = self.registry.resolve(workspace_id)
@@ -849,6 +868,74 @@ class LocalRunner:
                 mcp_manager=mcp_manager,
             ),
         )
+
+    def _config_from_model_payload(self, payload: dict[str, Any]) -> Config:
+        current = self._base_config
+        api_key = str(payload.get("api_key") or "").strip() or current.api_key
+        normalized = normalize_model_config(
+            model=str(payload.get("model", current.model) or ""),
+            api_key=api_key,
+            base_url=payload.get("base_url", current.base_url),
+            provider=str(payload.get("provider", current.provider) or ""),
+        )
+        return replace(current, **normalized)
+
+    def _update_model_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        with self._model_config_lock:
+            # The current job is already included in _active_jobs. A second job
+            # means a model request is in flight and its manager must not be
+            # closed underneath it.
+            if len(self._active_jobs) > 1:
+                raise ValueError("当前有任务正在运行，请完成后再修改模型配置。")
+            next_config = self._config_from_model_payload(payload)
+            if self._model_config_store is not None:
+                self._model_config_store.save(next_config)
+            self._base_config = next_config
+            self._reset_managers()
+            return {
+                "model": next_config.model,
+                "provider": next_config.provider,
+                "api_format": api_format_for_provider(next_config.provider),
+                "model_config": public_model_config(next_config),
+            }
+
+    def _test_model_config(self, payload: dict[str, Any]) -> dict[str, Any]:
+        test_config = self._config_from_model_payload(payload)
+        tracer = LangfuseTracer()
+        llm = None
+        try:
+            llm_cls = llm_class_for_provider(test_config.provider)
+            llm = llm_cls(
+                model=test_config.model,
+                api_key=test_config.api_key,
+                base_url=test_config.base_url,
+                tracer=tracer,
+                max_tokens=64,
+            )
+            response = llm.chat(
+                [{"role": "user", "content": "Reply with OK only."}],
+            )
+        except Exception as exc:
+            message = str(exc) or type(exc).__name__
+            if test_config.api_key:
+                message = message.replace(test_config.api_key, "[redacted]")
+            raise ValueError(f"模型连接失败：{message[:1000]}") from exc
+        finally:
+            tracer.shutdown()
+        return {
+            "ok": True,
+            "model": test_config.model,
+            "provider": test_config.provider,
+            "message": "模型连接成功。",
+            "response": str(response.content or "").strip()[:200],
+        }
+
+    def _reset_managers(self) -> None:
+        with self._manager_lock:
+            managers = list(self._managers.values())
+            self._managers.clear()
+        for manager in managers:
+            manager.close()
 
     @contextmanager
     def _capture_output_files(self, workspace_id: str):

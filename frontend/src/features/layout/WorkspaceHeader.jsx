@@ -8,6 +8,7 @@ export default function WorkspaceHeader({
   model,
   contextUsage,
   onOpenMobile,
+  onOpenModelSettings,
 }) {
   return (
     <header className="workspace-header">
@@ -30,7 +31,15 @@ export default function WorkspaceHeader({
         <span className={`connection-pill ${runnerOnline ? "online" : "offline"}`}>
           <i /> {runnerOnline ? "Connected" : "Offline"}
         </span>
-        <span className="model-pill"><Zap size={14} /> {model || "model"}</span>
+        <button
+          className="model-pill"
+          type="button"
+          onClick={onOpenModelSettings}
+          aria-label="打开模型设置"
+          title="模型设置"
+        >
+          <Zap size={14} /> {model || "model"}
+        </button>
         <ContextMeter usage={contextUsage} />
       </div>
     </header>

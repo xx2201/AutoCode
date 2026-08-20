@@ -32,7 +32,9 @@
   .workspace-title small { max-width: 40vw; }
   .connection-pill { padding: 0 8px; }
   .connection-pill { font-size: 0; }
-  .model-pill, .header-meta .icon-button { display: none; }
+  .model-pill { max-width: 34vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .model-pill svg { flex: 0 0 auto; }
+  .header-meta .icon-button { display: none; }
   .conversation-inner { padding: 24px 17px 18px; }
   .welcome { justify-content: flex-start; padding-top: 8vh; }
   .welcome h1 { font-size: 31px; }
@@ -78,6 +80,11 @@
   .project-picker-head p { display: none; }
   .project-grid { grid-template-columns: 1fr; }
   .modal-layer:not(.project-layer) { align-items: end; padding: 0; }
+  .model-settings-panel { width: 100%; max-height: 90dvh; padding: 22px 17px calc(17px + env(safe-area-inset-bottom)); border-radius: 22px 22px 0 0; }
+  .model-settings-head h2 { font-size: 19px; }
+  .model-settings-actions { align-items: stretch; flex-direction: column; }
+  .model-settings-actions-right { display: grid; grid-template-columns: 1fr 1.4fr; }
+  .model-settings-actions button { width: 100%; }
   .info-panel { width: 100%; max-height: 82dvh; border-radius: 22px 22px 0 0; }
   .git-layer { padding: 0; }
   .git-panel { width: 100%; height: 100dvh; max-height: none; border: 0; border-radius: 0; }

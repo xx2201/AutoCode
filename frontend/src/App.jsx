@@ -17,6 +17,7 @@ import { mergeResultMessages } from "./features/conversation/model";
 import useWorkspaceFiles from "./features/files/useWorkspaceFiles";
 import useOutputFiles from "./features/files/useOutputFiles";
 import InfoPanel from "./features/layout/InfoPanel";
+import ModelSettingsModal from "./features/layout/ModelSettingsModal";
 import Sidebar from "./features/layout/Sidebar";
 import WorkspaceHeader from "./features/layout/WorkspaceHeader";
 import SessionPanel, { DeleteSessionDialog } from "./features/sessions/SessionPanel";
@@ -55,7 +56,9 @@ export default function App() {
     login,
     logout,
     openProjectPicker,
+    saveModelConfig,
     selectWorkspace: selectWorkspaceBase,
+    testModelConfig,
   } = workspaceBootstrap;
   const [permissionPreset, setPermissionPreset] = useState(
     () => localStorage.getItem(PERMISSION_PRESET_KEY) || "workspace-write",
@@ -102,6 +105,7 @@ export default function App() {
   } = useAttachments(showToast);
   const [panel, setPanel] = useState(null);
   const [panelContent, setPanelContent] = useState("");
+  const [modelSettingsOpen, setModelSettingsOpen] = useState(false);
   const messageEndRef = useRef(null);
   const fileInputRef = useRef(null);
   const promptInputRef = useRef(null);
@@ -896,6 +900,7 @@ export default function App() {
           model={bootstrap.model}
           contextUsage={contextUsage}
           onOpenMobile={() => setMobileNavOpen(true)}
+          onOpenModelSettings={() => setModelSettingsOpen(true)}
         />
         <ConversationPane
           selectedWorkspace={selectedWorkspace}
@@ -947,6 +952,18 @@ export default function App() {
           onRemoveAttachment={removeAttachment}
         />
       </main>
+
+      <ModelSettingsModal
+        open={modelSettingsOpen}
+        config={bootstrap.model_config}
+        onClose={() => setModelSettingsOpen(false)}
+        onSave={async (values) => {
+          await saveModelConfig(values);
+          setModelSettingsOpen(false);
+          showToast("模型配置已保存并应用");
+        }}
+        onTest={testModelConfig}
+      />
 
       <ProjectPicker
         open={projectPickerOpen}
