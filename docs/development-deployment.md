@@ -1,8 +1,9 @@
 # Development Relay deployment
 
 This document records the deployment layout used by the AutoCoder development
-Relay. It is different from a Git checkout: do not run `git pull` in
-`/home/dev/corecoder-web`.
+Relay. The server keeps the application source in a Git working tree, while
+runtime state remains outside that tree. Do not place tokens, TLS private keys,
+sessions, or workspace data in Git.
 
 ## Server layout
 
@@ -10,17 +11,24 @@ The systemd service runs as `dev:dev` and uses:
 
 ```text
 /home/dev/corecoder-web/
-├── current -> releases/<release-id>
-├── releases/
-│   └── <release-id>/
-│       └── autocode-<version>-py3-none-any.whl
+├── worktree/                 # Git working tree, checked out from origin/main
+│   ├── autocode/
+│   ├── frontend/
+│   └── deploy/
 ├── shared/
-│   ├── active-release
 │   ├── autocode-web.env
 │   └── sessions/
 ├── tls/
 ├── venv/
 └── workspace/
+```
+
+The old `releases/`, `current`, and `shared/active-release` entries may remain
+for historical rollback, but they are no longer used by the systemd service.
+The source of truth for the running code is:
+
+```bash
+git -C /home/dev/corecoder-web/worktree rev-parse HEAD
 ```
 
 The local Runner stores complete session data in workspace partitions:
@@ -51,97 +59,96 @@ the Runner and restore the legacy layout while the current release remains
 installed:
 
 ```powershell
-& "G:/mycode/AutoCoder/.venv/Scripts/python.exe" -c `
-  "from autocode.state import restore_flat_session_layout; print(restore_flat_session_layout())"
+& "G:/mycode/AutoCoder/.venv/Scripts/python.exe" -c "from autocode.state import restore_flat_session_layout; print(restore_flat_session_layout())"
 ```
 
 The installed service configuration is represented by
 `deploy/corecoder-web.service`:
 
 ```text
-WorkingDirectory=/home/dev/corecoder-web
+WorkingDirectory=/home/dev/corecoder-web/worktree
 EnvironmentFile=/home/dev/corecoder-web/shared/autocode-web.env
-ExecStart=/home/dev/corecoder-web/venv/bin/autocode-web
+ExecStart=/home/dev/corecoder-web/venv/bin/python -m autocode.web
 ```
 
 `shared/autocode-web.env`, TLS keys, session data, and workspace data are
-persistent state. A release must not overwrite them.
+persistent state. Git synchronization must not modify them.
 
-## Build from an exact commit
+## Prepare and push a commit
 
-Commit and push the intended source first. Build from that commit in a clean
-temporary directory so unrelated working-tree changes cannot enter the wheel.
+Build the frontend locally before committing. Generated files under
+`autocode/web/static` are committed so the server does not need Node.js or a
+separate build step:
 
 ```powershell
-$commit = git rev-parse HEAD
-$releaseId = git rev-parse --short HEAD
-$archive = Join-Path $env:TEMP "autocode-$releaseId.zip"
-$source = Join-Path $env:TEMP "autocode-$releaseId"
-
-git archive --format=zip --output=$archive $commit
-Expand-Archive -LiteralPath $archive -DestinationPath $source
-
-Push-Location "$source/frontend"
+Push-Location "G:/mycode/AutoCoder/frontend"
 npm ci
 npm test
 npm run check
 npm run build
 Pop-Location
 
-Push-Location $source
-python -m pip wheel . --no-deps --wheel-dir dist
-Pop-Location
+git status --short
+git add autocode/web/static frontend deploy docs README.md README_CN.md
+git commit -m "<describe the deployment change>"
+git push origin main
 ```
 
-Before upload, verify that the wheel contains the generated
-`autocode/web/static/index.html`, JavaScript, and CSS assets.
+Only push after the intended commit and its generated frontend assets have been
+reviewed. The server sync below refuses to advance a dirty worktree.
 
-## Publish a release
+## Synchronize the server Git working tree
 
-The examples below use placeholders deliberately. Keep the SSH private-key path
-outside the repository and never copy tokens or TLS private keys into a release.
+The development Relay uses the repository's HTTPS remote so the server only
+needs outbound Git access. Replace the host and key path when using another
+Relay:
 
 ```powershell
-$hostName = 'dev@<relay-host>'
-$keyPath = 'C:/path/to/id_rsa'
-$releaseId = git rev-parse --short HEAD
-$wheel = Get-ChildItem "$source/dist/autocode-*.whl" | Select-Object -First 1
+$hostName = 'dev@34.142.199.209'
+$keyPath = 'C:/path/to/dev_34_142_199_209_id_rsa'
+$commit = (git rev-parse HEAD).Trim()
+$worktree = '/home/dev/corecoder-web/worktree'
+$repoUrl = 'https://github.com/xx2201/AutoCode.git'
 
-$sshArgs = @(
-  '-i'
-  $keyPath
-  $hostName
-  "mkdir -m 700 /home/dev/corecoder-web/releases/$releaseId"
-)
-& ssh.exe @sshArgs
+$remote = @'
+set -eu
+worktree='/home/dev/corecoder-web/worktree'
+repo_url='https://github.com/xx2201/AutoCode.git'
+commit='__COMMIT__'
 
-$scpArgs = @(
-  '-i'
-  $keyPath
-  $wheel.FullName
-  "${hostName}:/home/dev/corecoder-web/releases/$releaseId/$($wheel.Name)"
-)
-& scp.exe @scpArgs
-```
+if [ -e "$worktree" ]; then
+  test -d "$worktree/.git"
+  test -z "$(git -C "$worktree" status --porcelain)"
+  test "$(git -C "$worktree" remote get-url origin)" = "$repo_url"
+  git -C "$worktree" fetch --prune origin main
+  git -C "$worktree" switch main
+  git -C "$worktree" merge --ff-only origin/main
+else
+  git clone --branch main --single-branch "$repo_url" "$worktree"
+fi
 
-Compare the local and remote SHA-256 hashes before installation. Then install
-the verified wheel into the shared virtual environment, switch the release
-metadata, and restart the Relay:
+test "$(git -C "$worktree" rev-parse HEAD)" = "$commit"
+test -f "$worktree/autocode/web/static/index.html"
+test -n "$(find "$worktree/autocode/web/static" -maxdepth 1 -type f -name '*.js' -print -quit)"
+test -n "$(find "$worktree/autocode/web/static" -maxdepth 1 -type f -name '*.css' -print -quit)"
 
-```bash
-/home/dev/corecoder-web/venv/bin/python -m pip install \
-  --no-deps --force-reinstall \
-  /home/dev/corecoder-web/releases/<release-id>/autocode-<version>-py3-none-any.whl
-
-ln -sfn \
-  /home/dev/corecoder-web/releases/<release-id> \
-  /home/dev/corecoder-web/current
-
-printf '%s\n' '<release-id>' \
-  > /home/dev/corecoder-web/shared/active-release
-
+sudo install -o root -g root -m 0644 "$worktree/deploy/corecoder-web.service" /etc/systemd/system/corecoder-web.service
+sudo systemctl daemon-reload
 sudo systemctl restart corecoder-web.service
+'@
+$remote = $remote.Replace('__COMMIT__', $commit)
+
+$sshArgs = @('-i', $keyPath, $hostName, $remote)
+& ssh.exe @sshArgs
+if ($LASTEXITCODE -ne 0) {
+    throw "Server Git synchronization failed with exit code $LASTEXITCODE."
+}
 ```
+
+The command intentionally fails when the server worktree has local changes or
+an unexpected `origin` URL. It performs a fast-forward merge, never overwrites
+the persistent directories, installs the service file from the checked-out
+commit, and restarts the Relay only after the commit and static files match.
 
 ## Restart the local Runner
 
@@ -174,8 +181,8 @@ Verify independent signals after every deployment:
 
 ```bash
 systemctl is-active corecoder-web.service
-readlink /home/dev/corecoder-web/current
-cat /home/dev/corecoder-web/shared/active-release
+git -C /home/dev/corecoder-web/worktree rev-parse HEAD
+git -C /home/dev/corecoder-web/worktree status --short
 journalctl -u corecoder-web.service -n 50 --no-pager
 ```
 
@@ -213,24 +220,37 @@ systemctl list-timers certbot-autocode-renew.timer --no-pager
 
 ## Rollback
 
-Choose a previous directory under `releases/`, reinstall its wheel into the
-shared venv, point `current` and `shared/active-release` back to that release,
-then restart and repeat the verification checks.
+Keep the server worktree clean, then switch it to a known-good commit and
+restart the service:
+
+```bash
+git -C /home/dev/corecoder-web/worktree status --short
+git -C /home/dev/corecoder-web/worktree switch --detach <known-good-commit>
+sudo systemctl restart corecoder-web.service
+```
+
+The next normal deployment switches back to `main`, fetches `origin/main`, and
+fast-forwards the worktree. Persistent state is outside Git and is not part of
+the rollback.
 
 ---
 
 ## 中文说明
 
-开发机的 `/home/dev/corecoder-web` 是版本化 wheel 发布目录，不是 Git
-工作树，不能在该目录执行 `git pull`。每次发布应先提交并 push 目标代码，
-再从精确 commit 导出干净源码，完成前端测试和构建、生成 wheel、校验本地与
-远端 SHA-256，然后安装到共享 `venv`，更新 `current` 和
-`shared/active-release`，最后重启 `corecoder-web.service`。
+开发 Relay 使用服务器上的 Git 工作树
+`/home/dev/corecoder-web/worktree`，systemd 直接从该目录运行代码。原有的
+`releases/`、`current` 和 `shared/active-release` 可以暂时保留作历史回退，
+但不再是运行版本来源。`shared/autocode-web.env`、TLS 私钥、会话数据和
+工作区数据都在工作树之外，更新代码时不能覆盖。
 
-`shared/autocode-web.env`、TLS 私钥、会话和工作区数据都是持久化数据，
-发布过程中不得覆盖。Runner 代码发生变化时，还需要重启 Windows 计划任务
-`AutoCodeLocalWebRunner`。部署完成后必须同时检查 systemd 状态、公网页面
-资产、健康接口中的 `runner_connected`，以及 Runner heartbeat/轮询日志。
+发布流程是：本地构建并提交 `autocode/web/static`，推送 `origin/main`，
+服务器执行 `git fetch` + `git merge --ff-only`，确认工作树没有本地修改后，
+从工作树安装 systemd 配置并重启 Relay。这样以后更新只需要提交、推送和
+快进同步，不再生成或上传 wheel。
+
+服务器同步命令会在以下情况主动失败：工作树存在未提交修改、`origin` 地址
+不是预期仓库、目标 commit 不一致，或前端 HTML/JS/CSS 资源缺失。它不会修改
+`shared`、`tls`、`workspace` 等持久化目录。
 
 本机完整 Session 已按 workspace 物理分区存放在
 `~/.autocode/sessions/projects/<可读项目路径>/sessions/`，例如
@@ -238,9 +258,8 @@ then restart and repeat the verification checks.
 `.session-locations` 只保存通过 `session_id` 恢复会话所需的位置指针，不保存
 消息正文。Runner 启动时会先把旧版根目录下的 Session 原子移动到项目目录，
 完成后才连接 Relay；迁移可中断后重跑。若要降级到不认识新布局的旧版本，
-必须先停止 Runner，并使用上方 `restore_flat_session_layout` 命令恢复旧布局。
+先停止 Runner，再执行上面的 `restore_flat_session_layout()`。
 
-开发机公网 IP 证书由 `/opt/certbot` 中的 Certbot 管理。系统定时器
-`certbot-autocode-renew.timer` 每天检查两次；续期成功后，
-`deploy-autocode-ip-cert.sh` 会把新证书复制到 Relay 的 `tls` 目录并重启
-服务。IP 证书有效期很短，服务器维护后必须确认该定时器仍为 active。
+公网 IP 证书由 `certbot-autocode-renew.timer` 自动续期；续期 hook 会把新证书
+复制到 Relay 的 `tls` 目录并重启服务。服务器维护后必须确认该定时器仍为
+active。

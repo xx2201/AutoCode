@@ -175,8 +175,10 @@ AUTOCODE_WEB_SSL_KEYFILE=/path/to/private-key.pem
 autocode-web
 ```
 
-仓库中的 `deploy/corecoder-web.service` 是 systemd 服务示例。Relay
-必须通过 HTTPS 对外提供服务，并且浏览器 Token 和 Runner Token 不能相同。
+仓库中的 `deploy/corecoder-web.service` 是 systemd 服务示例。开发 Relay
+使用服务器上的 Git 工作树更新代码。Relay 必须通过 HTTPS 对外提供服务，
+并且浏览器 Token 和 Runner Token 不能相同。部署步骤见
+`docs/development-deployment.md`。
 
 ### 3. 启动本机 Runner
 

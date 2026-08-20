@@ -186,9 +186,9 @@ The repository also contains `deploy/corecoder-web.service` as a systemd
 service example. Keep the Relay behind HTTPS and do not reuse the browser token
 as the Runner token.
 
-The development Relay uses a versioned wheel release directory rather than a
-Git checkout. See the [development deployment runbook](docs/development-deployment.md)
-before updating that server.
+The development Relay uses a server-side Git working tree. See the
+[development deployment runbook](docs/development-deployment.md) before updating
+that server.
 
 ### 3. Start the local Runner
 
