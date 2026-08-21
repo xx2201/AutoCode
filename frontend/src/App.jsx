@@ -266,6 +266,11 @@ export default function App() {
       const workspaceId = selectedWorkspace.workspace_id;
       const pageSessionId = readPageSessionId(window.history, workspaceId);
       setPageSessionRestoring(Boolean(pageSessionId));
+      // 新一轮工作区初始化必须先清除上一次被取消的恢复流程留下的运行态。
+      // 否则 Composer 会误判 Agent 仍在运行，并因缺少 activeTurnId 永久禁用发送。
+      setBusy(false);
+      setResumingSessionId("");
+      run.reset();
       sessionRequestsRef.current.selectWorkspace(workspaceId);
       const restoreClientId = renewClientId(workspaceId);
       setMessages([]);
@@ -794,6 +799,7 @@ export default function App() {
     setChangeActionStates({});
     setPending(null);
     setStatus("idle");
+    setBusy(false);
     run.reset();
     setContextUsage({
       used_tokens: 0,

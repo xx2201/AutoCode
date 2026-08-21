@@ -163,6 +163,24 @@ test("workspace initialization restores only a session from the current page", a
   assert.match(initializeWorkspace, /renewClientId\(workspaceId\)/);
 });
 
+test("workspace initialization and new session clear stale busy state", async () => {
+  const { app } = await readSources();
+  const initializeStart = app.indexOf("async function initializeWorkspace");
+  const initializeEnd = app.indexOf("initializeWorkspace();", initializeStart);
+  const initializeWorkspace = app.slice(initializeStart, initializeEnd);
+  const newSessionStart = app.indexOf("async function newSession");
+  const newSessionEnd = app.indexOf("async function deleteSession", newSessionStart);
+  const newSession = app.slice(newSessionStart, newSessionEnd);
+
+  assert.ok(initializeStart >= 0, "expected workspace initialization flow");
+  assert.ok(newSessionStart >= 0, "expected new-session flow");
+  assert.match(initializeWorkspace, /setBusy\(false\)/);
+  assert.match(initializeWorkspace, /setResumingSessionId\(""\)/);
+  assert.match(initializeWorkspace, /run\.reset\(\)/);
+  assert.match(newSession, /setBusy\(false\)/);
+  assert.match(newSession, /run\.reset\(\)/);
+});
+
 test("runner disconnect does not invalidate the current page session", async () => {
   const { app } = await readSources();
   const initializeWorkspaceIndex = app.indexOf("async function initializeWorkspace");
