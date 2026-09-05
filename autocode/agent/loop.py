@@ -6,6 +6,7 @@ import uuid
 from contextlib import contextmanager
 
 from ..context import ContextManager, MemoryManager, estimate_tokens, static_system_prompt
+from ..context.task_history import TaskHistory, TaskNotes
 from ..infra import BackgroundProcessManager, Sandbox, SandboxPolicy, WorkspaceFS
 from ..llm import LLM, ToolCall, is_retryable_llm_error
 from ..message_content import content_text, is_internal_visual_context, user_content
@@ -44,6 +45,7 @@ from ..tools.base import Tool, ToolResult
 from ..tools.edit import EditFileTool
 from ..tools.file_state import FileReadTracker
 from ..tools.memory import MemoryTool
+from ..tools.history import SearchHistoryTool
 from ..tools.read import ReadTool
 from ..tools.write import WriteFileTool
 from ..tools.skill import SkillTool
@@ -252,6 +254,8 @@ class Agent:
             tool._memory_manager = self.memory
         if isinstance(tool, (AgentTool, TodoWriteTool)):
             tool._parent_agent = self
+        if isinstance(tool, SearchHistoryTool):
+            tool._parent_agent = self
 
     def _sync_mcp_tools(self) -> None:
         dynamic = self.mcp_manager.snapshot_tools() if self.mcp_manager is not None else []
@@ -263,6 +267,7 @@ class Agent:
             self.runtime.tool_registry = self.tool_registry
 
     def _request_messages(self, snapshot: PromptSnapshot | None = None) -> list[dict]:
+        self._refresh_task_context()
         prompt_snapshot = snapshot or self._ensure_prompt_snapshot()
         if getattr(self.llm, "api_format", "chat_completions") == "messages":
             return serialize_anthropic_messages(
@@ -512,13 +517,44 @@ class Agent:
         self._append_message(message)
         return text
 
+    def _task_notes(self) -> TaskNotes:
+        if self.session_state is None:
+            raise RuntimeError("Task notes require an active session")
+        return TaskNotes(TaskHistory(self.session_state.session_id))
+
+    def _refresh_task_context(self):
+        if self.session_state is not None and any(
+            message.get("message_kind") == "task_context" for message in self.messages
+        ):
+            rendered = self._task_notes().render()
+            for message in self.messages:
+                if message.get("message_kind") == "task_context":
+                    message["content"] = rendered
+
+    def _checkpoint_task_context(self):
+        notes = self._task_notes()
+        recorded = {
+            entry["message"].get("message_id") or f"transcript:{position}"
+            for position, entry in notes.history.entries() if entry.get("kind") == "message"
+        }
+        # 旧 checkpoint 可能没有 transcript。先补存仍在窗口中的证据，绝不空摘要清窗。
+        for message in self.messages:
+            if message.get("message_kind") == "task_context":
+                continue
+            message_id = message.get("message_id")
+            if not message_id:
+                raise RuntimeError("Cannot compact a message without a stable source ID")
+            if message_id not in recorded:
+                self.transcript.append_message(self.session_state.session_id, message)
+        return notes.checkpoint(self.llm)
+
     def _maybe_compress_messages(self):
         effective_used = self._estimated_context_tokens()
         messages_before_compression = [dict(message) for message in self.messages]
         result = self.context.maybe_compress(
             self.messages,
-            self.llm,
             last_prompt_tokens=effective_used,
+            checkpoint=self._checkpoint_task_context,
         )
         if result.compressed and hasattr(self.llm, "_call_with_retry"):
             self.memory.schedule_project_memory_refresh(
@@ -829,6 +865,7 @@ class Agent:
                 "replacement_revision_id": new_turn.revision_id,
             },
         )
+        self._refresh_task_context()
         self.persist_session()
         return self.chat(
             normalized_prompt,

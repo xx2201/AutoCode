@@ -18,7 +18,7 @@ from autocode.tools.agent import AgentTool
 
 
 def test_tool_count():
-    assert len(ALL_TOOLS) == 16
+    assert len(ALL_TOOLS) == 18
 
 
 def test_all_tools_have_valid_schema():

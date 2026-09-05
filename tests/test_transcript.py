@@ -39,6 +39,8 @@ class _LongTaskLLM:
         self._calls = 0
 
     def chat(self, messages, tools=None, on_token=None):
+        if "TASK_NOTES_DELTA" in str(messages[0]):
+            return LLMResponse(content='{"upsert": [], "remove": []}')
         self._calls += 1
         if self._calls <= 6:
             return LLMResponse(

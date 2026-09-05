@@ -41,7 +41,7 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    assert len(ALL_TOOLS) == 16
+    assert len(ALL_TOOLS) == 18
 
 
 def test_config_from_env(monkeypatch):
@@ -176,7 +176,7 @@ def test_context_compress():
         msgs.append({"role": "user", "content": f"msg {i} " + "a" * 200})
         msgs.append({"role": "tool", "tool_call_id": f"t{i}", "content": "b" * 2000})
     before = estimate_tokens(msgs)
-    result = ctx.maybe_compress(msgs, None)
+    result = ctx.maybe_compress(msgs, checkpoint=lambda: 'durable notes')
     after = estimate_tokens(msgs)
     assert result.compressed is True
     assert result.layers
@@ -184,289 +184,55 @@ def test_context_compress():
     assert len(msgs) < 40  # should be compressed
 
 
-def test_context_summarize_old_keeps_complete_recent_turns():
+def test_context_checkpoint_keeps_complete_recent_turns():
     ctx = ContextManager(max_tokens=2000)
-    msgs = [
-        {"role": "user", "content": "turn 1"},
-        {"role": "assistant", "content": "plan 1"},
-        {"role": "tool", "tool_call_id": "t1", "content": "tool 1"},
-        {"role": "user", "content": "turn 2"},
-        {"role": "assistant", "content": "plan 2"},
-        {"role": "tool", "tool_call_id": "t2", "content": "tool 2"},
-        {"role": "assistant", "content": "done 2"},
-        {"role": "user", "content": "turn 3"},
-        {"role": "assistant", "content": "plan 3"},
-    ]
-
-    original_tail = msgs[3:]
-    changed = ctx._summarize_old(msgs, llm=None, keep_recent=2)
-
-    assert changed is True
-    assert msgs[0]["content"].startswith("[Context compressed - conversation summary]")
-    assert msgs[1]["role"] == "assistant"
-    assert msgs[2:] == original_tail
-
-
-def test_context_hard_collapse_prefers_last_complete_turn():
-    ctx = ContextManager(max_tokens=2000)
-    ctx._collapse_keep_recent = 1
     msgs = [
         {"role": "user", "content": "turn 1"},
         {"role": "assistant", "content": "done 1"},
         {"role": "user", "content": "turn 2"},
-        {"role": "assistant", "content": "step 2"},
-        {"role": "tool", "tool_call_id": "t2", "content": "tool 2"},
+        {"role": "assistant", "content": "done 2"},
+        {"role": "user", "content": "turn 3"},
+        {"role": "assistant", "content": "plan 3"},
     ]
-
-    original_tail = msgs[2:]
-    ctx._hard_collapse(msgs, llm=None)
-
-    assert msgs[0]["content"].startswith("[Hard context reset]")
-    assert msgs[1]["role"] == "assistant"
-    assert msgs[2:] == original_tail
+    tail = msgs[2:]
+    result = ctx.maybe_compress(msgs, last_prompt_tokens=1500, checkpoint=lambda: "durable notes")
+    assert result.layers == ("task_checkpoint",)
+    assert msgs[0]["message_kind"] == "task_context"
+    assert msgs[1:] == tail
 
 
-def test_context_large_window_uses_larger_recent_tail():
-    ctx = ContextManager(max_tokens=1_000_000)
-    assert ctx._summary_keep_recent == 5
-    assert ctx._collapse_keep_recent == 2
+def test_context_checkpoint_failure_does_not_mutate_even_snipped_outputs():
+    from copy import deepcopy
 
+    ctx = ContextManager(max_tokens=2000)
+    msgs = [{"role": "user", "content": "goal"},
+            {"role": "assistant", "content": "old " * 2000},
+            {"role": "tool", "content": "logs\n" * 1000}]
+    original = deepcopy(msgs)
 
-def test_context_summary_sends_complete_history_without_pretruncation():
-    class _CaptureLLM:
-        api_format = "chat_completions"
+    def fail():
+        raise OSError("disk full")
 
-        def __init__(self):
-            self.messages = []
-
-        def chat(self, messages, **kwargs):
-            self.messages = messages
-            return LLMResponse(content="complete summary")
-
-    long_user = "user-start\n" + "u" * 20_000 + "\nuser-end"
-    long_tool_result = "tool-start\n" + "t" * 20_000 + "\ntool-end"
-    history = [
-        {"role": "user", "content": long_user},
-        {
-            "role": "assistant",
-            "content": "calling tool",
-            "tool_calls": [
-                {
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "read",
-                        "arguments": '{"file_path":"large.txt"}',
-                    },
-                }
-            ],
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "call_1",
-            "content": long_tool_result,
-        },
-    ]
-    llm = _CaptureLLM()
-
-    summary = ContextManager(max_tokens=1_000_000)._get_summary(history, llm)
-
-    assert summary == "complete summary"
-    assert "CONTEXT CHECKPOINT COMPACTION" in llm.messages[0]["content"]
-    assert llm.messages[1]["content"] == long_user
-    assert llm.messages[2]["tool_calls"] == history[1]["tool_calls"]
-    assert llm.messages[3]["content"] == long_tool_result
-    assert llm.messages[-1]["role"] == "user"
-    assert llm.messages[-1]["content"] == "Create the context checkpoint summary now."
-
-
-def test_context_summary_preserves_anthropic_tool_and_image_content():
-    class _CaptureLLM:
-        api_format = "messages"
-
-        def __init__(self):
-            self.messages = []
-
-        def chat(self, messages, **kwargs):
-            self.messages = messages
-            return LLMResponse(content="complete summary")
-
-    image_url = "data:image/png;base64,aGVsbG8="
-    history = [
-        {"role": "user", "content": "inspect the complete image"},
-        {
-            "role": "assistant",
-            "content": "",
-            "tool_calls": [
-                {
-                    "id": "call_1",
-                    "type": "function",
-                    "function": {
-                        "name": "read",
-                        "arguments": '{"file_path":"image.png"}',
-                    },
-                }
-            ],
-        },
-        {
-            "role": "tool",
-            "tool_call_id": "call_1",
-            "content": "complete tool result",
-            "model_content": [
-                {"type": "image_url", "image_url": {"url": image_url}}
-            ],
-        },
-    ]
-    llm = _CaptureLLM()
-
-    ContextManager(max_tokens=1_000_000)._get_summary(history, llm)
-
-    assert "CONTEXT CHECKPOINT COMPACTION" in llm.messages[0]["content"]
-    assert llm.messages[2]["content"][0]["type"] == "tool_use"
-    tool_result = llm.messages[3]["content"][0]
-    assert tool_result["type"] == "tool_result"
-    assert tool_result["content"][0]["text"] == "complete tool result"
-    assert tool_result["content"][1]["source"]["data"] == "aGVsbG8="
-    assert llm.messages[-1]["content"][-1]["text"] == (
-        "Create the context checkpoint summary now."
-    )
-
-
-def test_context_summary_fails_instead_of_persisting_truncated_output():
-    class _TruncatedLLM:
-        api_format = "chat_completions"
-
-        def chat(self, messages, **kwargs):
-            return LLMResponse(content="partial", stop_reason="max_tokens")
-
-    with pytest.raises(RuntimeError, match="reached the model output limit"):
-        ContextManager(max_tokens=1_000_000)._get_summary(
-            [{"role": "user", "content": "complete history"}],
-            _TruncatedLLM(),
-        )
-
-
-def test_context_summary_drops_oldest_item_only_after_context_overflow():
-    class _OverflowOnceLLM:
-        api_format = "chat_completions"
-
-        def __init__(self):
-            self.requests = []
-
-        def chat(self, messages, **kwargs):
-            self.requests.append(messages)
-            if len(self.requests) == 1:
-                raise RuntimeError("maximum context length exceeded")
-            return LLMResponse(content="summary after one removal")
-
-    history = [
-        {"role": "user", "content": "oldest"},
-        {"role": "assistant", "content": "middle"},
-        {"role": "user", "content": "newest"},
-    ]
-    llm = _OverflowOnceLLM()
-
-    summary = ContextManager(max_tokens=1_000_000)._get_summary(history, llm)
-
-    assert summary == "summary after one removal"
-    assert [message["content"] for message in llm.requests[0][1:-1]] == [
-        "oldest",
-        "middle",
-        "newest",
-    ]
-    assert [message["content"] for message in llm.requests[1][1:-1]] == [
-        "middle",
-        "newest",
-    ]
-    assert history[0]["content"] == "oldest"
-
-
-def test_context_summary_context_overflow_removes_paired_tool_result():
-    class _OverflowOnceLLM:
-        api_format = "chat_completions"
-
-        def __init__(self):
-            self.requests = []
-
-        def chat(self, messages, **kwargs):
-            self.requests.append(messages)
-            if len(self.requests) == 1:
-                error = RuntimeError("provider rejected request")
-                error.body = {"error": {"code": "context_length_exceeded"}}
-                raise error
-            return LLMResponse(content="valid summary")
-
-    history = [
-        {
-            "role": "assistant",
-            "content": "old tool call",
-            "tool_calls": [
-                {
-                    "id": "call_old",
-                    "type": "function",
-                    "function": {"name": "read", "arguments": "{}"},
-                }
-            ],
-        },
-        {"role": "tool", "tool_call_id": "call_old", "content": "old result"},
-        {"role": "user", "content": "keep me"},
-    ]
-    llm = _OverflowOnceLLM()
-
-    ContextManager(max_tokens=1_000_000)._get_summary(history, llm)
-
-    retried_history = llm.requests[1][1:-1]
-    assert retried_history == [{"role": "user", "content": "keep me"}]
-
-
-def test_context_summary_does_not_remove_history_for_unrelated_error():
-    class _FailingLLM:
-        api_format = "chat_completions"
-
-        def __init__(self):
-            self.calls = 0
-
-        def chat(self, messages, **kwargs):
-            self.calls += 1
-            raise RuntimeError("authentication failed")
-
-    llm = _FailingLLM()
-
-    with pytest.raises(RuntimeError, match="authentication failed"):
-        ContextManager(max_tokens=1_000_000)._get_summary(
-            [{"role": "user", "content": "must remain"}],
-            llm,
-        )
-
-    assert llm.calls == 1
+    with pytest.raises(OSError, match="disk full"):
+        ctx.maybe_compress(msgs, checkpoint=fail)
+    assert msgs == original
 
 
 def test_context_reserves_output_budget_before_compression_thresholds():
     ctx = ContextManager(max_tokens=100_000, output_reserve_tokens=20_000)
-
     assert ctx.input_budget_tokens == 80_000
     assert ctx._snip_at == 40_000
-    assert ctx._summarize_at == 56_000
+    assert ctx._checkpoint_at == 56_000
     assert ctx._collapse_at == 72_000
 
 
 def test_context_can_trigger_compression_from_last_real_prompt_tokens():
     ctx = ContextManager(max_tokens=2000)
-    msgs = [
-        {"role": "user", "content": "turn 1"},
-        {"role": "assistant", "content": "plan 1"},
-        {"role": "user", "content": "turn 2"},
-        {"role": "assistant", "content": "plan 2"},
-        {"role": "user", "content": "turn 3"},
-        {"role": "assistant", "content": "plan 3"},
-    ]
-
-    no_real_usage = ctx.maybe_compress([dict(m) for m in msgs], None)
-    with_real_usage = ctx.maybe_compress([dict(m) for m in msgs], None, last_prompt_tokens=1500)
-
-    assert no_real_usage.compressed is False
-    assert with_real_usage.compressed is True
-    assert "summarize_old" in with_real_usage.layers
+    msgs = [{"role": role, "content": f"turn {i}"}
+            for i in range(3) for role in ("user", "assistant")]
+    assert not ctx.maybe_compress(list(msgs)).compressed
+    assert ctx.maybe_compress(list(msgs), last_prompt_tokens=1500,
+                              checkpoint=lambda: "notes").compressed
 
 
 def test_agent_passes_real_usage_plus_trailing_estimate_into_compression(tmp_path):
@@ -485,7 +251,7 @@ def test_agent_passes_real_usage_plus_trailing_estimate_into_compression(tmp_pat
     agent.messages.extend(trailing)
     captured = {}
 
-    def _fake_maybe_compress(messages, llm=None, last_prompt_tokens=0):
+    def _fake_maybe_compress(messages, llm=None, last_prompt_tokens=0, **kwargs):
         captured["last_prompt_tokens"] = last_prompt_tokens
         return CompressionResult(
             compressed=False,
@@ -518,7 +284,7 @@ def test_agent_refreshes_memory_only_after_actual_compression(tmp_path):
         lambda messages, llm, force=False: scheduled.append(list(messages)) or True
     )
 
-    def _compress(messages, llm=None, last_prompt_tokens=0):
+    def _compress(messages, llm=None, last_prompt_tokens=0, **kwargs):
         messages[0]["content"] = "compressed context"
         return CompressionResult(
             compressed=True,

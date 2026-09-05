@@ -9,6 +9,7 @@ from .glob_tool import GlobTool
 from .grep import GrepTool
 from .agent import AgentTool
 from .memory import MemoryTool
+from .history import SearchHistoryTool, ReadHistoryTool
 from .todo_write import TodoWriteTool
 from .process import StartProcessTool, ReadProcessOutputTool, WaitForProcessOutputTool, StopProcessTool
 from .skill import SkillTool
@@ -28,6 +29,8 @@ ALL_TOOLS = [
     WaitForProcessOutputTool(),
     StopProcessTool(),
     MemoryTool(),
+    SearchHistoryTool(),
+    ReadHistoryTool(),
     TodoWriteTool(),
     SkillTool(),
     AgentTool(),

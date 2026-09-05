@@ -32,6 +32,12 @@ eval/
 
 ## Usage
 
+For the opt-in task-notes / history-retrieval live provider check, run
+`python -m eval.task_memory --runs 10`. Unlike the general harness below, this check uses the
+current workspace's `Config.from_env()` model/provider. It creates isolated synthetic sessions,
+performs two window switches and a restore, and verifies actual `search_history` / `read_history`
+calls and original-source recovery. See [task context memory](../docs/task-context-memory.md).
+
 List tasks:
 
 ```powershell

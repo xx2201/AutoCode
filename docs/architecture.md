@@ -66,8 +66,10 @@ flowchart LR
 
 `AUTOCODE_MAX_CONTEXT` 表示模型的总上下文窗口，`AUTOCODE_MAX_TOKENS` 表示单次
 模型调用的最大输出预算。Agent 会先从总窗口中预留输出预算，再用剩余的输入预算计算
-50% 工具输出裁剪、70% 历史摘要和 90% 强制压缩阈值，避免历史消息占满窗口后没有
-空间生成工具调用或最终回答。
+50% 工具输出裁剪、70% 任务 notes 检查点和 90% 紧急窗口切换阈值。
+切窗前会先持久化增量 notes 与处理游标，再保留近期消息；不再反复融合成总摘要。
+原始消息可通过 `search_history`、`read_history` 按当前会话回查。
+详见 [任务上下文记忆](task-context-memory.md)。
 
 Provider 适配器会把 Anthropic 的 `stop_reason` 或 Chat Completions 的
 `finish_reason` 统一写入 `LLMResponse.stop_reason`。若返回 `max_tokens` 或
@@ -96,6 +98,7 @@ Runner 启动时会把旧版根目录下的 Session 原子迁移到项目分区�
 | --- | --- | --- |
 | `checkpoint.json` | 保存当前消息、模型和任务状态，供 `/resume` 恢复 | 必须保留，是恢复快照 |
 | `transcript.jsonl` | 追加原始消息和压缩事件，保留不可变历史 | 保留，是 checkpoint 损坏后的恢复与审计依据 |
+| `task_notes.json` | 有来源的当前任务状态与增量处理游标 | 切窗时原子保存；与跨会话项目记忆分离 |
 | `audit.jsonl` | 记录工具、审批、阻止和错误等运行事件 | 保留，负责安全与行为审计 |
 | `trace.json` | 从运行事件聚合任务状态、工具数、Token 和耗时，供 `/trace` 直接读取 | 暂时保留；它是可派生缓存，未来可由 audit 动态生成 |
 | `queued_inputs.json` | 即时保存等待当前 Turn 完成后执行的 FIFO 提问 | 独立持久化，Runner/CLI 重启恢复时不会丢失 |
