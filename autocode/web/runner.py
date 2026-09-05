@@ -242,6 +242,9 @@ class LocalRunner:
                 "User-Agent": f"AutoCode-Local-Runner/{__version__}",
             },
             verify=ssl_context,
+            # Relay 是固定的自有 HTTPS 端点；不要继承桌面代理的 CONNECT/TLS 路径，
+            # 否则代理短暂卡住时会同时影响心跳、长轮询和结果回传。
+            trust_env=False,
             timeout=httpx.Timeout(
                 connect=10.0,
                 read=read_timeout,

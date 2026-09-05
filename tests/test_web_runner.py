@@ -867,6 +867,7 @@ def test_runner_builds_isolated_relay_clients(tmp_path, monkeypatch):
     assert runner.client is clients[0]
     assert runner._poll_client is clients[1]
     assert runner._heartbeat_client is clients[2]
+    assert all(client.kwargs["trust_env"] is False for client in clients)
 
     runner.close()
     assert all(client.closed for client in clients)
