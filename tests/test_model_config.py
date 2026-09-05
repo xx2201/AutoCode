@@ -3,6 +3,7 @@ import json
 import pytest
 
 from autocode.config import Config
+from autocode.context.manager import ContextManager
 from autocode.web import runner as runner_module
 from autocode.web.model_config import ModelConfigStore, normalize_model_config
 from autocode.web.runner import LocalRunner, RunnerSettings
@@ -34,6 +35,7 @@ def test_model_config_store_round_trips_settings_without_affecting_other_config(
         api_key="initial-secret",
         base_url="https://initial.example/v1",
         max_tokens=128,
+        max_context_tokens=256_000,
     )
     updated = Config(
         model="updated-model",
@@ -51,6 +53,7 @@ def test_model_config_store_round_trips_settings_without_affecting_other_config(
     assert restored.base_url == "http://localhost:4000/v1"
     assert restored.provider == "openai"
     assert restored.max_tokens == 128
+    assert restored.max_context_tokens == updated.max_context_tokens
     assert json.loads(path.read_text(encoding="utf-8"))["api_key"] == "updated-secret"
 
 
@@ -86,13 +89,51 @@ def test_runner_model_config_update_applies_and_returns_only_public_fields(tmp_p
                 "api_key": "updated-secret",
                 "base_url": "https://updated.example/v1",
                 "provider": "openai",
+                "max_context_tokens": 256_000,
             },
         )
 
         assert runner._base_config.model == "updated-model"
         assert runner._base_config.provider == "openai"
         assert result["model_config"]["api_key_configured"] is True
+        assert result["context_window_tokens"] == 256_000
+        assert result["model_config"]["max_context_tokens"] == 256_000
+        assert result["model_config"]["context_preparation_percent"] == 5
+        restored = ModelConfigStore(config_path).apply(Config())
+        assert restored.max_context_tokens == 256_000
         assert "updated-secret" not in json.dumps(result)
+    finally:
+        runner.close()
+
+
+@pytest.mark.parametrize("window", [64_000, 128_000, 256_000, 512_000, 1_000_000])
+def test_window_settings_drive_scaled_context_boundaries(tmp_path, window):
+    runner = _runner(tmp_path)
+    try:
+        runner.execute("update_model_config", {"max_context_tokens": window})
+        config = runner._base_config
+        context = ContextManager(config.max_context_tokens, config.max_tokens)
+        available = window - config.max_tokens
+        preparation = available * 5 // 100
+        assert context.reminder_tokens == context.fallback_buffer_tokens == preparation
+        assert not context.status(available - 2 * preparation - 1)["remind"]
+        assert context.status(available - 2 * preparation)["remind"]
+        assert context.status(available - preparation)["fallback"]
+        assert not context.status(available - 1)["force"]
+        assert context.status(available)["force"]
+    finally:
+        runner.close()
+
+
+@pytest.mark.parametrize("window", [0, -1, 32_000, 256000.5, True, "bad"])
+def test_invalid_window_cannot_replace_saved_runner_config(tmp_path, window):
+    runner = _runner(tmp_path, model_config_path=tmp_path / "config.json")
+    original = runner._base_config
+    try:
+        with pytest.raises(ValueError):
+            runner.execute("update_model_config", {"max_context_tokens": window})
+        assert runner._base_config is original
+        assert not (tmp_path / "config.json").exists()
     finally:
         runner.close()
 

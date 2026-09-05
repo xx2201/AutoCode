@@ -61,6 +61,7 @@ class ModelConfigRequest(BaseModel):
     api_key: str = Field(default="", max_length=4096)
     base_url: str = Field(default="", max_length=2000)
     provider: Literal["anthropic", "openai", "litellm"] = "anthropic"
+    max_context_tokens: int | None = Field(default=None, gt=0)
 
 
 class ChatRequest(ClientRequest):
@@ -299,7 +300,7 @@ def create_app(
     async def update_model_config(payload: ModelConfigRequest):
         return await dispatch(
             "update_model_config",
-            payload.model_dump(),
+            payload.model_dump(exclude_none=True),
             timeout=control_request_timeout,
         )
 
@@ -307,7 +308,7 @@ def create_app(
     async def test_model_config(payload: ModelConfigRequest):
         return await dispatch(
             "test_model_config",
-            payload.model_dump(),
+            payload.model_dump(exclude_none=True),
             timeout=model_test_timeout,
         )
 

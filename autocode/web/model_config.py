@@ -9,7 +9,8 @@ from dataclasses import replace
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from ..config import Config
+from ..config import Config, DEFAULT_MAX_CONTEXT_TOKENS
+from ..context.manager import ContextManager
 from ..llm import api_format_for_provider
 
 
@@ -25,8 +26,12 @@ def normalize_model_config(
     api_key: str,
     base_url: str | None,
     provider: str,
-) -> dict[str, str | None]:
-    """Normalize and validate the four model settings exposed by the web UI."""
+    max_context_tokens: int = DEFAULT_MAX_CONTEXT_TOKENS,
+) -> dict:
+    """Validate connection and context budget settings exposed by the web UI."""
+    if isinstance(max_context_tokens, bool) or str(max_context_tokens).strip() != str(int(max_context_tokens)):
+        raise ValueError("上下文窗口必须为整数 token。")
+    max_context_tokens = int(max_context_tokens)
     normalized_model = str(model or "").strip()
     if not normalized_model:
         raise ValueError("模型名称不能为空。")
@@ -60,10 +65,11 @@ def normalize_model_config(
         "api_key": normalized_api_key,
         "base_url": normalized_base_url or None,
         "provider": normalized_provider,
+        "max_context_tokens": max_context_tokens,
     }
 
 
-def public_model_config(config: Config) -> dict[str, str | bool]:
+def public_model_config(config: Config) -> dict:
     """Return model settings safe to send to the browser."""
     return {
         "model": config.model,
@@ -71,6 +77,9 @@ def public_model_config(config: Config) -> dict[str, str | bool]:
         "api_format": api_format_for_provider(config.provider),
         "base_url": config.base_url or "",
         "api_key_configured": bool(config.api_key),
+        "max_context_tokens": config.max_context_tokens,
+        "max_output_tokens": config.max_tokens,
+        "context_preparation_percent": ContextManager.PREPARATION_PERCENT,
     }
 
 
@@ -96,19 +105,21 @@ class ModelConfigStore:
                 api_key=data.get("api_key", config.api_key),
                 base_url=data.get("base_url", config.base_url),
                 provider=data.get("provider", config.provider),
+                max_context_tokens=data.get("max_context_tokens", config.max_context_tokens),
             )
+            return replace(config, **normalized)
         except (TypeError, ValueError) as exc:
             _LOGGER.warning("Ignoring invalid saved web model config: %s", exc)
             return config
-        return replace(config, **normalized)
 
     def save(self, config: Config) -> None:
-        """Atomically write the four settings and keep the file private."""
+        """Atomically write editable settings and keep the file private."""
         payload = {
             "model": config.model,
             "api_key": config.api_key,
             "base_url": config.base_url,
             "provider": config.provider,
+            "max_context_tokens": config.max_context_tokens,
         }
         self.path.parent.mkdir(parents=True, exist_ok=True)
         temporary = self.path.with_name(f".{self.path.name}.{os.getpid()}.tmp")

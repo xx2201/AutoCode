@@ -23,7 +23,7 @@ def test_source_paging_preserves_all_text_and_context_policy():
         assert page["next_offset"] - page["offset"] == len(page["text"])
     assert "".join(collected) == corpus
     assert context.input_budget_tokens == 239_616
-    assert context.base_limit == 223_232
+    assert context.base_limit == 227_636
     assert tool.offsets["extended"] == 0
 
 

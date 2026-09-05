@@ -41,6 +41,7 @@ function formFromConfig(config) {
     api_key: "",
     base_url: config?.base_url || "",
     provider: config?.provider || "anthropic",
+    max_context_tokens: config?.max_context_tokens ?? 1000000,
   };
 }
 
@@ -76,6 +77,11 @@ export default function ModelSettingsModal({
 
   if (!open) return null;
 
+  const inputBudget = Number(form.max_context_tokens) - Number(config?.max_output_tokens ?? 32000);
+  const buffer = Math.floor(inputBudget * Number(config?.context_preparation_percent ?? 5) / 100);
+  const reminder = buffer;
+  const formatTokens = (value) => Number.isFinite(value) ? value.toLocaleString() : "—";
+
   function updateField(event) {
     const { name, value } = event.target;
     setForm((current) => ({ ...current, [name]: value }));
@@ -83,6 +89,9 @@ export default function ModelSettingsModal({
   }
 
   function validateForm() {
+    if (!Number.isSafeInteger(Number(form.max_context_tokens)) || inputBudget <= 0) {
+      return "上下文窗口必须为整数，且大于最大输出额度。";
+    }
     if (!form.model.trim()) return "请填写模型名称。";
     if (form.base_url.trim()) {
       try {
@@ -200,6 +209,23 @@ export default function ModelSettingsModal({
               inputMode="url"
             />
             <small>可填写兼容网关地址；留空使用 SDK 默认地址。</small>
+          </label>
+
+          <label className="model-settings-field">
+            <span>上下文窗口（token）</span>
+            <input name="max_context_tokens" type="number" list="context-window-sizes"
+              min={Number(config?.max_output_tokens ?? 32000) + 1} step="1"
+              value={form.max_context_tokens ?? ""} onChange={updateField} required />
+            <datalist id="context-window-sizes">
+              {[64000, 128000, 200000, 256000, 512000, 1000000].map((size) => (
+                <option key={size} value={size}>{size / 1000}k</option>
+              ))}
+            </datalist>
+            <small>可选择常用大小或自定义；这是应用预算，不会扩展模型实际支持的窗口。</small>
+            <small>先预留最大输出 {formatTokens(config?.max_output_tokens ?? 32000)} token。
+              输入达到 {formatTokens(inputBudget - buffer - reminder)} 时提醒记笔记；
+              {formatTokens(inputBudget - buffer)} 时进入准备缓冲；
+              {formatTokens(inputBudget)} 为强制切窗边界。只切换窗口，不按比例截掉历史。</small>
           </label>
 
           <label className="model-settings-field">

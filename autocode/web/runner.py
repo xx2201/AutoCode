@@ -880,6 +880,7 @@ class LocalRunner:
             api_key=api_key,
             base_url=payload.get("base_url", current.base_url),
             provider=str(payload.get("provider", current.provider) or ""),
+            max_context_tokens=payload.get("max_context_tokens", current.max_context_tokens),
         )
         return replace(current, **normalized)
 
@@ -900,6 +901,7 @@ class LocalRunner:
                 "provider": next_config.provider,
                 "api_format": api_format_for_provider(next_config.provider),
                 "model_config": public_model_config(next_config),
+                "context_window_tokens": next_config.max_context_tokens,
             }
 
     def _test_model_config(self, payload: dict[str, Any]) -> dict[str, Any]:

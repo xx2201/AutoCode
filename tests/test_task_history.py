@@ -49,8 +49,8 @@ def make_agent(tmp_path, llm=None):
 
 @pytest.mark.parametrize("used,reminded,fallback,switched", [
     (175_000, False, False, False),
-    (206_848, True, False, False),
-    (223_232, True, True, False),
+        (215_656, True, False, False),
+        (227_636, True, True, False),
     (239_616, False, False, True),
 ])
 def test_context_decisions_share_valid_anchor_despite_larger_character_estimate(

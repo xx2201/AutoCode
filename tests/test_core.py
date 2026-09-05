@@ -211,9 +211,10 @@ def test_context_checkpoint_failure_does_not_mutate_even_snipped_outputs():
 def test_context_reserves_output_budget_before_compression_thresholds():
     ctx = ContextManager(max_tokens=100_000, output_reserve_tokens=20_000)
     assert ctx.input_budget_tokens == 80_000
-    assert ctx.base_limit == 60_000
-    assert ctx.status(40_000)["remind"]
-    assert ctx.status(60_000)["fallback"]
+    assert ctx.base_limit == 76_000
+    assert not ctx.status(71_999)["remind"]
+    assert ctx.status(72_000)["remind"]
+    assert ctx.status(76_000)["fallback"]
     assert not ctx.status(79_999)["force"]
     assert ctx.status(80_000)["force"]
 

@@ -22,6 +22,8 @@ class CompressionResult:
 
 
 class ContextManager:
+    # 固定策略按可用输入预算缩放；不是按比例截断历史。
+    PREPARATION_PERCENT = 5
     def __init__(self, max_tokens=1_000_000, output_reserve_tokens=0,
                  *, reminder_tokens=None, fallback_buffer_tokens=None):
         if not 0 <= output_reserve_tokens < max_tokens:
@@ -29,10 +31,10 @@ class ContextManager:
         self.max_tokens = max_tokens
         self.output_reserve_tokens = output_reserve_tokens
         self.input_budget_tokens = max_tokens - output_reserve_tokens
-        # 无模型目录元数据的 provider，以一次最大输出额度作为准备预算；不再按百分比裁历史。
-        self.fallback_buffer_tokens = (min(output_reserve_tokens, self.input_budget_tokens - 1)
+        preparation_tokens = self.input_budget_tokens * self.PREPARATION_PERCENT // 100
+        self.fallback_buffer_tokens = (preparation_tokens
                                        if fallback_buffer_tokens is None else fallback_buffer_tokens)
-        self.reminder_tokens = output_reserve_tokens if reminder_tokens is None else reminder_tokens
+        self.reminder_tokens = preparation_tokens if reminder_tokens is None else reminder_tokens
         if not 0 <= self.fallback_buffer_tokens < self.input_budget_tokens or self.reminder_tokens < 0:
             raise ValueError("Invalid context preparation budget")
         self.base_limit = self.input_budget_tokens - self.fallback_buffer_tokens

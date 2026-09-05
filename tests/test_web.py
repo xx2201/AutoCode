@@ -156,6 +156,7 @@ def test_model_config_routes_validate_and_relay_without_echoing_secret(relay_cli
                 "provider": "openai",
                 "base_url": "https://api.example/v1",
                 "api_key": "secret",
+                "max_context_tokens": 256_000,
             },
         ),
         "update_model_config",
@@ -165,6 +166,7 @@ def test_model_config_routes_validate_and_relay_without_echoing_secret(relay_cli
     assert response.json() == result
     assert "secret" not in json.dumps(response.json())
     assert job["payload"]["api_key"] == "secret"
+    assert job["payload"]["max_context_tokens"] == 256_000
 
 
 def test_chat_is_relayed_to_runner(relay_client):
