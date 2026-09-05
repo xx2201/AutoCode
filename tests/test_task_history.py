@@ -47,6 +47,45 @@ def make_agent(tmp_path, llm=None):
                  workspace_root=str(tmp_path), approval_policy="never")
 
 
+@pytest.mark.parametrize("used,reminded,fallback,switched", [
+    (175_000, False, False, False),
+    (206_848, True, False, False),
+    (223_232, True, True, False),
+    (239_616, False, False, True),
+])
+def test_context_decisions_share_valid_anchor_despite_larger_character_estimate(
+        tmp_path, used, reminded, fallback, switched):
+    agent = make_agent(tmp_path)
+    try:
+        agent.chat("review this task")
+        agent.context = ContextManager(256_000, 16_384)
+        agent._append_message({"role": "assistant", "content": "x" * 720_000})
+        agent._record_prompt_usage(used)
+        assert agent._estimated_context_tokens() == used
+        result = agent._maybe_compress_messages()
+        assert result.compressed is switched
+        assert result.before_tokens == used
+        assert agent.session_state.context_reminded is reminded
+        assert agent.session_state.context_fallback is fallback
+    finally:
+        agent.close()
+
+
+def test_invalidated_anchor_uses_current_content_for_hard_limit(tmp_path):
+    agent = make_agent(tmp_path)
+    try:
+        agent.chat("review this task")
+        agent.context = ContextManager(256_000, 16_384)
+        agent._append_message({"role": "assistant", "content": "x" * 720_000})
+        agent._record_prompt_usage(175_000)
+        agent.messages[-1]["content"] += " changed"
+        assert agent._valid_last_prompt_tokens() == 0
+        assert agent._estimated_context_tokens() >= agent.context.input_budget_tokens
+        assert agent._maybe_compress_messages().compressed
+    finally:
+        agent.close()
+
+
 def test_history_full_read_pagination_scope_and_images(history):
     append(history, "call", "probe", role="assistant", tool_calls=[{
         "id": "tc", "type": "function", "function": {"name": "probe", "arguments": "{}"}}])

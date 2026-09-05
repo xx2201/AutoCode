@@ -37,20 +37,17 @@ class ContextManager:
             raise ValueError("Invalid context preparation budget")
         self.base_limit = self.input_budget_tokens - self.fallback_buffer_tokens
 
-    @staticmethod
-    def effective_used(messages, last_prompt_tokens=0):
-        return max(estimate_tokens(messages), max(0, int(last_prompt_tokens or 0)))
-
     def status(self, used):
         return {"remaining": max(0, self.base_limit - used),
                 "remind": used >= self.base_limit - self.reminder_tokens,
                 "fallback": used >= self.base_limit,
                 "force": used >= self.input_budget_tokens}
 
-    def maybe_compress(self, messages, last_prompt_tokens=0, *, checkpoint=None, force=False):
-        before = estimate_tokens(messages)
+    def maybe_compress(self, messages, *, used_tokens=None, checkpoint=None, force=False):
+        # Agent 已校验 usage 锚点并补算增量；这里不得再次用全量字符估算覆盖它。
+        before = estimate_tokens(messages) if used_tokens is None else used_tokens
         count = len(messages)
-        if not force and not self.status(self.effective_used(messages, last_prompt_tokens))["force"]:
+        if not force and not self.status(before)["force"]:
             return CompressionResult(False, (), before, before, count, count)
         if checkpoint is None:
             raise RuntimeError("Window switching requires durable history")

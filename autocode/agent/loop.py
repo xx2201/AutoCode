@@ -565,7 +565,7 @@ class Agent:
         effective_used = self._estimated_context_tokens()
         result = self.context.maybe_compress(
             self.messages,
-            last_prompt_tokens=effective_used,
+            used_tokens=effective_used,
             checkpoint=self._checkpoint_task_context,
             force=force or bool(self.session_state and self.session_state.new_context_requested),
         )

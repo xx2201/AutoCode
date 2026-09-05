@@ -164,7 +164,7 @@ def test_context_does_not_snip_at_old_percentage_thresholds():
     for used in (5000, 7000, 9000):
         msgs = [{"role": "tool", "content": "middle evidence" * 200}]
         original = deepcopy(msgs)
-        assert not ctx.maybe_compress(msgs, last_prompt_tokens=used).compressed
+        assert not ctx.maybe_compress(msgs, used_tokens=used).compressed
         assert msgs == original
 
 
@@ -186,7 +186,7 @@ def test_context_compress():
 def test_context_reset_is_summary_free_and_drops_old_window():
     ctx = ContextManager(max_tokens=2000)
     msgs = [{"role": "user", "content": "old prompt"}, {"role": "assistant", "content": "old answer"}]
-    result = ctx.maybe_compress(msgs, last_prompt_tokens=2000, checkpoint=lambda: "history entry point")
+    result = ctx.maybe_compress(msgs, used_tokens=2000, checkpoint=lambda: "history entry point")
     assert result.layers == ("new_context",)
     assert msgs == [{"role": "user", "message_kind": "task_context", "content": "history entry point"}]
 
@@ -223,7 +223,7 @@ def test_context_can_trigger_compression_from_last_real_prompt_tokens():
     msgs = [{"role": role, "content": f"turn {i}"}
             for i in range(3) for role in ("user", "assistant")]
     assert not ctx.maybe_compress(list(msgs)).compressed
-    assert ctx.maybe_compress(list(msgs), last_prompt_tokens=2000,
+    assert ctx.maybe_compress(list(msgs), used_tokens=2000,
                               checkpoint=lambda: "notes").compressed
 
 
@@ -243,8 +243,8 @@ def test_agent_passes_real_usage_plus_trailing_estimate_into_compression(tmp_pat
     agent.messages.extend(trailing)
     captured = {}
 
-    def _fake_maybe_compress(messages, llm=None, last_prompt_tokens=0, **kwargs):
-        captured["last_prompt_tokens"] = last_prompt_tokens
+    def _fake_maybe_compress(messages, used_tokens=None, **kwargs):
+        captured["used_tokens"] = used_tokens
         return CompressionResult(
             compressed=False,
             layers=(),
@@ -257,7 +257,7 @@ def test_agent_passes_real_usage_plus_trailing_estimate_into_compression(tmp_pat
     agent.context.maybe_compress = _fake_maybe_compress
     agent._maybe_compress_messages()
 
-    assert captured["last_prompt_tokens"] == 4321 + estimate_tokens(trailing)
+    assert captured["used_tokens"] == 4321 + estimate_tokens(trailing)
 
 
 def test_window_switch_does_not_trigger_project_summary(tmp_path):
@@ -276,7 +276,7 @@ def test_window_switch_does_not_trigger_project_summary(tmp_path):
         lambda messages, llm, force=False: scheduled.append(list(messages)) or True
     )
 
-    def _compress(messages, llm=None, last_prompt_tokens=0, **kwargs):
+    def _compress(messages, **kwargs):
         messages[0]["content"] = "compressed context"
         return CompressionResult(
             compressed=True,
