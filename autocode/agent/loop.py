@@ -232,7 +232,11 @@ class Agent:
         """Combine the last authoritative input usage with locally appended history."""
         prompt_tokens = self._valid_last_prompt_tokens()
         if prompt_tokens <= 0:
-            return estimate_tokens(self.messages)
+            overhead = 0
+            if self._prompt_snapshot is not None:
+                overhead = (len(self._prompt_snapshot.system_prompt)
+                            + len(json.dumps(self._tool_schemas(self._prompt_snapshot), ensure_ascii=False))) // 3
+            return overhead + estimate_tokens(self.messages)
         # 上游 usage 只覆盖锚点请求；模型回复、工具结果和后续用户输入需在本地补算。
         trailing_messages = self.messages[self._last_prompt_message_count:]
         return prompt_tokens + estimate_tokens(trailing_messages)
@@ -496,6 +500,8 @@ class Agent:
             stored.setdefault("turn_id", self.turn_state.turn_id)
             stored.setdefault("revision_id", self.turn_state.revision_id)
         stored.setdefault("message_kind", stored.get("role", "message"))
+        if self.session_state is not None:
+            stored.setdefault("window_id", self.session_state.context_window)
         self.messages.append(stored)
         if self.session_state is not None:
             self.transcript.append_message(self.session_state.session_id, stored)
@@ -546,22 +552,29 @@ class Agent:
                 raise RuntimeError("Cannot compact a message without a stable source ID")
             if message_id not in recorded:
                 self.transcript.append_message(self.session_state.session_id, message)
-        return notes.checkpoint(self.llm)
+        notes.history.sync()
+        notes.load()
+        return notes.render()
 
-    def _maybe_compress_messages(self):
+    def request_new_context(self):
+        if self.session_state is None:
+            raise RuntimeError("No active task session")
+        self.session_state.new_context_requested = True
+
+    def _maybe_compress_messages(self, *, force=False):
         effective_used = self._estimated_context_tokens()
-        messages_before_compression = [dict(message) for message in self.messages]
         result = self.context.maybe_compress(
             self.messages,
             last_prompt_tokens=effective_used,
             checkpoint=self._checkpoint_task_context,
+            force=force or bool(self.session_state and self.session_state.new_context_requested),
         )
-        if result.compressed and hasattr(self.llm, "_call_with_retry"):
-            self.memory.schedule_project_memory_refresh(
-                messages_before_compression,
-                self.llm,
-            )
         if result.compressed and self.session_state is not None:
+            self.session_state.context_window += 1
+            self.session_state.context_reminded = False
+            self.session_state.context_fallback = False
+            self.session_state.new_context_requested = False
+            self._record_prompt_usage(0)
             saved_tokens = max(0, result.before_tokens - result.after_tokens)
             self.transcript.append_compaction(
                 self.session_state.session_id,
@@ -572,6 +585,7 @@ class Agent:
                     "saved_tokens": saved_tokens,
                     "before_messages": result.before_messages,
                     "after_messages": result.after_messages,
+                    "window_id": self.session_state.context_window,
                 },
             )
             self.hooks.emit(
@@ -585,10 +599,24 @@ class Agent:
                     after_messages=result.after_messages,
                 ),
             )
+        if self.session_state is not None and not result.compressed:
+            status = self.context.status(effective_used)
+            if status["fallback"] and not self.session_state.context_fallback:
+                self._append_message({"role": "user", "message_kind": "context_budget", "content":
+                    "[Context budget] Base window exhausted. Save unfinished state with write_note/append_note "
+                    "now and call new_context. Preparation buffer remains; no historical summary will be generated."})
+                self.session_state.context_fallback = True
+                self.session_state.context_reminded = True
+            elif status["remind"] and not self.session_state.context_reminded:
+                self._append_message({"role": "user", "message_kind": "context_budget", "content":
+                    f"[Context budget] {status['remaining']} base-window tokens remain. "
+                    "Preserve goals, constraints, progress, failures and sources in task notes; "
+                    "call new_context when ready to continue in a fresh window."})
+                self.session_state.context_reminded = True
         return result
 
     def compact_context(self):
-        result = self._maybe_compress_messages()
+        result = self._maybe_compress_messages(force=True)
         if result.compressed:
             self.persist_session()
         return result
@@ -839,9 +867,15 @@ class Agent:
             None,
         )
         if prompt_index is None:
-            raise ValueError(f"Prompt for turn '{turn_id}' was not found.")
-
-        old_message = self.messages[prompt_index]
+            # 切窗后可编辑提示仍在原始历史中，不要求它常驻模型上下文。
+            old_message = next((entry["message"] for _, entry in self._task_notes().history.entries()
+                                if entry.get("kind") == "message"
+                                and entry["message"].get("turn_id") == turn_id
+                                and entry["message"].get("message_kind") == "prompt"), None)
+            if old_message is None:
+                raise ValueError(f"Prompt for turn '{turn_id}' was not found.")
+        else:
+            old_message = self.messages[prompt_index]
         old_revision_id = turn.revision_id
         new_turn = TurnState(
             turn_id=new_turn_id(),
@@ -851,7 +885,8 @@ class Agent:
             title=original_prompt.strip().splitlines()[0][:120],
             status="running",
         )
-        self.messages = self.messages[:prompt_index]
+        self.messages = (self.messages[:prompt_index] if prompt_index is not None else
+                         [m for m in self.messages if m.get("turn_id") != turn_id])
         self.session_state.set_current_turn(new_turn)
         self._prompt_snapshot = None
         self._prompt_tool_registry = {}
@@ -1258,7 +1293,9 @@ class Agent:
         return summary
 
     def _run_agent_step(self, *, snapshot, on_token=None, on_tool=None, approval_handler=None):
-        self._append_pending_steer()
+        if self._append_pending_steer():
+            self._maybe_compress_messages()
+            self.persist_session()
         step_index = self.turn_state.step_index + 1
         with self._agent_step_trace(step_index, snapshot) as (observation, trace_context):
             try:

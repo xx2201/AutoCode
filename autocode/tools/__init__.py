@@ -9,7 +9,8 @@ from .glob_tool import GlobTool
 from .grep import GrepTool
 from .agent import AgentTool
 from .memory import MemoryTool
-from .history import SearchHistoryTool, ReadHistoryTool
+from .history import SearchHistoryTool, ReadHistoryTool, ListHistoryTool
+from .notes import WriteNoteTool, AppendNoteTool, ReadNoteTool, ListNotesTool, SearchNotesTool, NewContextTool
 from .todo_write import TodoWriteTool
 from .process import StartProcessTool, ReadProcessOutputTool, WaitForProcessOutputTool, StopProcessTool
 from .skill import SkillTool
@@ -31,6 +32,13 @@ ALL_TOOLS = [
     MemoryTool(),
     SearchHistoryTool(),
     ReadHistoryTool(),
+    ListHistoryTool(),
+    WriteNoteTool(),
+    AppendNoteTool(),
+    ReadNoteTool(),
+    ListNotesTool(),
+    SearchNotesTool(),
+    NewContextTool(),
     TodoWriteTool(),
     SkillTool(),
     AgentTool(),

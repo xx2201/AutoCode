@@ -1,100 +1,102 @@
-# 任务上下文：增量 notes 与原始历史召回
+# 任务上下文：模型管理 notes 与无摘要切窗
 
-本次修改的是 AutoCoder Agent 的上下文管理，不是模型权重。默认工具注册表已启用
-`search_history` 和 `read_history`，不需要新增配置或向量数据库。已有进程需要重启才能
-加载新代码和工具。2026-09-05 已按用户要求通过 `AutoCodeLocalWebRunner` 计划任务
-重启本机 Runner，健康接口返回 `runner_connected: true`；没有部署远程 Relay。
-新用户轮次会加载新的工具快照；从旧版本恢复的进行中轮次仍保留原有冻结快照，不在
-执行途中修改其工具契约。手动传入自定义 `tools` 列表的调用方应包含这两个历史工具。
+本次对齐 Codex 公开的 token-budget/new_context 生命周期，不修改模型权重，不接入其专有后端。
+不实现 embedding 或混合检索。官方源码基准为 `openai/codex@459a79eb85400af759e9220c7bafb4429ae07516`。
 
-## 一次窗口切换
+## 主链路
 
-1. `Agent._append_message` 继续将原始用户消息、模型回复和工具结果写入当前会话的
-   `transcript.jsonl`，为每条消息保留稳定 ID。
-2. `ContextManager.maybe_compress` 在副本上规划输出裁剪和近期消息保留。
-3. `Agent._checkpoint_task_context` 确认证据存在，再调用 `TaskNotes.checkpoint`。
-   老 checkpoint 中仍在窗口、但未写入 transcript 的消息会先补存；不是空 notes 清窗。
-4. 原始日志先刷新落盘，再按游标读取尚未处理的证据。每页最多 8,000 个文本字符，
-   按约 16,000 个 JSON 字符分批；超长输出会逐页处理，不会默默截掉中间内容。
-5. 模型返回 `upsert` / `remove` 增量。程序校验字段、来源和预算后，将 notes 与游标
-   一起写入临时文件，`flush` / `fsync` 后通过 `os.replace` 替换 `task_notes.json`。
-6. 保存成功后才替换运行窗口，携带任务 notes 和近期消息继续执行。notes 模型调用或
-   保存失败会报错，原来的运行上下文不变；已经成功提交的分批游标可用于重试。
+1. 原始消息与工具结果先追加到 transcript.jsonl，保留 message_id、turn/revision、window_id。
+2. 模型在任务过程中使用 write_note / append_note 保存笔记。建议 index.md 指向详细文件。
+   没有固定的条目数、240 字符字段、8 个来源限制，也不再调用 delta 摘要模型。
+3. ContextManager.status 使用 token 预算给出提醒、准备 buffer 和硬边界。
+   每个窗口的提醒与准备提示只发送一次，标志随 SessionState 保存和恢复。
+4. new_context 只设置请求标志。所有工具结果提交后，Agent 在批次边界执行窗口转换。
+   手动 compact_context 和达到硬边界也进入同一无摘要转换流程。
+5. 转换前同步原始历史，验证笔记存储可读取；失败保留原窗口。成功后只安装恢复入口，
+   清理旧 usage 锚点，递增窗口编号；不保留滚动摘要，不重置工作区、进程和任务。
+6. 模型用 list_notes/read_note 恢复状态，用 list_history/search_history/read_history 找回遗漏证据。
+   项目记忆功能保留，但切窗不再触发项目记忆的自动摘要。
 
-70% 阈值优先保留近期完整用户轮次；90% 阈值支持在长单轮任务中切窗，保留原始用户
-提示词与最近完整工具批次。中途追加的 `steer` 不会被误认为新轮次而挤掉可编辑原始提示词。
-50% 的工具文本裁剪也必须先完成证据与 notes 保存。
+## 预算含义与官方差异
 
-notes 包含目标、有效约束、决定、失败与原因、待验证问题、事实。未变条目不重写。
-上限为 20 条、每条文本 240 字符、完整 notes JSON 12,000 字符；一次 upsert 最多引用
-8 个来源，更新同一条目会保留原有依据。已结束的细节可退出常驻 notes，原始证据仍可检索。
-项目级 `PROJECT_MEMORY.md` 的机制保留，任务状态不会被直接写入该文件。
+- 总窗口为 AUTOCODE_MAX_CONTEXT；最大输出为 AUTOCODE_MAX_TOKENS。
+- 输入硬边界 = 总窗口 - 最大输出。基础预算 = 输入硬边界 - 准备 buffer。
+- 无官方模型目录参数时，默认用一次最大输出额度作为准备 buffer 和提前提醒额度；
+  buffer 不能占满输入窗口。ContextManager 可显式传 reminder_tokens/fallback_buffer_tokens。
+  这是通用 provider 的本地适配，**不是 Astra 官方默认参数**。
+- 50%/70%/90% 裁剪策略已移除；提醒不会裁剪消息。
+- 使用已有 provider usage 锚点加新增消息估算；没有有效锚点时估算消息、system 和工具定义。
+  本地字符估算不是精确 tokenizer，多模态和超大单次输入仍存在超窗风险。
+- 工具文本输出预算由当前剩余输入空间和最大输出额度决定。大段读取返回 next_offset；
+  列表/搜索结果过大返回明确错误，要求缩小 limit 或先切窗，不损坏 JSON 或静默吞掉结果。
 
-## 历史工具
+## 笔记和历史工具
 
-| 工具 | 输入与输出 |
-| --- | --- |
-| `search_history` | 空格分隔关键词，OR 匹配；按命中词数、消息新旧排序。默认 5 条，最多 10 条，每条片段最多 600 字符，包含消息 ID、角色、时间、修订信息及片段位置。 |
-| `read_history` | 按消息 ID 读取，默认 4,000 字符，最多 8,000；返回总长度、下一页 offset、前后消息 ID、工具调用 ID。可顺着相邻 ID 找到调用与结果。 |
+- write_note(path, text, sources?)：完整覆盖虚拟文件；append_note 追加原文。
+- read_note：全读或字符分页，也支持 inclusive 1-based 行范围，负数从末尾计。
+- list_notes / search_notes：前缀、分页；笔记搜索为区分大小写的子串匹配。
+- new_context：提交后切窗，不执行额外摘要请求。
+- list_history：按窗口、角色、工具筛选，分页返回原始消息 ID。
+- search_history：保留现有关键词 OR 匹配、命中数量及新旧排序；不是向量搜索，也不是官方
+  的区分大小写子串接口。默认返回 5 条、片段 600 字符；这些是已有检索策略，不是切窗阈值。
+- read_history：按 ID 读取原文、相邻 ID、调用 ID、下一页位置，可显式请求图片。
 
-搜索和普通读取不返回图片 base64。`media_count` 标记图片数量；需要看原图时，使用
-`read_history(..., include_media=true)`，通过既有多模态工具结果通道返回图片。
-notes 提炼只接收文本及媒体数量，不假装已经理解未提供的图片。
+所有工具只访问所属会话。notes 路径是 JSON 存储中的虚拟键，不直接解释为 Windows 文件路径。
+禁止空、绝对、反斜杠和父目录路径。每个虚拟文件上限 1,000,000 UTF-8 字节，
+对应官方公开的单文件契约，超限创建另一个文件；不是整个任务记忆的总上限。
+实际保存为会话目录 notes.json，通过临时文件、flush/fsync、os.replace 原子更新。
+旧 task_notes.json 在首次读取时单向迁移到 migrated/*.md，旧文件不删除；不保留旧压缩执行逻辑。
 
-两个工具没有跨会话 ID 参数，始终绑定当前 Agent 的会话。召回结果是历史证据，不是
-新的系统指令；旧测试通过不代表当前状态通过。工具描述和切窗 notes 提示模型在缺少
-精确错误、准备重试失败方案、遇到冲突证据时主动回查。
+撤回轮次后，原始消息不再参加正常召回。笔记记录显式来源，并保守记录写入时可见轮次；
+任一依赖轮次被撤回，整份笔记退出有效视图。自由文本无法验证完备来源，因此这个保守策略
+可能使无关笔记也失效，须从有效历史重新构建；不会把撤回的约束重新带回。
+从已切窗会话编辑最近提问时，通过原始 transcript 定位旧提示，不要求它仍在当前窗口。
 
-历史检索不再索引 `search_history` / `read_history` 的工具输出副本及纯检索调用，避免
-“搜索结果再成为搜索结果”。当前实现是对本地 transcript 的关键词扫描，不是语义搜索。
+## 官方代码复核映射
 
-## 编辑、恢复与失败边界
+基准链接：https://github.com/openai/codex/tree/459a79eb85400af759e9220c7bafb4429ae07516
 
-- `turn_superseded` 对应的旧轮次不会出现在正常搜索或读取中。notes 的任一来源被撤回，
-  整条派生 notes 就退出有效视图；编辑后和生成模型请求前都会刷新窗口中的 notes。
-- 缺少轮次标识的旧格式原始记录，发生编辑后无法确认所属修订，保守地不参与正常召回。
-  原文件保留，不会为检索而删除原始历史。
-- notes 位于会话目录，跟随既有会话分区及恢复机制，不依赖进程内缓存。
-- notes 输出支持纯 JSON 和完整 JSON Markdown 代码块；不接受额外解释文本、未知
-  字段、伪造来源、未知删除项或截断输出，不使用空 notes 兜底。
-- 不完整的 transcript 末行不进入处理游标；完整但损坏的 JSON 会报错，不静默跳过。
-- 这套机制不是无限上下文：超大用户单条输入、图片载荷、固定系统提示词或完整工具
-  批次本身过大，仍可能超出模型限制。字符估算不是精确 tokenizer。
-- 持久化与检索正确性不等于模型提炼语义永不遗漏；遗漏细节仍需通过原始历史找回。
+| 官方实现 | 本地实现 | 核对边界 |
+| --- | --- | --- |
+| core/src/session/context_window.rs | context/manager.py:status | 基础预算、buffer、硬边界；本地只使用总输入范围 |
+| core/src/session/token_budget.rs | agent/loop.py:_maybe_compress_messages | 每窗提醒与准备提示；本地没有官方模型目录默认值 |
+| core/src/tools/handlers/new_context_window.rs | tools/notes.py:NewContextTool | 工具只请求转换，不直接清空正在执行的批次 |
+| core/src/compact_token_budget.rs | ContextManager.maybe_compress | 手动、工具、硬边界切窗均不生成摘要 |
+| ext/history-notes/src/tools.rs | tools/notes.py、tools/history.py | 文件式笔记、原文读取；本地扁平工具名、单会话范围 |
+| ext/history-notes/src/extension.rs | TaskNotes.render | 恢复入口而非全量笔记；本地固定导航，不复现未公开的 thread_hint 生成器 |
 
-## 验证与复现
+官方模型专有提示、加密内容、远程后端、跨 agent 共享、最终一致性并未复制。
+本地工具读取笔记采用独占调度，防止迁移/读改写竞争；写笔记和切窗请求不会在流式模型响应提交前执行。
+已有进行中轮次仍使用冻结的工具快照，新用户轮次加载新增工具；升级后应启动新轮次使用完整能力。
 
-定向测试包括长输出中间细节、分页重组、会话隔离、撤回与派生 notes 失效、两种 provider
-消息序列化、增量游标、部分写入失败恢复、原子替换失败、非法/截断模型输出、完整工具
-批次、会话恢复后编辑、图片按需读取、召回副本过滤及中途追加指令。
+## 验证
 
 ```powershell
-& ".venv/Scripts/python.exe" -m pytest -q "tests/test_task_history.py" "tests/test_core.py" "tests/test_transcript.py" "tests/test_tools.py"
 & ".venv/Scripts/python.exe" -m pytest -q
 & ".venv/Scripts/python.exe" -m eval.task_memory --runs 10
 ```
 
-真实模型验证读取当前 `.env` 配置，但不打印密钥或地址。使用隔离会话、本地进程生成的
-合成诊断日志、只读工具及禁用外部追踪；没有操作业务数据。应用层窗口阈值缩小为
-3,000 tokens，使实际样本长度触发两次切窗，不伪造 provider usage，也不改变全局模型配置。
+eval 使用配置中的真实 provider/model，最大输出明确设为 4096，只有合成诊断与会话笔记工具，
+不启用业务写操作或 Langfuse。模型必须写笔记、调用 new_context、读笔记、搜索并读取历史。
+第一次切窗的笔记快照不得包含错误码；恢复成功后模型可以把已找到的证据补入笔记。
+随后加入另一条模型尚未处理、notes 中不存在的合成错误，用填充触发应用层硬边界，
+保存、恢复后再次回查这条新证据。列表定位与关键词定位都属于有效检索路径。
+这是显式引导的工具契约验证，不等于真实长任务中模型会自主选择最佳记忆/切窗时机。
+报告位于 eval/runs/context-windows-*/report.json；旧 task-memory-* 报告只适用于旧实现。
 
-2026-09-05 验证使用 `macaron-v1-coding-venti`、Anthropic Messages：
+### 2026-09-05 实测结果
 
-- 连续 10 轮通过：每轮两次切窗、notes 增量保存、恢复会话、模型调用两个历史工具，
-  找回确切错误码、认证前失败阶段，并引用原始消息 ID。
-- 最终补充 3 轮通过，增加严格断言：`read_history` 的实际工具输出必须包含目标原始
-  消息 ID 和错误码，不能仅凭 notes 中的内容回答。
-- 前 10 轮报告：`eval/runs/task-memory-2igkuhuf/report.json`。
-- 最终 3 轮报告：`eval/runs/task-memory-i3f7h1h4/report.json`。
-- 完整轨迹、notes 及原始模型 notes 输出位于相应报告目录，属于本地 eval 产物，不提交 Git。
-- 定向回归为 113 passed，见 `eval/runs/task-memory-focused-final.xml`。
-- 按用户要求删除失效的单行提示词断言后，全量回归为 479 passed、1 skipped、3 warnings，
-  见 `eval/runs/task-memory-release.xml`。
-
-之前的全量回归发现一项基线问题：
-`test_system_prompt_requests_independent_batches_and_rejects_blind_retries` 中断言提示词应包含
-`Treat that block as metadata`，而提示词不包含该句。后续按用户明确要求只删除这一行
-断言，保留同一测试里的并行调用、避免盲目重试等其他检查，没有删除整个测试函数。
-
-原来的递归总摘要实现及专门针对该旧行为的测试已移除，替换为上述 checkpoint 契约和
-回归测试。标准库落盘接口参考 [os.replace](https://docs.python.org/3/library/os.html#os.replace)。
+- 全量回归：477 passed、1 skipped、3 warnings，报告 context-windows-final.xml。
+  跳过项是 Windows 创建符号链接需要额外权限。依赖弃用警告未在本次修改中处理。
+- 后补的批次顺序测试包含两种 provider 序列化；生命周期测试单独重跑 20 passed，
+  报告 context-windows-lifecycle.xml（与全量测试有重叠，不相加）。
+- macaron-v1-coding-venti / Anthropic Messages，连续 10 次通过：
+  eval/runs/context-windows-f3imcuu7/report.json。每次由模型写 notes、主动切窗、读取原文，
+  再由程序强制切窗并恢复，找到 notes 中没有的第二条证据。
+- 最终补充 1 次通过：eval/runs/context-windows-t2zwzt0i/report.json。
+  强制切窗边界改为当前占用加 3000；实测填充前 5428、输入边界 8428，
+  加入合成填充后才越界，没有伪造 provider usage。脚本现使用这个更严格的边界判据。
+- 前期脚本把“通过列表定位后读取”错误判成必须使用关键词搜索，且未区分恢复前后笔记；
+  已修正验收判据并重新运行。另一次脚本 hook 参数数量错误已修正，失败报告保留用于追溯。
+- git diff --check、目标模块 compileall 通过。交付流程要求提交相关代码、重启本机 Runner，
+  并核验新进程与 Relay 健康状态；远程部署和 git push 不包含在此次范围内。

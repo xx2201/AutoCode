@@ -294,6 +294,10 @@ class SessionState:
     context_used_tokens: int = 0
     context_anchor_messages: int = 0
     context_anchor_digest: str = ""
+    context_window: int = 0
+    context_reminded: bool = False
+    context_fallback: bool = False
+    new_context_requested: bool = False
     started_at: str = field(default_factory=_now)
     updated_at: str = field(default_factory=_now)
     current_turn: TurnState | None = None
@@ -320,6 +324,10 @@ class SessionState:
             "context_used_tokens": self.context_used_tokens,
             "context_anchor_messages": self.context_anchor_messages,
             "context_anchor_digest": self.context_anchor_digest,
+            "context_window": self.context_window,
+            "context_reminded": self.context_reminded,
+            "context_fallback": self.context_fallback,
+            "new_context_requested": self.new_context_requested,
             "started_at": self.started_at,
             "updated_at": self.updated_at,
             "current_turn": self.current_turn.to_dict() if self.current_turn else None,
@@ -338,6 +346,10 @@ class SessionState:
             context_used_tokens=max(0, int(data.get("context_used_tokens", 0))),
             context_anchor_messages=max(0, int(data.get("context_anchor_messages", 0))),
             context_anchor_digest=str(data.get("context_anchor_digest", "")),
+            context_window=max(0, int(data.get("context_window", 0))),
+            context_reminded=bool(data.get("context_reminded", False)),
+            context_fallback=bool(data.get("context_fallback", False)),
+            new_context_requested=bool(data.get("new_context_requested", False)),
             started_at=data.get("started_at", _now()),
             updated_at=data.get("updated_at", _now()),
             current_turn=TurnState.from_dict(turn) if turn else None,

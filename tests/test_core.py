@@ -41,7 +41,7 @@ def test_public_api_exports():
     assert Agent is not None
     assert LLM is not None
     assert Config is not None
-    assert len(ALL_TOOLS) == 18
+    assert len(ALL_TOOLS) == 25
 
 
 def test_config_from_env(monkeypatch):
@@ -158,15 +158,14 @@ def test_estimate_tokens():
     assert t < 100
 
 
-def test_context_snip():
-    ctx = ContextManager(max_tokens=3000)
-    msgs = [
-        {"role": "tool", "tool_call_id": "t1", "content": "x\n" * 1000},
-    ]
-    before = estimate_tokens(msgs)
-    ctx._snip_tool_outputs(msgs)
-    after = estimate_tokens(msgs)
-    assert after < before
+def test_context_does_not_snip_at_old_percentage_thresholds():
+    from copy import deepcopy
+    ctx = ContextManager(max_tokens=10000)
+    for used in (5000, 7000, 9000):
+        msgs = [{"role": "tool", "content": "middle evidence" * 200}]
+        original = deepcopy(msgs)
+        assert not ctx.maybe_compress(msgs, last_prompt_tokens=used).compressed
+        assert msgs == original
 
 
 def test_context_compress():
@@ -184,21 +183,12 @@ def test_context_compress():
     assert len(msgs) < 40  # should be compressed
 
 
-def test_context_checkpoint_keeps_complete_recent_turns():
+def test_context_reset_is_summary_free_and_drops_old_window():
     ctx = ContextManager(max_tokens=2000)
-    msgs = [
-        {"role": "user", "content": "turn 1"},
-        {"role": "assistant", "content": "done 1"},
-        {"role": "user", "content": "turn 2"},
-        {"role": "assistant", "content": "done 2"},
-        {"role": "user", "content": "turn 3"},
-        {"role": "assistant", "content": "plan 3"},
-    ]
-    tail = msgs[2:]
-    result = ctx.maybe_compress(msgs, last_prompt_tokens=1500, checkpoint=lambda: "durable notes")
-    assert result.layers == ("task_checkpoint",)
-    assert msgs[0]["message_kind"] == "task_context"
-    assert msgs[1:] == tail
+    msgs = [{"role": "user", "content": "old prompt"}, {"role": "assistant", "content": "old answer"}]
+    result = ctx.maybe_compress(msgs, last_prompt_tokens=2000, checkpoint=lambda: "history entry point")
+    assert result.layers == ("new_context",)
+    assert msgs == [{"role": "user", "message_kind": "task_context", "content": "history entry point"}]
 
 
 def test_context_checkpoint_failure_does_not_mutate_even_snipped_outputs():
@@ -221,9 +211,11 @@ def test_context_checkpoint_failure_does_not_mutate_even_snipped_outputs():
 def test_context_reserves_output_budget_before_compression_thresholds():
     ctx = ContextManager(max_tokens=100_000, output_reserve_tokens=20_000)
     assert ctx.input_budget_tokens == 80_000
-    assert ctx._snip_at == 40_000
-    assert ctx._checkpoint_at == 56_000
-    assert ctx._collapse_at == 72_000
+    assert ctx.base_limit == 60_000
+    assert ctx.status(40_000)["remind"]
+    assert ctx.status(60_000)["fallback"]
+    assert not ctx.status(79_999)["force"]
+    assert ctx.status(80_000)["force"]
 
 
 def test_context_can_trigger_compression_from_last_real_prompt_tokens():
@@ -231,7 +223,7 @@ def test_context_can_trigger_compression_from_last_real_prompt_tokens():
     msgs = [{"role": role, "content": f"turn {i}"}
             for i in range(3) for role in ("user", "assistant")]
     assert not ctx.maybe_compress(list(msgs)).compressed
-    assert ctx.maybe_compress(list(msgs), last_prompt_tokens=1500,
+    assert ctx.maybe_compress(list(msgs), last_prompt_tokens=2000,
                               checkpoint=lambda: "notes").compressed
 
 
@@ -268,7 +260,7 @@ def test_agent_passes_real_usage_plus_trailing_estimate_into_compression(tmp_pat
     assert captured["last_prompt_tokens"] == 4321 + estimate_tokens(trailing)
 
 
-def test_agent_refreshes_memory_only_after_actual_compression(tmp_path):
+def test_window_switch_does_not_trigger_project_summary(tmp_path):
     class _NoopLLM:
         model = "fake"
         _call_with_retry = object()
@@ -298,7 +290,7 @@ def test_agent_refreshes_memory_only_after_actual_compression(tmp_path):
     agent.context.maybe_compress = _compress
     agent._maybe_compress_messages()
 
-    assert scheduled == [original_messages]
+    assert scheduled == []
 
     scheduled.clear()
     agent.context.maybe_compress = lambda *args, **kwargs: CompressionResult(
