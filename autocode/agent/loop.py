@@ -98,9 +98,9 @@ class Agent:
             max_tokens=max_context_tokens,
             output_reserve_tokens=max_output_tokens,
         )
-        self._last_prompt_tokens = 0
-        self._last_prompt_message_count = 0
-        self._last_prompt_digest = ""
+        self._last_context_tokens = 0
+        self._last_context_message_count = 0
+        self._last_context_digest = ""
         self.max_rounds = max_rounds
         self.workspace_root = workspace_root or "."
         self.sandbox_policy = SandboxPolicy(self.workspace_root, sandbox_mode)
@@ -203,43 +203,44 @@ class Agent:
         ).encode("utf-8")
         return hashlib.sha256(payload).hexdigest()
 
-    def _record_prompt_usage(self, prompt_tokens: int) -> None:
-        tokens = max(0, int(prompt_tokens or 0))
+    def _record_context_usage(self, context_tokens: int) -> None:
+        """Anchor provider-reported context usage to the current message prefix."""
+        tokens = max(0, int(context_tokens or 0))
         message_count = len(self.messages)
         digest = self._messages_digest(self.messages)
-        self._last_prompt_tokens = tokens
-        self._last_prompt_message_count = message_count
-        self._last_prompt_digest = digest
+        self._last_context_tokens = tokens
+        self._last_context_message_count = message_count
+        self._last_context_digest = digest
         if self.session_state is not None:
             self.session_state.context_used_tokens = tokens
             self.session_state.context_anchor_messages = message_count
             self.session_state.context_anchor_digest = digest
 
-    def _valid_last_prompt_tokens(self) -> int:
+    def _valid_last_context_tokens(self) -> int:
         if (
-            self._last_prompt_tokens <= 0
-            or self._last_prompt_message_count <= 0
-            or not self._last_prompt_digest
-            or len(self.messages) < self._last_prompt_message_count
+            self._last_context_tokens <= 0
+            or self._last_context_message_count <= 0
+            or not self._last_context_digest
+            or len(self.messages) < self._last_context_message_count
         ):
             return 0
-        anchored_messages = self.messages[:self._last_prompt_message_count]
-        if self._messages_digest(anchored_messages) != self._last_prompt_digest:
+        anchored_messages = self.messages[:self._last_context_message_count]
+        if self._messages_digest(anchored_messages) != self._last_context_digest:
             return 0
-        return self._last_prompt_tokens
+        return self._last_context_tokens
 
     def _estimated_context_tokens(self) -> int:
-        """Combine the last authoritative input usage with locally appended history."""
-        prompt_tokens = self._valid_last_prompt_tokens()
-        if prompt_tokens <= 0:
+        """Combine the last authoritative total usage with locally appended history."""
+        context_tokens = self._valid_last_context_tokens()
+        if context_tokens <= 0:
             overhead = 0
             if self._prompt_snapshot is not None:
                 overhead = (len(self._prompt_snapshot.system_prompt)
                             + len(json.dumps(self._tool_schemas(self._prompt_snapshot), ensure_ascii=False))) // 3
             return overhead + estimate_tokens(self.messages)
-        # 上游 usage 只覆盖锚点请求；模型回复、工具结果和后续用户输入需在本地补算。
-        trailing_messages = self.messages[self._last_prompt_message_count:]
-        return prompt_tokens + estimate_tokens(trailing_messages)
+        # 服务端 total usage 已包含锚点模型输出；只补算其后的工具结果和新用户输入。
+        trailing_messages = self.messages[self._last_context_message_count:]
+        return context_tokens + estimate_tokens(trailing_messages)
 
     def _fresh_tools(self) -> list[Tool]:
         if self._tool_factory is not None:
@@ -574,7 +575,7 @@ class Agent:
             self.session_state.context_reminded = False
             self.session_state.context_fallback = False
             self.session_state.new_context_requested = False
-            self._record_prompt_usage(0)
+            self._record_context_usage(0)
             saved_tokens = max(0, result.before_tokens - result.after_tokens)
             self.transcript.append_compaction(
                 self.session_state.session_id,
@@ -1132,9 +1133,9 @@ class Agent:
             stored["turn_id"] = str(stored.get("turn_id") or current_turn_id)
             stored["revision_id"] = str(stored.get("revision_id") or current_revision_id)
             self.messages.append(stored)
-        self._last_prompt_tokens = max(0, session_state.context_used_tokens)
-        self._last_prompt_message_count = max(0, session_state.context_anchor_messages)
-        self._last_prompt_digest = session_state.context_anchor_digest
+        self._last_context_tokens = max(0, session_state.context_used_tokens)
+        self._last_context_message_count = max(0, session_state.context_anchor_messages)
+        self._last_context_digest = session_state.context_anchor_digest
         self.turn_controller.restore_queued(session_state.queued_inputs)
         turn = session_state.current_turn
         if turn is not None and turn.status in {"running", "waiting_approval"}:
@@ -1305,10 +1306,11 @@ class Agent:
                     on_tool=on_tool,
                     tool_trace_context=trace_context,
                 )
-                self._record_prompt_usage(resp.prompt_tokens)
                 if resp.stop_reason in {"max_tokens", "length"}:
                     if streaming_executor is not None:
                         streaming_executor.discard()
+                    # 未完成的 assistant 输出不进入历史；因此锚定这次请求的真实输入。
+                    self._record_context_usage(resp.prompt_tokens)
                     raise RuntimeError(
                         "模型输出达到 token 上限，回答未完成。"
                         f"当前 AUTOCODE_MAX_TOKENS={self.context.output_reserve_tokens}，"
@@ -1336,6 +1338,7 @@ class Agent:
                     if streaming_executor is not None:
                         streaming_executor.commit([])
                     self._append_message(resp.message)
+                    self._record_context_usage(resp.prompt_tokens + resp.completion_tokens)
                     steer_items, finished = self.turn_controller.drain_steer_or_finish(
                         self.turn_state.turn_id
                     )
@@ -1364,6 +1367,7 @@ class Agent:
                     return "return", resp.content
 
                 self._append_message(resp.message)
+                self._record_context_usage(resp.prompt_tokens + resp.completion_tokens)
                 self.persist_session()
                 wait = self._handle_tool_calls(
                     resp.tool_calls,

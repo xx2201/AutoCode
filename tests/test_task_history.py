@@ -60,7 +60,7 @@ def test_context_decisions_share_valid_anchor_despite_larger_character_estimate(
         agent.chat("review this task")
         agent.context = ContextManager(256_000, 16_384)
         agent._append_message({"role": "assistant", "content": "x" * 720_000})
-        agent._record_prompt_usage(used)
+        agent._record_context_usage(used)
         assert agent._estimated_context_tokens() == used
         result = agent._maybe_compress_messages()
         assert result.compressed is switched
@@ -77,9 +77,9 @@ def test_invalidated_anchor_uses_current_content_for_hard_limit(tmp_path):
         agent.chat("review this task")
         agent.context = ContextManager(256_000, 16_384)
         agent._append_message({"role": "assistant", "content": "x" * 720_000})
-        agent._record_prompt_usage(175_000)
+        agent._record_context_usage(175_000)
         agent.messages[-1]["content"] += " changed"
-        assert agent._valid_last_prompt_tokens() == 0
+        assert agent._valid_last_context_tokens() == 0
         assert agent._estimated_context_tokens() >= agent.context.input_budget_tokens
         assert agent._maybe_compress_messages().compressed
     finally:
@@ -216,20 +216,20 @@ def test_reminder_fallback_forced_reset_restore_and_edit(history, tmp_path):
         agent.chat("original goal")
         turn = agent.turn_state.turn_id
         agent.context = ContextManager(10000, 1000, reminder_tokens=1000, fallback_buffer_tokens=1000)
-        agent._record_prompt_usage(7000)
+        agent._record_context_usage(7000)
         agent._maybe_compress_messages()
         assert agent.session_state.context_reminded
         count = len(agent.messages)
         agent._maybe_compress_messages()
         assert len(agent.messages) == count
-        agent._record_prompt_usage(8000)
+        agent._record_context_usage(8000)
         agent._maybe_compress_messages()
         assert agent.session_state.context_fallback
         agent._task_notes().write("index.md", "original goal")
         agent.persist_session()
         restored.restore_session(*load_checkpoint(agent.session_state.session_id))
         assert restored.session_state.context_fallback
-        agent._record_prompt_usage(9000)
+        agent._record_context_usage(9000)
         assert agent._maybe_compress_messages().compressed
         agent.persist_session()
         restored.restore_session(*load_checkpoint(agent.session_state.session_id))

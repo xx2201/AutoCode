@@ -218,7 +218,7 @@ def test_context_reserves_output_budget_before_compression_thresholds():
     assert ctx.status(80_000)["force"]
 
 
-def test_context_can_trigger_compression_from_last_real_prompt_tokens():
+def test_context_can_trigger_compression_from_last_provider_usage():
     ctx = ContextManager(max_tokens=2000)
     msgs = [{"role": role, "content": f"turn {i}"}
             for i in range(3) for role in ("user", "assistant")]
@@ -227,7 +227,7 @@ def test_context_can_trigger_compression_from_last_real_prompt_tokens():
                               checkpoint=lambda: "notes").compressed
 
 
-def test_agent_passes_real_usage_plus_trailing_estimate_into_compression(tmp_path):
+def test_agent_passes_real_total_usage_plus_trailing_estimate_into_compression(tmp_path):
     class _NoopLLM:
         def __init__(self):
             self.model = "fake"
@@ -238,7 +238,7 @@ def test_agent_passes_real_usage_plus_trailing_estimate_into_compression(tmp_pat
 
     agent = Agent(llm=_NoopLLM(), workspace_root=str(tmp_path), approval_policy="never")
     agent.messages = [{"role": "user", "content": "prompt"}]
-    agent._record_prompt_usage(4321)
+    agent._record_context_usage(4321)
     trailing = [{"role": "assistant", "content": "answer " * 12}]
     agent.messages.extend(trailing)
     captured = {}
@@ -306,7 +306,7 @@ def test_window_switch_does_not_trigger_project_summary(tmp_path):
     assert scheduled == []
 
 
-def test_agent_context_usage_prefers_real_prompt_and_caps_at_window(tmp_path):
+def test_agent_context_usage_prefers_real_total_and_caps_at_window(tmp_path):
     class _NoopLLM:
         model = "fake"
 
@@ -316,7 +316,7 @@ def test_agent_context_usage_prefers_real_prompt_and_caps_at_window(tmp_path):
         max_context_tokens=10_000,
     )
     agent.messages = [{"role": "user", "content": "short"}]
-    agent._record_prompt_usage(4_321)
+    agent._record_context_usage(4_321)
 
     usage = agent.context_usage()
 
@@ -327,7 +327,7 @@ def test_agent_context_usage_prefers_real_prompt_and_caps_at_window(tmp_path):
         "used_percent": 43.2,
     }
 
-    agent._record_prompt_usage(20_000)
+    agent._record_context_usage(20_000)
     assert agent.context_usage()["used_tokens"] == 10_000
     assert agent.context_usage()["used_percent"] == 100.0
 
@@ -342,7 +342,7 @@ def test_agent_context_usage_drops_stale_real_usage_after_history_rewrite(tmp_pa
         max_context_tokens=10_000,
     )
     agent.messages = [{"role": "user", "content": "original"}]
-    agent._record_prompt_usage(8_000)
+    agent._record_context_usage(8_000)
     assert agent.context_usage()["used_tokens"] == 8_000
 
     agent.messages[0]["content"] = "rewritten"
@@ -360,7 +360,7 @@ def test_agent_context_usage_adds_messages_appended_after_real_usage(tmp_path):
         max_context_tokens=10_000,
     )
     agent.messages = [{"role": "user", "content": "prompt"}]
-    agent._record_prompt_usage(6_000)
+    agent._record_context_usage(6_000)
     trailing = [
         {"role": "assistant", "content": "answer " * 12},
         {"role": "tool", "tool_call_id": "call-1", "content": "result " * 18},
@@ -381,11 +381,11 @@ def test_agent_context_usage_reanchors_without_double_counting_tail(tmp_path):
         max_context_tokens=10_000,
     )
     agent.messages = [{"role": "user", "content": "prompt"}]
-    agent._record_prompt_usage(6_000)
+    agent._record_context_usage(6_000)
     agent.messages.append({"role": "assistant", "content": "answer " * 12})
     assert agent.context_usage()["used_tokens"] > 6_000
 
-    agent._record_prompt_usage(6_500)
+    agent._record_context_usage(6_500)
 
     assert agent.context_usage()["used_tokens"] == 6_500
 

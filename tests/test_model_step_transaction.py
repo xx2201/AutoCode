@@ -107,6 +107,7 @@ def test_model_step_rolls_back_partial_stream_and_reuses_prompt_snapshot(
     assert llm.requests[0][0][0] == llm.requests[1][0][0]
     assert llm.requests[0][1] == llm.requests[1][1]
     assert agent.turn_state.prompt_snapshot["digest"]
+    assert agent.context_usage()["used_tokens"] == 26
     tool_messages = [message for message in agent.messages if message["role"] == "tool"]
     assert len(tool_messages) == 1
     assert tool_messages[0]["tool_call_id"] == "call-2"

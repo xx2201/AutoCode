@@ -2,7 +2,6 @@ import threading
 
 from autocode.state import checkpoint as checkpoint_module
 from autocode.config import Config
-from autocode.context import estimate_tokens
 from autocode.llm import LLMResponse, ToolCall
 from autocode.remote.formatting import render_turn_result, split_message
 from autocode.remote.manager import RemoteManager
@@ -81,14 +80,14 @@ def test_remote_manager_handles_approval_flow(tmp_path):
 
 def test_remote_manager_can_resume_checkpoint(tmp_path, monkeypatch):
     monkeypatch.setattr(checkpoint_module, "SESSIONS_DIR", tmp_path)
-    llm = _FakeLLM([LLMResponse(content="finished", prompt_tokens=125)])
+    llm = _FakeLLM([
+        LLMResponse(content="finished", prompt_tokens=125, completion_tokens=7)
+    ])
     manager = RemoteManager(_config(tmp_path), llm_factory=lambda: llm, tools=[])
 
     result = manager.submit(202, "finish task")
     assert result.status == "completed"
-    expected_tokens = 125 + estimate_tokens([
-        {"role": "assistant", "content": "finished"},
-    ])
+    expected_tokens = 132
     assert result.context_used_tokens == expected_tokens
     assert result.context_window_tokens == 1_000_000
     session_id = result.session_id
